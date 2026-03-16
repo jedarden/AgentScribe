@@ -113,6 +113,14 @@ type = "type"
 [parser.static]
 source_agent = "claude-code"
 
+[parser.project]
+method = "field:cwd"                 # Extract project path from session's cwd field
+# Alternatives: "parent_dir" (parent of the log file), "git_root" (git rev-parse --show-toplevel)
+
+[parser.file_paths]
+tool_call_field = "input.file_path"  # Structured extraction from tool_call events
+content_regex = true                 # Also extract paths from content via regex
+
 [metadata]
 session_meta = "~/.claude/usage-data/session-meta/{session_id}.json"
 session_facets = "~/.claude/usage-data/facets/{session_id}.json"
@@ -139,6 +147,12 @@ assistant_prefix = ""
 
 [parser.static]
 source_agent = "aider"
+
+[parser.project]
+method = "parent_dir"                # Aider creates .aider.chat.history.md in the project root
+
+[parser.file_paths]
+content_regex = true                 # Aider has no structured tool_call fields; extract paths from content
 ```
 
 Bundled plugins ship for Claude Code, Aider, OpenCode, and Codex. Cursor and Windsurf plugins are added in Phase 5 (SQLite format support). Users can add custom plugins by dropping a TOML file in `~/.agentscribe/plugins/`.
@@ -159,7 +173,84 @@ Bundled plugins ship for Claude Code, Aider, OpenCode, and Codex. Cursor and Win
 ├── index/
 │   └── tantivy/                   # Tantivy search index (rebuildable from sessions)
 └── state/
-    └── scrape-state.json          # Last-seen offsets/timestamps per source
+    └── scrape-state.json          # Per-source-file tracking (see below)
+```
+
+**Scrape state schema** — tracks position per source file for incremental scraping:
+
+```json
+{
+  "sources": {
+    "/home/user/.claude/projects/-home-coding/83f5a4e7.jsonl": {
+      "plugin": "claude-code",
+      "last_byte_offset": 485632,
+      "last_modified": "2026-03-16T12:00:00Z",
+      "last_scraped": "2026-03-16T12:05:00Z",
+      "session_ids": ["claude-code/83f5a4e7"]
+    },
+    "/home/user/projects/myapp/.aider.chat.history.md": {
+      "plugin": "aider",
+      "last_byte_offset": 128000,
+      "last_modified": "2026-03-16T11:00:00Z",
+      "last_scraped": "2026-03-16T11:05:00Z",
+      "sessions_found": 8,
+      "last_delimiter_offset": 125000
+    }
+  }
+}
+```
+
+**Per-format incremental strategy:**
+- **JSONL:** Seek to `last_byte_offset`, read new lines. Resume is exact.
+- **Markdown (Aider):** Seek to `last_delimiter_offset`, re-parse from the last delimiter boundary to pick up any appended content in the current session plus new sessions.
+- **SQLite:** Compare file `mtime` to `last_scraped`. If unchanged, skip. If changed, query for sessions with `time_updated > last_scraped`.
+- **Truncation detection:** If `last_byte_offset > current_file_size`, the file was truncated or rewritten (e.g., Windsurf's 20-conversation overwrite). Trigger a full rescan of that file.
+```
+
+### Global Configuration (`config.toml`)
+
+```toml
+[general]
+data_dir = "~/.agentscribe"           # Override with AGENTSCRIBE_DATA_DIR
+log_level = "info"                    # error | warn | info | debug | trace
+
+[scrape]
+debounce_seconds = 5                  # Wait after file change before scraping
+max_session_age_days = 0              # 0 = no limit; >0 = ignore sessions older than N days
+
+[index]
+tantivy_heap_size_mb = 50             # IndexWriter memory budget
+
+[search]
+default_max_results = 10
+default_snippet_length = 200
+
+[daemon]
+mcp_enabled = false
+mcp_socket = "~/.agentscribe/mcp.sock"
+pid_file = "~/.agentscribe/agentscribe.pid"
+log_file = "~/.agentscribe/daemon.log"
+
+[sqlite]
+cache_size_pages = 2000               # PRAGMA cache_size (~8MB)
+
+[shell_hook]
+stderr_capture = false                # Don't capture stderr (see Feature Details)
+background = true                     # Run search in background subprocess
+
+[outcome.weights]                     # Signal weights for outcome detection
+success_confirmation = 3              # User says "thanks", "LGTM", etc.
+success_clean_exit = 2                # Last tool_result exit code 0
+failure_rejection = 3                 # User says "no", "wrong", "revert"
+failure_error_exit = 2                # Last tool_result has error
+abandoned_no_response = 2             # No user message after last assistant turn
+threshold = 3                         # Minimum score to classify (below = unknown)
+
+[cost.models]                         # Per-1M-token costs for analytics
+"claude-sonnet-4-20250514" = { input = 3.0, output = 15.0 }
+"claude-opus-4-20250514" = { input = 15.0, output = 75.0 }
+"gpt-4o" = { input = 2.5, output = 10.0 }
+"deepseek-chat" = { input = 0.14, output = 0.28 }
 ```
 
 ---
@@ -258,6 +349,9 @@ schema_builder.add_u64_field("turn_count", INDEXED | STORED | FAST);
 
 **Index principles:**
 - One Tantivy index for all sessions and code artifacts. Cross-agent search is the primary use case.
+- **One Tantivy document per session.** The `content` field is the full conversation concatenated with role prefixes (`user: ...`, `assistant: ...`, `tool_call: ...`). This gives BM25 correct document-level term frequency and keeps session-level fields (outcome, summary, tags) on a single document. For turn-level retrieval, fetch the flat JSONL file via `--session <id>`.
+- **Separate Tantivy documents per code artifact** with `doc_type: "code_artifact"`. Code artifacts share `session_id`, `source_agent`, `project`, and `timestamp` fields with their parent session for correlation.
+- **Default search returns sessions only.** The `doc_type` facet filter is always applied: `agentscribe search "auth"` → `doc_type: "session"`. `agentscribe search --code "auth"` → `doc_type: "code_artifact"`. No mixed results, no cross-type score confusion.
 - Incremental indexing: `IndexWriter::add_document()` on scrape. No full rebuild needed.
 - Flat files remain the source of truth. `agentscribe index rebuild` recreates the index from session files if corrupted.
 - Tantivy handles segment merging automatically via its `MergePolicy`.
@@ -275,13 +369,18 @@ schema_builder.add_u64_field("turn_count", INDEXED | STORED | FAST);
 - Normalize all formats to canonical event schema via field mapping
 - Write normalized sessions as JSONL flat files
 - Track scrape state (last-seen offsets/timestamps) for incremental scrapes
-- Extract file paths from tool_call/tool_result events during normalization
+- Extract file paths from events via two methods:
+  - **Structured:** For agents with typed tool_call events (Claude Code, Codex, OpenCode), extract from the tool's input fields (e.g., `input.file_path`). The plugin TOML specifies the field path under `[parser.file_paths] tool_call_field = "input.file_path"`.
+  - **Regex fallback:** For content strings (Bash commands, Aider text), match strings that contain `/` and a known file extension, or start with `./`, `~/`, `/`. Filter false positives (URLs, ANSI escape sequences). Relative paths resolved against the session's `project` field.
 - CLI: `agentscribe config init`, `agentscribe scrape`, `agentscribe plugins list|validate|show`
 
 ### Phase 2 — Tantivy Indexing & Search
 - Build Tantivy index from normalized sessions (BM25 scoring, faceted fields)
 - Incremental indexing on scrape (no full rebuild required)
-- Tag extraction: pull tags from content (tool names, file types, technologies) into faceted fields
+- Tag extraction via three-tier pipeline:
+  - **Explicit:** tool names from `tool_call` events (`Edit`, `Bash`, `Read`), languages from code fence markers (` ```rust ` → `rust`)
+  - **Structural:** file extensions from `file_paths` (`.rs` → `rust`, `.py` → `python`), command names from Bash content (`docker`, `git`, `npm`, `cargo`, `kubectl`), error types from `error_fingerprints`
+  - **Keyword list:** match content against a bundled technology dictionary (~200 terms: framework names, databases, cloud services, protocols). Exact word-boundary matches only to avoid false positives.
 - Fuzzy search via Tantivy's Levenshtein term queries
 - "More like this" search via Tantivy's built-in `MoreLikeThisQuery` (`--like <session-id>`)
 - Structured output mode (`--json`) for agent consumption
@@ -289,8 +388,8 @@ schema_builder.add_u64_field("turn_count", INDEXED | STORED | FAST);
 - CLI: `agentscribe search`, `agentscribe index rebuild|stats|optimize`, `agentscribe status`
 
 ### Phase 3 — Enrichment & Intelligence
-- **Summaries:** Auto-generate Markdown summaries per session (extractive, no LLM required for v1; optional LLM-powered summarization)
-- **Outcome detection:** Classify sessions as success, failure, abandoned, or unknown based on final turns and user signals
+- **Summaries:** Auto-generate from a deterministic template — first user prompt (truncated to 200 chars) + outcome + files touched + solution summary (if available). The `summary` field (one-line, used in search results) is the first sentence of the first user prompt + outcome label. No ML/NLP needed — the first user prompt is always the best single-sentence description of what the session was about. Optional LLM-powered summarization can replace this in a later version.
+- **Outcome detection:** Classify sessions using a signal-scoring system (see Feature Details: Outcome Detection)
 - **Solution extraction:** For successful sessions, extract the fix (last Edit/Write tool calls, last successful commands, final code blocks) into `solution_summary`. Heuristics: scan backward from session end for tool_call events and user confirmation signals ("thanks", "that works", "LGTM")
 - **Error fingerprinting:** Regex pipeline extracts error patterns from `tool_result` and `assistant` events. Normalize by stripping variable parts (line numbers, paths, PIDs, timestamps). Store as `error_fingerprint` facet field for cross-session matching
 - **Anti-pattern detection:** For failed/abandoned sessions, tag the approaches that preceded user rejection ("no", "wrong", "revert") as anti-patterns. Store what was tried, why it failed, and what worked instead
@@ -558,8 +657,9 @@ Each `aider` launch writes `# aider chat started at YYYY-MM-DD HH:MM:SS`. Everyt
 
 - **Start:** `# aider chat started at <datetime>` (written by `io.py`).
 - **End:** Next delimiter line, or EOF.
+- **Session ID:** `aider/<project_hash>/<timestamp>` — project_hash is first 8 chars of SHA-256 of the parent directory's absolute path; timestamp is the delimiter datetime formatted as `YYYYMMDD-HHMMSS`. Example: `aider/a1b2c3d4/20260316-104200`. Deterministic (re-scraping produces the same ID), human-readable, collision-resistant.
 - **Enrichment:** `.aider.input.history` has per-input timestamps for finer granularity.
-- **Edge case:** Scripted aider (`--yes`, piped input) may not write the marker. Fallback to `timestamp-gap` using `.aider.input.history`.
+- **Edge case:** Scripted aider (`--yes`, piped input) may not write the marker. Fallback to `timestamp-gap` using `.aider.input.history`. Session ID uses file mtime for the timestamp component.
 
 ```toml
 [source.session_detection]
@@ -626,14 +726,71 @@ session_id_from = "field:composerId"
 
 ## Feature Details
 
+### Outcome Detection
+
+A signal-scoring system classifies each session. Each signal contributes a weighted score toward one outcome. The highest-scoring classification wins. Conflicting signals cancel out and produce `unknown`.
+
+**Signals for `success` (positive score):**
+- User's last message matches confirmation patterns: `thanks`, `that works`, `perfect`, `LGTM`, `looks good`, `great`, `nice` (+3)
+- Last `tool_result` has exit code 0 or contains no error patterns (+2)
+- Session ends with a short user turn (<30 chars) after an assistant turn — likely a confirmation (+1)
+- A git commit was made in the session's time window (+1)
+- Tests pass in the final Bash tool call (exit code 0 + content matches `test|spec|check`) (+2)
+
+**Signals for `failure` (positive score):**
+- User's last message matches rejection patterns: `no`, `wrong`, `doesn't work`, `broken`, `revert`, `undo` (+3)
+- Last `tool_result` contains error patterns (stack trace, non-zero exit code) (+2)
+- Last assistant response contains apology patterns: `I apologize`, `sorry about`, `my mistake` (+1)
+- User says `stop`, `nevermind`, `forget it` (+3)
+
+**Signals for `abandoned`:**
+- Session's last event is an `assistant` message with no subsequent `user` message (+2)
+- Time gap between last event and file modification time is >1 hour (+1)
+- Session has <3 turns (started but never engaged) (+1)
+
+**Default:** If no outcome scores above a configurable threshold (default: 3), the session is classified as `unknown`.
+
+**Why signal-scoring:** New signals can be added without changing the algorithm. Ambiguous sessions get `unknown` rather than a wrong classification. Weights are tunable in `config.toml` under `[outcome.weights]`.
+
+---
+
 ### Error Fingerprinting + Solution Index
 
 Automatically extract error messages and stack traces from conversations, normalize them, and build an `error_fingerprint → [solution_sessions]` index.
 
-- **Extraction:** Regex pipeline identifies error patterns in `tool_result` and `assistant` events — stack traces, exception lines, compiler errors, shell exit codes, HTTP status codes
-- **Normalization:** Strip variable parts. `ConnectionRefusedError: postgres:5432` → `ConnectionRefusedError:{host}:{port}`
+**Structural matchers** detect that a line is an error:
+
+| Language/Type | Pattern |
+|---------------|---------|
+| Python | `^\s*\w+Error: .+` or `^Traceback \(most recent call last\):` |
+| Rust | `^error\[E\d+\]:` or `^thread '.+' panicked at` |
+| Node/JS | `^\w+Error: .+` at start of line |
+| Shell | `^.+: command not found$` or `^.+: No such file or directory$` |
+| Go | `^panic: .+` or `^fatal error:` |
+| Generic | `^(FATAL\|ERROR\|CRITICAL\|FAIL)[\s:]+` |
+| HTTP | `HTTP/\d\.\d\s+[45]\d{2}` |
+| Exit codes | `exit code (\d+)` or `exited with status (\d+)` where code != 0 |
+
+**Normalizers** strip variable parts in this order:
+
+| Replacement | Pattern | Example |
+|-------------|---------|---------|
+| `{path}:{line}:{col}` | `/path/to/file.rs:42:5` | File paths with line numbers |
+| `{path}` | Absolute or relative file paths | `/home/user/src/main.rs` → `{path}` |
+| `{host}` | IPs, hostnames, FQDNs | `192.168.1.100` → `{host}` |
+| `{port}` | `:\d{2,5}` following a host | `:5432` → `:{port}` |
+| `{pid}` | `PID \d+` or `pid=\d+` | `PID 12345` → `PID {pid}` |
+| `{ts}` | ISO 8601, common datetime formats | `2026-03-16T12:00:00Z` → `{ts}` |
+| `{uuid}` | UUID v4/v7 patterns | `550e8400-e29b-...` → `{uuid}` |
+| `{addr}` | Hex memory addresses `0x[0-9a-f]+` | `0x7fff5fbff8c0` → `{addr}` |
+
+**Fingerprint format:** `<error_type>:<normalized_message>`. Example:
+- Input: `ConnectionRefusedError: Connection refused to postgres-primary.svc:5432`
+- Fingerprint: `ConnectionRefusedError:Connection refused to {host}:{port}`
+
 - **Index:** Fingerprints stored as Tantivy `STRING | FAST` facet. Queryable via `agentscribe search --error`
 - **Ranking:** Sessions that both encountered AND resolved the error rank highest, sorted by recency
+- **Extensibility:** Users can add custom matchers and normalizers in `config.toml` under `[error_patterns.custom]`
 
 ```bash
 agentscribe search --error "ENOSPC: no space left on device" --json -n 1
@@ -643,8 +800,9 @@ agentscribe search --error "ENOSPC: no space left on device" --json -n 1
 
 Catalog approaches that failed so agents don't repeat known mistakes.
 
-- **Detection:** Sessions with `outcome: "failure"` or `"abandoned"` are analyzed. Tool calls preceding user rejection ("no", "wrong", "revert", "undo") are tagged as anti-patterns
-- **Storage:** What was tried, why it failed (from user's correction), what worked instead (from a subsequent successful session with the same error fingerprint)
+- **Detection:** Sessions with `outcome: "failure"` or `"abandoned"` are analyzed. The "rejection window" is the 3 tool_calls immediately preceding a user message matching rejection patterns (`no`, `wrong`, `doesn't work`, `revert`, `undo`, `stop`). These tool_calls are the anti-pattern.
+- **Storage:** Each anti-pattern records: (1) what was tried (the tool_call names + truncated arguments), (2) why it failed (the user's rejection message), (3) the error fingerprint active at that point.
+- **Linking to solutions:** A "working alternative" is found by querying for sessions with the SAME error fingerprint + same project + `outcome: "success"` + later timestamp. The successful session's `solution_summary` becomes the anti-pattern's "what worked instead." If no matching successful session exists, the field is `null` — the anti-pattern simply says "this doesn't work" without a known alternative.
 - **Query:** `agentscribe search --anti-patterns "mock database" --json`
 
 ### Code Artifact Extraction
@@ -659,13 +817,21 @@ Index code blocks as first-class searchable artifacts, separate from session con
 
 ### Solution Extraction
 
-For successful sessions, extract just the fix into `solution_summary`.
+For successful sessions, extract the fix into `solution_summary` by identifying the **resolution window** — the consecutive sequence of tool_calls between the last error and the session end (or user confirmation).
 
-**Heuristics (checked in order):**
-1. The last `Edit` or `Write` tool call in the session
-2. The assistant response immediately before user confirms ("thanks", "that works", "LGTM")
-3. The last `Bash` tool call that returned exit code 0 after failures
-4. The code block in the final assistant turn
+**Finding the resolution window:**
+1. Walk backward from the session's last event
+2. The window **ends** at: user confirmation signal (`thanks`, `LGTM`, `that works`), or session end
+3. The window **starts** at: the last `tool_result` containing an error before the window end, OR the last user prompt if no error is found
+4. All `tool_call` events within this window are collected as the solution
+
+**What goes into `solution_summary`:**
+- All `Edit`/`Write` tool calls in the window (the code changes), concatenated in order
+- All `Bash` tool calls in the window that exited 0 (the commands that worked)
+- The assistant explanation immediately preceding the first tool call in the window (the rationale)
+- If no tool calls exist in the window, fall back to the code block in the final assistant turn
+
+This captures multi-file edits + verification commands as a single solution rather than extracting just one tool call.
 
 Queryable via `agentscribe search "postgres migration" --solution-only --json`.
 
@@ -675,7 +841,8 @@ Bidirectional linking between conversations and git commits.
 
 - **Forward:** During scrape enrichment, `git log --after=<start> --before=<end>` finds commits made during the session. Stored as `git_commits` field.
 - **Reverse:** `commit_hash → session_id` index via Tantivy facet.
-- **CLI:** `agentscribe blame src/auth.rs:42` runs `git blame`, finds the commit, then looks up the session.
+- **Overlap handling:** When multiple sessions have overlapping time windows, a commit is attributed to ALL matching sessions. Matches are scored by: (1) file overlap — if the session's `files_touched` intersects the commit's changed files, score +2; (2) time containment — commit timestamp within session window, score +1. `agentscribe blame` displays all matching sessions sorted by score, so the user can disambiguate.
+- **CLI:** `agentscribe blame src/auth.rs:42` runs `git blame`, finds the commit, then looks up the session(s).
 
 ### Context Budget Packing
 
@@ -724,24 +891,36 @@ Cross-agent performance comparison — data only possible with AgentScribe's uni
 **Metrics:**
 - Success rate per agent
 - Average turns and tokens per successful outcome
-- Specialization by problem type (debug, feature, refactor)
+- Specialization by problem type
 - Trends over time (model updates, prompt changes)
-- Cost efficiency (outcome quality per dollar of token spend)
+- Cost efficiency (outcome quality per dollar of token spend, using `[cost.models]` from config.toml)
+
+**Problem type classification** (rule-based, stored as a tag):
+
+| Type | Signals |
+|------|---------|
+| `debug` | Session contains error fingerprints, or content matches `fix\|bug\|error\|crash\|broken\|not working` |
+| `feature` | `Write` tool calls create new files, or content matches `add\|implement\|create\|build\|new feature` |
+| `refactor` | Content matches `refactor\|rename\|move\|extract\|clean up`, and no new files created |
+| `investigation` | Read-to-Edit tool call ratio >3:1, or content matches `explain\|how does\|what is\|understand` |
+| `configuration` | `files_touched` includes `.toml`, `.yaml`, `.json`, `.env`, `Dockerfile`, `Makefile` |
+| `documentation` | `files_touched` includes `.md`, `.rst`, or content matches `document\|readme\|changelog` |
+
+First match in priority order above is the primary type. Multiple types can apply as secondary tags.
 
 **CLI:** `agentscribe analytics [--agent <name>] [--project <path>] [--since <date>]`
 
 ### Search-on-Error Shell Hook
 
-A shell integration (`PROMPT_COMMAND` for bash, `precmd` for zsh) that detects when any command exits non-zero, captures stderr, and silently queries AgentScribe's error fingerprint index in the background. If a match is found, it prints a one-line hint:
+A shell integration (`PROMPT_COMMAND` for bash, `precmd` for zsh) that detects when any command exits non-zero and silently queries AgentScribe in the background.
 
 ```
 💡 AgentScribe: this error was solved in session claude-code/83f5 — run `agentscribe search --session claude-code/83f5`
 ```
 
-- **Scope:** Not agent-specific — works for the developer running any build, test, or deploy command
-- **Performance:** Background subprocess; never blocks the shell. Results appear on the next prompt if ready, otherwise silently discarded.
+- **No stderr capture.** Intercepting stderr is fragile (breaks pipes, interferes with progress bars, requires `exec` redirection). Instead, the hook passes the failed command text (via `fc -ln -1`) and exit code to `agentscribe search --error "<command> exit code <code>" --json -n 1`. The error fingerprint index is searched via full-text, so `cargo test` failing will match past sessions where `cargo test` also failed — no exact stderr match needed.
+- **Performance:** Background subprocess (`&`); never blocks the shell. A temp file holds the result. On the next prompt, if the file exists and is non-empty, print the one-line hint and delete the file. If the search takes longer than one prompt cycle, the result is silently discarded.
 - **Setup:** `eval "$(agentscribe shell-hook bash)"` in `.bashrc` or `eval "$(agentscribe shell-hook zsh)"` in `.zshrc`
-- **Privacy:** Only the last 5 lines of stderr are sent to the local index. Nothing leaves the machine.
 - **CLI:** `agentscribe shell-hook bash|zsh|fish` generates the shell integration snippet
 
 ### "More Like This" Search
