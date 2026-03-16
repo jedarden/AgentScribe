@@ -118,6 +118,12 @@ source_agent = "claude-code"
 method = "field:cwd"                 # Extract project path from session's cwd field
 # Alternatives: "parent_dir" (parent of the log file), "git_root" (git rev-parse --show-toplevel)
 
+[parser.model]
+source = "metadata"                  # Extract model name from session_meta JSON
+field = "model"                      # Field path within the metadata file
+# Alternatives: source = "event" + field = "model" (from event data)
+#               source = "static" + value = "claude-sonnet-4" (hardcoded per plugin)
+
 [parser.file_paths]
 tool_call_field = "input.file_path"  # Structured extraction from tool_call events
 content_regex = true                 # Also extract paths from content via regex
@@ -151,6 +157,9 @@ source_agent = "aider"
 
 [parser.project]
 method = "parent_dir"                # Aider creates .aider.chat.history.md in the project root
+
+[parser.model]
+source = "none"                      # Aider doesn't log the model name; model will be null
 
 [parser.file_paths]
 content_regex = true                 # Aider has no structured tool_call fields; extract paths from content
@@ -217,6 +226,8 @@ For Aider (delimiter-based): only the last session in the file can change (previ
 
 Tantivy does not support in-place document updates — delete + add is the standard pattern. This is fast because it operates on one document at a time.
 
+**Concurrent access:** Tantivy natively supports concurrent readers with a single writer — CLI searches work fine while the daemon is scraping. The `IndexWriter` is held only during active scrape/commit, not while idle. For `scrape-state.json`, a file lock (`flock` / `fs2::FileExt::lock_exclusive`) prevents concurrent writes if both the daemon and a CLI `agentscribe scrape` run simultaneously — the second process waits for the lock. CLI read-only commands (`search`, `status`, `blame`, `file`) never touch scrape state and never contend.
+
 ### Global Configuration (`config.toml`)
 
 ```toml
@@ -255,6 +266,12 @@ failure_rejection = 3                 # User says "no", "wrong", "revert"
 failure_error_exit = 2                # Last tool_result has error
 abandoned_no_response = 2             # No user message after last assistant turn
 threshold = 3                         # Minimum score to classify (below = unknown)
+
+[error_patterns.custom]               # User-defined error matchers and normalizers
+# matchers = ['^MyAppError: .+']     # Additional regex patterns that identify errors
+# normalizers = [                    # Additional variable-part replacements
+#   { pattern = 'request_id=\w+', replacement = 'request_id={id}' }
+# ]
 
 [cost.models]                         # Per-1M-token costs for analytics
 "claude-sonnet-4-20250514" = { input = 3.0, output = 15.0 }
@@ -354,6 +371,10 @@ schema_builder.add_text_field("code_language", STRING | STORED | FAST);
 schema_builder.add_text_field("code_file_path", STRING | STORED | FAST);
 schema_builder.add_bool_field("code_is_final", STORED | FAST);
 
+// Analytics + classification
+schema_builder.add_text_field("model", STRING | STORED | FAST);         // LLM model name (null-safe)
+schema_builder.add_text_field("session_type", STRING | STORED | FAST);  // debug|feature|refactor|investigation|configuration|documentation
+
 // Date + numeric for range queries
 schema_builder.add_date_field("timestamp", INDEXED | STORED | FAST);
 schema_builder.add_u64_field("turn_count", INDEXED | STORED | FAST);
@@ -382,6 +403,7 @@ schema_builder.add_u64_field("turn_count", INDEXED | STORED | FAST);
 - Normalize all formats to canonical event schema via field mapping. **Event expansion:** Some agents embed tool calls inside assistant messages (e.g., Claude Code's `assistant` events contain `tool_use` content blocks). The format parser — not the TOML config — handles splitting these compound events into atomic canonical events (`assistant` text + `tool_call` + `tool_result`). The TOML maps simple fields; structural transformations are parser code. This keeps the plugin TOML declarative while handling agent-specific structural differences in the parser implementation.
 - Write normalized sessions as JSONL flat files
 - Track scrape state (last-seen offsets/timestamps) for incremental scrapes
+- **Scrape error handling:** skip-and-log at every level. A malformed JSONL line → skip the line, log a warning with file path and line number, continue parsing. A field mapping pointing to a non-existent field → set the canonical field to `null`, log a warning. An unreadable source file (permissions, corruption) → skip the file, log an error, continue with other files. A session with zero parseable events → skip the session, don't write a normalized file. Errors are collected and reported in the scrape summary (`--json` output includes an `errors` array). A single bad event never takes down a 1000-session scrape.
 - Extract file paths from events via two methods:
   - **Structured:** For agents with typed tool_call events (Claude Code, Codex, OpenCode), extract from the tool's input fields (e.g., `input.file_path`). The plugin TOML specifies the field path under `[parser.file_paths] tool_call_field = "input.file_path"`.
   - **Regex fallback:** For content strings (Bash commands, Aider text), match strings that contain `/` and a known file extension, or start with `./`, `~/`, `/`. Filter false positives (URLs, ANSI escape sequences). Relative paths resolved against the session's `project` field.
@@ -474,6 +496,8 @@ All search modes support these filters:
 | Date range | `--since <date>` / `--before <date>` | ISO 8601 or relative (`24h`, `7d`, `1w`) |
 | Tags | `--tag <tag>` | Filter by tag (repeatable, AND logic) |
 | Outcome | `--outcome <value>` | `success`, `failure`, `abandoned`, `unknown` |
+| Session type | `--type <type>` | `debug`, `feature`, `refactor`, `investigation`, `configuration`, `documentation` |
+| Model | `--model <name>` | Filter by LLM model name |
 
 ### Output Sizing
 
@@ -807,7 +831,8 @@ Automatically extract error messages and stack traces from conversations, normal
 - Input: `ConnectionRefusedError: Connection refused to postgres-primary.svc:5432`
 - Fingerprint: `ConnectionRefusedError:Connection refused to {host}:{port}`
 
-- **Index:** Fingerprints stored as Tantivy `STRING | FAST` facet. Queryable via `agentscribe search --error`
+- **Index:** Fingerprints stored as Tantivy `STRING | FAST` facet. Queryable via `agentscribe search --error`.
+- **Search semantics:** The `--error` flag accepts either a raw error message or a fingerprint. AgentScribe first runs the query through the same normalizer pipeline (stripping paths, hosts, ports, etc.) to produce a fingerprint, then does a prefix match against indexed fingerprints. If no prefix match is found, falls back to full-text search across the `error_fingerprint` field. This means `--error "connection refused"` matches `ConnectionRefusedError:Connection refused to {host}:{port}` without the user knowing the fingerprint format.
 - **Ranking:** Sessions that both encountered AND resolved the error rank highest, sorted by recency
 - **Extensibility:** Users can add custom matchers and normalizers in `config.toml` under `[error_patterns.custom]`
 
@@ -822,6 +847,17 @@ Catalog approaches that failed so agents don't repeat known mistakes.
 - **Detection:** Sessions with `outcome: "failure"` or `"abandoned"` are analyzed. The "rejection window" is the 3 tool_calls immediately preceding a user message matching rejection patterns (`no`, `wrong`, `doesn't work`, `revert`, `undo`, `stop`). These tool_calls are the anti-pattern.
 - **Storage:** Each anti-pattern records: (1) what was tried (the tool_call names + truncated arguments), (2) why it failed (the user's rejection message), (3) the error fingerprint active at that point.
 - **Linking to solutions:** A "working alternative" is found by querying for sessions with the SAME error fingerprint + same project + `outcome: "success"` + later timestamp. The successful session's `solution_summary` becomes the anti-pattern's "what worked instead." If no matching successful session exists, the field is `null` — the anti-pattern simply says "this doesn't work" without a known alternative.
+- **Storage:** Anti-patterns are written to a sidecar file `<session-id>.anti-patterns.jsonl` alongside the normalized session file. Each line is one anti-pattern record:
+  ```json
+  {
+    "tool_calls": ["Edit src/db.rs", "Bash cargo test"],
+    "rejection": "no, don't mock the database",
+    "error_fingerprint": "ConnectionRefusedError:{host}:{port}",
+    "working_alternative_session": "claude-code/a1b2c3d4",
+    "working_alternative_summary": "Used testcontainers instead of mocks"
+  }
+  ```
+  Anti-pattern content is concatenated into the parent session's Tantivy document (appended to the `content` field with an `anti-pattern:` prefix) so it's searchable via `--anti-patterns` without a separate document type.
 - **Query:** `agentscribe search --anti-patterns "mock database" --json`
 
 ### Code Artifact Extraction
