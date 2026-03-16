@@ -298,13 +298,12 @@ schema_builder.add_u64_field("turn_count", INDEXED | STORED | FAST);
 - **Git commit correlation:** For sessions in git repos, run `git log` with the session's time window to find associated commits. Build reverse index: `commit_hash → session_id`
 - CLI: `agentscribe summarize`, `agentscribe blame`, `agentscribe file`
 
-### Phase 4 — Daemon Mode, MCP & Real-Time Alerts
+### Phase 4 — Daemon Mode & MCP
 - `agentscribe daemon start|stop|status|run|logs`
 - File watcher (inotify/fswatch) for automatic scraping on log changes
 - Scrape debounce (default 5s) to avoid thrashing during active sessions
 - Incremental index updates (no full rebuild on every new session)
-- Real-time déjà vu alerts: as new lines appear in active agent logs, extract error fingerprints and check against the index. Write alerts to `~/.agentscribe/alerts/<session-id>.json` when a match is found
-- Optional MCP server mode: expose `search`, `status`, `blame`, `file`, and déjà vu alerts as MCP tools (Unix socket at `~/.agentscribe/mcp.sock`)
+- Optional MCP server mode: expose `search`, `status`, `blame`, and `file` as MCP tools (Unix socket at `~/.agentscribe/mcp.sock`)
 - Systemd user-level service integration
 
 ### Phase 5 — SQLite Format Support & Extended Agents
@@ -744,16 +743,6 @@ A shell integration (`PROMPT_COMMAND` for bash, `precmd` for zsh) that detects w
 - **Setup:** `eval "$(agentscribe shell-hook bash)"` in `.bashrc` or `eval "$(agentscribe shell-hook zsh)"` in `.zshrc`
 - **Privacy:** Only the last 5 lines of stderr are sent to the local index. Nothing leaves the machine.
 - **CLI:** `agentscribe shell-hook bash|zsh|fish` generates the shell integration snippet
-
-### Real-Time Déjà Vu Alerts
-
-The daemon watches active agent log files as they grow. When it detects an error fingerprint or problem pattern that matches a previously solved session, it writes an alert to `~/.agentscribe/alerts/<active-session-id>.json`.
-
-- **Detection:** As new lines appear in agent log files, the daemon extracts error fingerprints in real-time and checks them against the index
-- **Alert format:** `{fingerprint, matching_sessions: [{id, summary, solution_summary, outcome}], detected_at}`
-- **Delivery:** File-based (agents can check `~/.agentscribe/alerts/`), MCP notification (if enabled), or Unix socket push
-- **Debounce:** One alert per fingerprint per session — don't spam if the same error appears repeatedly
-- **Value:** Saves tokens and time by surfacing solutions mid-session. "You're 12 turns into debugging a Postgres connection timeout — this was solved 3 days ago in 4 turns."
 
 ### "More Like This" Search
 
