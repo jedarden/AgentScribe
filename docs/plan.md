@@ -67,6 +67,8 @@ agentscribe <command>
 ├── index       # Build/rebuild searchable indexes over normalized data
 ├── search      # Query the index — designed to be called by other agents
 ├── status      # Show what agents/sessions are tracked, last scrape time
+├── daemon      # Long-running background process (start|stop|status|run)
+├── plugins     # Manage scraper plugin definitions (list|validate)
 └── config      # Manage source paths, agent types, data directory location
 ```
 
@@ -228,7 +230,14 @@ Every conversation turn from every agent is normalized to this format:
 - Outcome detection: did the session succeed, fail, or get abandoned?
 - `agentscribe summarize <session-id>`
 
-### Phase 4 — SQLite Format Support & Extended Agents
+### Phase 4 — Daemon Mode & MCP
+- Implement `agentscribe daemon start|stop|status|run`
+- File watcher (inotify/fswatch) for automatic scraping on log changes
+- Incremental index updates (no full rebuild on every new session)
+- Optional MCP server mode: expose `search` and `status` as MCP tools
+- Systemd unit file for user-level service management
+
+### Phase 5 — SQLite Format Support & Extended Agents
 - Add `sqlite` format parser to the plugin framework (for Cursor, Windsurf, etc.)
 - Bundle plugins for Cursor and Windsurf (SQLite extraction + JSON blob parsing)
 - Community plugin registry or examples directory
@@ -260,7 +269,7 @@ agentscribe search "postgres migration error" --json --max-results 3
 
 ## Design Principles
 
-- **Scraper, not server** — AgentScribe reads existing log files; it doesn't require agents to push data to it
+- **CLI-first, MCP-also** — the CLI is the primary interface; MCP is a secondary access layer for agents that support it
 - **Flat files first** — all data is plain text (JSONL + Markdown); works without any database
 - **Git-native** — append-only JSONL and Markdown are diff-friendly; the data dir can be a git repo
 - **Incremental** — scraping tracks offsets so re-runs are fast; only new data is processed
@@ -271,10 +280,78 @@ agentscribe search "postgres migration error" --json --max-results 3
 
 ---
 
+## Decisions
+
+### CLI over MCP, support both
+
+The CLI is the primary interface. Every feature must work via `agentscribe <command>`. Agents call it as a subprocess — this is the most universal integration path since every agent can shell out.
+
+MCP is a secondary access layer, not a replacement. AgentScribe can optionally run as an MCP server exposing `search` and `status` as tools, so agents with native MCP support (Claude Code, etc.) can query it without subprocess overhead. But MCP is never required — it's a convenience wrapper over the same logic the CLI uses.
+
+```
+CLI (primary)     →  core library  →  flat files
+MCP server (opt)  →  core library  →  flat files
+```
+
+### Daemon Mode
+
+AgentScribe needs a long-running background mode for continuous scraping. This is a **daemon** — a process that:
+
+1. **Watches** agent log directories for changes (via inotify/fswatch, not polling)
+2. **Scrapes incrementally** when new log data appears
+3. **Rebuilds indexes** after ingesting new sessions
+4. **Serves MCP** if enabled (the daemon is the natural place to host the MCP server)
+
+The daemon is managed via the CLI:
+
+```bash
+# Start the daemon (backgrounds itself, writes PID to ~/.agentscribe/agentscribe.pid)
+agentscribe daemon start
+
+# Check status
+agentscribe daemon status
+
+# Stop
+agentscribe daemon stop
+
+# Run in foreground (for systemd/supervisord management)
+agentscribe daemon run
+```
+
+**Daemon vs CLI scraping:**
+- `agentscribe scrape` — one-shot, on-demand. Good for manual runs, cron, CI.
+- `agentscribe daemon start` — continuous. Watches for changes, scrapes automatically, keeps indexes hot.
+
+Both use the same scraping logic. The daemon just wraps it in a watch loop.
+
+**Systemd integration** (optional):
+
+```ini
+# ~/.config/systemd/user/agentscribe.service
+[Unit]
+Description=AgentScribe daemon
+After=network.target
+
+[Service]
+ExecStart=%h/.local/bin/agentscribe daemon run
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
+```
+
+```bash
+systemctl --user enable --now agentscribe
+```
+
+**What the daemon does NOT do:**
+- It does not require root
+- It does not open network ports (unless MCP is enabled, and even then only on localhost/unix socket)
+- It does not modify agent log files — read-only always
+
 ## Open Questions
 
 - **Language choice:** Go for single-binary distribution? Rust? Python for faster iteration?
 - **Embedding search:** worth including local embedding-based semantic search in core, or keep it as a plugin?
-- **MCP integration:** should AgentScribe expose itself as an MCP server so agents can query it natively?
-- **Real-time vs batch:** should scraping be a daemon/watcher, or strictly on-demand CLI invocation?
 - **Session boundary detection:** Aider has no session markers — how to split a continuous history file into logical sessions?
