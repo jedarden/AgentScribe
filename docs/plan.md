@@ -79,6 +79,7 @@ agentscribe <command>
 ├── digest      # Automated activity summary over a time period
 ├── status      # Show tracked agents, session counts, daemon state
 ├── daemon      # Long-running background process (start|stop|status|run|logs)
+├── gc          # Delete old sessions, compact index, reclaim disk space
 ├── shell-hook  # Generate shell integration for search-on-error (bash|zsh|fish)
 └── completions # Generate shell completions (bash|zsh|fish)
 ```
@@ -205,7 +206,16 @@ Bundled plugins ship for Claude Code, Aider, OpenCode, and Codex. Cursor and Win
 - **Markdown (Aider):** Seek to `last_delimiter_offset`, re-parse from the last delimiter boundary to pick up any appended content in the current session plus new sessions.
 - **SQLite:** Compare file `mtime` to `last_scraped`. If unchanged, skip. If changed, query for sessions with `time_updated > last_scraped`.
 - **Truncation detection:** If `last_byte_offset > current_file_size`, the file was truncated or rewritten (e.g., Windsurf's 20-conversation overwrite). Trigger a full rescan of that file.
-```
+
+**Session update on re-scrape:** When a source file changes after a session was already scraped (e.g., a resumed Claude Code session appends new events), AgentScribe uses a **replace strategy:**
+1. Re-parse the entire source file for that session (source files are the authority)
+2. Overwrite the normalized `<session-id>.jsonl` file (it's derived data)
+3. Delete the old Tantivy document by `session_id`, then add the updated document
+4. Re-run enrichment (outcome detection, solution extraction, error fingerprinting) on the updated session
+
+For Aider (delimiter-based): only the last session in the file can change (previous sessions are immutable once a new delimiter appears). The scrape state's `last_delimiter_offset` identifies which session is still open.
+
+Tantivy does not support in-place document updates — delete + add is the standard pattern. This is fast because it operates on one document at a time.
 
 ### Global Configuration (`config.toml`)
 
@@ -292,6 +302,7 @@ Every conversation turn from every agent is normalized to this format:
 | `tags` | string[] | Auto-extracted tags (tool names, file types, technologies) |
 | `file_paths` | string[] | File paths referenced in this event (extracted from tool calls) |
 | `error_fingerprints` | string[] | Normalized error patterns found in this event |
+| `model` | string? | LLM model name, if available in source data. `null` when unknown. |
 
 ### Session Manifest Entry
 
@@ -311,7 +322,8 @@ Each session produces a manifest entry used for search results and analytics:
   "tags": ["postgres", "migration", "schema"],
   "files_touched": ["db/migrations/004.sql", "src/models/user.rs"],
   "git_commits": ["a1b2c3d", "e4f5g6h"],
-  "error_fingerprints": ["ConnectionRefusedError:{host}:{port}"]
+  "error_fingerprints": ["ConnectionRefusedError:{host}:{port}"],
+  "model": "claude-sonnet-4-20250514"
 }
 ```
 
@@ -349,7 +361,8 @@ schema_builder.add_u64_field("turn_count", INDEXED | STORED | FAST);
 
 **Index principles:**
 - One Tantivy index for all sessions and code artifacts. Cross-agent search is the primary use case.
-- **One Tantivy document per session.** The `content` field is the full conversation concatenated with role prefixes (`user: ...`, `assistant: ...`, `tool_call: ...`). This gives BM25 correct document-level term frequency and keeps session-level fields (outcome, summary, tags) on a single document. For turn-level retrieval, fetch the flat JSONL file via `--session <id>`.
+- **One Tantivy document per session.** The `content` field is the conversation concatenated with role prefixes (`user: ...`, `assistant: ...`, `tool_call: ...`). This gives BM25 correct document-level term frequency and keeps session-level fields on a single document. For turn-level retrieval, fetch the flat JSONL file via `--session <id>`.
+- **Content truncation policy:** `user` and `assistant` content is indexed in full (most searchable). `tool_call` content is indexed in full (contains file paths, arguments). `tool_result` content is truncated to first 1000 chars per event (captures errors and key output; full content is in the flat file). Total document content is capped at 500KB — if exceeded, the middle is trimmed (keep first 250KB + last 250KB) to preserve both the problem statement and the resolution.
 - **Separate Tantivy documents per code artifact** with `doc_type: "code_artifact"`. Code artifacts share `session_id`, `source_agent`, `project`, and `timestamp` fields with their parent session for correlation.
 - **Default search returns sessions only.** The `doc_type` facet filter is always applied: `agentscribe search "auth"` → `doc_type: "session"`. `agentscribe search --code "auth"` → `doc_type: "code_artifact"`. No mixed results, no cross-type score confusion.
 - Incremental indexing: `IndexWriter::add_document()` on scrape. No full rebuild needed.
@@ -366,7 +379,7 @@ schema_builder.add_u64_field("turn_count", INDEXED | STORED | FAST);
   - Format-specific parsers: JSONL, Markdown, JSON tree (pluggable by `format` field)
   - Session detection strategies: `one-file-per-session`, `timestamp-gap`, `delimiter`
 - Bundle default plugins for Claude Code, Aider, OpenCode, Codex
-- Normalize all formats to canonical event schema via field mapping
+- Normalize all formats to canonical event schema via field mapping. **Event expansion:** Some agents embed tool calls inside assistant messages (e.g., Claude Code's `assistant` events contain `tool_use` content blocks). The format parser — not the TOML config — handles splitting these compound events into atomic canonical events (`assistant` text + `tool_call` + `tool_result`). The TOML maps simple fields; structural transformations are parser code. This keeps the plugin TOML declarative while handling agent-specific structural differences in the parser implementation.
 - Write normalized sessions as JSONL flat files
 - Track scrape state (last-seen offsets/timestamps) for incremental scrapes
 - Extract file paths from events via two methods:
@@ -390,7 +403,7 @@ schema_builder.add_u64_field("turn_count", INDEXED | STORED | FAST);
 ### Phase 3 — Enrichment & Intelligence
 - **Summaries:** Auto-generate from a deterministic template — first user prompt (truncated to 200 chars) + outcome + files touched + solution summary (if available). The `summary` field (one-line, used in search results) is the first sentence of the first user prompt + outcome label. No ML/NLP needed — the first user prompt is always the best single-sentence description of what the session was about. Optional LLM-powered summarization can replace this in a later version.
 - **Outcome detection:** Classify sessions using a signal-scoring system (see Feature Details: Outcome Detection)
-- **Solution extraction:** For successful sessions, extract the fix (last Edit/Write tool calls, last successful commands, final code blocks) into `solution_summary`. Heuristics: scan backward from session end for tool_call events and user confirmation signals ("thanks", "that works", "LGTM")
+- **Solution extraction:** For successful sessions, identify the resolution window and extract the fix into `solution_summary` (see Feature Details: Solution Extraction)
 - **Error fingerprinting:** Regex pipeline extracts error patterns from `tool_result` and `assistant` events. Normalize by stripping variable parts (line numbers, paths, PIDs, timestamps). Store as `error_fingerprint` facet field for cross-session matching
 - **Anti-pattern detection:** For failed/abandoned sessions, tag the approaches that preceded user rejection ("no", "wrong", "revert") as anti-patterns. Store what was tried, why it failed, and what worked instead
 - **Code artifact extraction:** Extract fenced code blocks from conversations. Index each with language, file path, session ID, and whether it was the final applied version. Searchable via `--code` flag
@@ -402,7 +415,12 @@ schema_builder.add_u64_field("turn_count", INDEXED | STORED | FAST);
 - File watcher (inotify/fswatch) for automatic scraping on log changes
 - Scrape debounce (default 5s) to avoid thrashing during active sessions
 - Incremental index updates (no full rebuild on every new session)
-- Optional MCP server mode: expose `search`, `status`, `blame`, and `file` as MCP tools (Unix socket at `~/.agentscribe/mcp.sock`)
+- Optional MCP server mode (Unix socket at `~/.agentscribe/mcp.sock`) exposing four tools:
+  - `agentscribe_search` — parameters: `query` (string), `max_results` (int, default 10), `token_budget` (int, optional), `agent` (string, optional), `project` (string, optional), `since` (string, optional), `outcome` (string, optional), `error` (string, optional), `code` (bool, optional), `lang` (string, optional), `solution_only` (bool, optional), `like` (string, optional). Returns: same JSON as `agentscribe search --json`.
+  - `agentscribe_status` — no parameters. Returns: plugin list, session counts, daemon state, index stats.
+  - `agentscribe_blame` — parameters: `file` (string), `line` (int). Returns: matching session(s) with summaries.
+  - `agentscribe_file` — parameters: `path` (string). Returns: chronological session list for the file.
+  - All tools call the same core library as the CLI — MCP is a thin wrapper, not a separate implementation.
 - Systemd user-level service integration
 
 ### Phase 5 — SQLite Format Support & Extended Agents
@@ -418,6 +436,7 @@ schema_builder.add_u64_field("turn_count", INDEXED | STORED | FAST);
 - **File knowledge map enhancements:** "Known gotchas" section using anti-patterns and solution extractions filtered to the file
 - **Weekly digest:** Automated activity summary with session counts, recurring problems, agent comparison, most-touched files, token usage trends. `agentscribe digest`
 - **Search-on-error shell hook:** `agentscribe shell-hook bash|zsh|fish` generates shell integration that auto-queries the error fingerprint index when any command fails. Background subprocess, never blocks the shell.
+- **Session lifecycle management:** `agentscribe gc [--older-than <duration>] [--dry-run]` deletes normalized session files older than the specified age, removes their Tantivy documents, and runs `index optimize` to compact segments. Respects `max_session_age_days` from config.toml as a default. `--dry-run` shows what would be deleted without acting.
 
 ---
 
@@ -810,7 +829,8 @@ Catalog approaches that failed so agents don't repeat known mistakes.
 Index code blocks as first-class searchable artifacts, separate from session content.
 
 - **Extraction:** Fenced code blocks from assistant responses and tool_call/tool_result events
-- **Metadata:** Language (from fence marker), file path (from surrounding tool_call context), session ID, final-version flag (was it applied successfully?)
+- **Metadata:** Language (from fence marker), file path (from surrounding tool_call context), session ID, final-version flag
+- **`code_is_final` detection:** A code block is marked final when it is the last code block for a given file path within the session AND the session's outcome is `success`. This is a positional + outcome heuristic that works across all agent formats without agent-specific logic. No need to inspect individual tool_result success — the session outcome is the authority.
 - **Ranking:** Final/applied code blocks rank higher than intermediate drafts
 - **Query:** `agentscribe search --code "connection pool" --lang rust --json`
 - **Index:** Stored as documents with `doc_type: "code_artifact"` in the same Tantivy index
@@ -882,6 +902,11 @@ Distill session patterns into rules files for specific agents.
 
 **CLI:** `agentscribe rules <project-path> [--format claude|cursor|aider]`
 
+**Output formats:**
+- `--format claude` → `CLAUDE.md` — Markdown with `# Codebase`, `## Conventions`, `## Known Issues` sections. Rules as bullet points. Compatible with Claude Code's CLAUDE.md spec.
+- `--format cursor` → `.cursorrules` — plain text, one instruction per line. Cursor reads this as system-level context.
+- `--format aider` → `.aider.conf.yml` — YAML with `read:` (key files to always load) and `message:` (convention reminders appended to system prompt).
+
 No LLM required for v1 — frequency-based heuristics over tool invocations and user corrections. LLM refinement can enhance later.
 
 ### Agent Effectiveness Analytics
@@ -893,7 +918,7 @@ Cross-agent performance comparison — data only possible with AgentScribe's uni
 - Average turns and tokens per successful outcome
 - Specialization by problem type
 - Trends over time (model updates, prompt changes)
-- Cost efficiency (outcome quality per dollar of token spend, using `[cost.models]` from config.toml)
+- Cost efficiency (outcome quality per dollar of token spend, using `[cost.models]` from config.toml). **Best-effort:** model name is extracted from source metadata where available (Claude Code `session-meta.json`, Codex `RolloutLine::Meta`, OpenCode session fields). Agents that don't log the model (e.g., Aider) produce `model: null` — their sessions are excluded from cost calculations but included in all other metrics.
 
 **Problem type classification** (rule-based, stored as a tag):
 
