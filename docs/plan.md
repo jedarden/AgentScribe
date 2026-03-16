@@ -76,8 +76,10 @@ agentscribe <command>
 ├── rules       # Auto-generate project rules from session patterns
 ├── analytics   # Agent effectiveness metrics and comparisons
 ├── summarize   # Generate Markdown summaries for sessions
+├── digest      # Automated activity summary over a time period
 ├── status      # Show tracked agents, session counts, daemon state
 ├── daemon      # Long-running background process (start|stop|status|run|logs)
+├── shell-hook  # Generate shell integration for search-on-error (bash|zsh|fish)
 └── completions # Generate shell completions (bash|zsh|fish)
 ```
 
@@ -281,6 +283,7 @@ schema_builder.add_u64_field("turn_count", INDEXED | STORED | FAST);
 - Incremental indexing on scrape (no full rebuild required)
 - Tag extraction: pull tags from content (tool names, file types, technologies) into faceted fields
 - Fuzzy search via Tantivy's Levenshtein term queries
+- "More like this" search via Tantivy's built-in `MoreLikeThisQuery` (`--like <session-id>`)
 - Structured output mode (`--json`) for agent consumption
 - Context budget packing: `--token-budget <n>` optimally fills available context using greedy knapsack (replaces fixed `--max-results` + `--snippet-length`)
 - CLI: `agentscribe search`, `agentscribe index rebuild|stats|optimize`, `agentscribe status`
@@ -295,12 +298,13 @@ schema_builder.add_u64_field("turn_count", INDEXED | STORED | FAST);
 - **Git commit correlation:** For sessions in git repos, run `git log` with the session's time window to find associated commits. Build reverse index: `commit_hash → session_id`
 - CLI: `agentscribe summarize`, `agentscribe blame`, `agentscribe file`
 
-### Phase 4 — Daemon Mode & MCP
+### Phase 4 — Daemon Mode, MCP & Real-Time Alerts
 - `agentscribe daemon start|stop|status|run|logs`
 - File watcher (inotify/fswatch) for automatic scraping on log changes
 - Scrape debounce (default 5s) to avoid thrashing during active sessions
 - Incremental index updates (no full rebuild on every new session)
-- Optional MCP server mode: expose `search`, `status`, `blame`, and `file` as MCP tools (Unix socket at `~/.agentscribe/mcp.sock`)
+- Real-time déjà vu alerts: as new lines appear in active agent logs, extract error fingerprints and check against the index. Write alerts to `~/.agentscribe/alerts/<session-id>.json` when a match is found
+- Optional MCP server mode: expose `search`, `status`, `blame`, `file`, and déjà vu alerts as MCP tools (Unix socket at `~/.agentscribe/mcp.sock`)
 - Systemd user-level service integration
 
 ### Phase 5 — SQLite Format Support & Extended Agents
@@ -309,11 +313,13 @@ schema_builder.add_u64_field("turn_count", INDEXED | STORED | FAST);
 - Community plugin examples directory
 - Git auto-commit integration: optionally commit new sessions to a git repo on scrape
 
-### Phase 6 — Analytics & Knowledge Synthesis
-- **Recurring problem detection:** Group error fingerprints by frequency; flag problems solved 3+ times within a configurable window (default 30 days). `agentscribe recurring` lists them sorted by frequency
-- **Agent effectiveness analytics:** Aggregate session metadata by agent type — success rates, average turns/tokens per resolution, specialization by problem type, trends over time, cost efficiency. `agentscribe analytics`
-- **Auto-generated project rules:** Distill session patterns into CLAUDE.md/.cursorrules files. Extract user corrections, tool preferences, architecture conventions, known pitfalls from the anti-pattern library. `agentscribe rules <project> [--format claude|cursor|aider]`
+### Phase 6 — Analytics, Knowledge Synthesis & Shell Integration
+- **Recurring problem detection:** Group error fingerprints by frequency; flag problems solved 3+ times within a configurable window (default 30 days). `agentscribe recurring`
+- **Agent effectiveness analytics:** Aggregate session metadata by agent type — success rates, turns/tokens per resolution, specialization, trends, cost efficiency. `agentscribe analytics`
+- **Auto-generated project rules:** Distill session patterns into CLAUDE.md/.cursorrules files. Extract user corrections, tool preferences, architecture conventions, known pitfalls. `agentscribe rules`
 - **File knowledge map enhancements:** "Known gotchas" section using anti-patterns and solution extractions filtered to the file
+- **Weekly digest:** Automated activity summary with session counts, recurring problems, agent comparison, most-touched files, token usage trends. `agentscribe digest`
+- **Search-on-error shell hook:** `agentscribe shell-hook bash|zsh|fish` generates shell integration that auto-queries the error fingerprint index when any command fails. Background subprocess, never blocks the shell.
 
 ---
 
@@ -337,6 +343,7 @@ The primary consumer of search is other agents running in the environment. The i
 | Anti-pattern | `--anti-patterns <query>` | Find approaches that failed for a given problem |
 | Code search | `--code <query> [--lang <lang>]` | Search extracted code artifacts by content and language |
 | Solution-only | `--solution-only` | Return only the extracted solution, not the full session |
+| Similar sessions | `--like <session-id>` | Find sessions with similar content (Tantivy MoreLikeThis) |
 | File history | via `agentscribe file <path>` | All sessions that touched a given file |
 
 ### Filtering
@@ -382,6 +389,12 @@ agentscribe blame src/auth.rs:42
 
 # What does every agent know about this file?
 agentscribe file src/auth/middleware.rs
+
+# Find sessions similar to this one
+agentscribe search --like claude-code/83f5a4e7 --json -n 5
+
+# Weekly activity summary
+agentscribe digest --since 7d
 ```
 
 ---
@@ -717,6 +730,71 @@ Cross-agent performance comparison — data only possible with AgentScribe's uni
 - Cost efficiency (outcome quality per dollar of token spend)
 
 **CLI:** `agentscribe analytics [--agent <name>] [--project <path>] [--since <date>]`
+
+### Search-on-Error Shell Hook
+
+A shell integration (`PROMPT_COMMAND` for bash, `precmd` for zsh) that detects when any command exits non-zero, captures stderr, and silently queries AgentScribe's error fingerprint index in the background. If a match is found, it prints a one-line hint:
+
+```
+💡 AgentScribe: this error was solved in session claude-code/83f5 — run `agentscribe search --session claude-code/83f5`
+```
+
+- **Scope:** Not agent-specific — works for the developer running any build, test, or deploy command
+- **Performance:** Background subprocess; never blocks the shell. Results appear on the next prompt if ready, otherwise silently discarded.
+- **Setup:** `eval "$(agentscribe shell-hook bash)"` in `.bashrc` or `eval "$(agentscribe shell-hook zsh)"` in `.zshrc`
+- **Privacy:** Only the last 5 lines of stderr are sent to the local index. Nothing leaves the machine.
+- **CLI:** `agentscribe shell-hook bash|zsh|fish` generates the shell integration snippet
+
+### Real-Time Déjà Vu Alerts
+
+The daemon watches active agent log files as they grow. When it detects an error fingerprint or problem pattern that matches a previously solved session, it writes an alert to `~/.agentscribe/alerts/<active-session-id>.json`.
+
+- **Detection:** As new lines appear in agent log files, the daemon extracts error fingerprints in real-time and checks them against the index
+- **Alert format:** `{fingerprint, matching_sessions: [{id, summary, solution_summary, outcome}], detected_at}`
+- **Delivery:** File-based (agents can check `~/.agentscribe/alerts/`), MCP notification (if enabled), or Unix socket push
+- **Debounce:** One alert per fingerprint per session — don't spam if the same error appears repeatedly
+- **Value:** Saves tokens and time by surfacing solutions mid-session. "You're 12 turns into debugging a Postgres connection timeout — this was solved 3 days ago in 4 turns."
+
+### "More Like This" Search
+
+Given a session ID, find the most similar sessions across all agents and projects using Tantivy's built-in `MoreLikeThis` query.
+
+- **How it works:** Tantivy extracts the most significant terms from the source document (by TF-IDF weight) and uses them to query the index for documents with similar term distributions
+- **Query:** `agentscribe search --like <session-id> [--json] [-n <max>]`
+- **Value:** Discovery of related work you didn't know existed. "I just fixed a connection pooling issue — what other connection pooling sessions exist?" Surfaces cross-project knowledge that keyword search misses because different sessions use different terminology
+- **Implementation:** Near-zero — Tantivy's `MoreLikeThisQuery` is built-in. Wrap it in a CLI flag.
+
+### Weekly Digest
+
+Automated summary of all agent activity over a configurable period.
+
+- **Content:** Sessions completed, problems solved, recurring issues detected, agent comparison, most-touched files, new error patterns discovered, token usage trends
+- **Format:** Markdown, suitable for a developer to skim in 2 minutes
+- **CLI:** `agentscribe digest [--since 7d] [--output <path>]`
+- **Automation:** Can be triggered by cron and written to a file, piped to email, or posted to Slack
+
+```bash
+agentscribe digest --since 7d
+
+# AgentScribe Weekly Digest (Mar 9 – Mar 16)
+#
+# Sessions: 47 completed across 3 projects
+# Agents:   claude-code (31), aider (9), codex (7)
+# Outcome:  38 success, 5 failure, 4 abandoned
+# Tokens:   1.2M input, 890K output (~$14.20 estimated)
+#
+# Recurring problems:
+#   - ENOSPC in Docker builds (5 occurrences) — needs permanent fix
+#   - Postgres cold-start timeout (3 occurrences)
+#
+# Most-touched files:
+#   - src/auth/middleware.rs (7 sessions)
+#   - db/migrations/ (5 sessions)
+#
+# Agent highlight:
+#   - Aider: 100% success rate on refactoring tasks (5/5)
+#   - Codex: 43% abandonment rate — highest of all agents
+```
 
 ---
 
