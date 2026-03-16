@@ -68,9 +68,13 @@ agentscribe <command>
 ├── search      # Query the index — designed to be called by other agents
 ├── status      # Show what agents/sessions are tracked, last scrape time
 ├── daemon      # Long-running background process (start|stop|status|run)
-├── plugins     # Manage scraper plugin definitions (list|validate)
-└── config      # Manage source paths, agent types, data directory location
+├── plugins     # Manage scraper plugin definitions (list|validate|show)
+├── config      # Manage source paths, agent types, data directory location
+├── summarize   # Generate Markdown summaries for sessions (Phase 3)
+└── completions # Generate shell completions (bash|zsh|fish)
 ```
+
+See [docs/cli-reference.md](cli-reference.md) for detailed help on every command, flag, output format, and exit code.
 
 ### Scraper Plugin System
 

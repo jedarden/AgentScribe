@@ -1,0 +1,932 @@
+# AgentScribe CLI Reference
+
+## Global Options
+
+These options apply to all commands:
+
+```
+agentscribe [global-options] <command> [command-options]
+```
+
+| Option | Short | Default | Description |
+|--------|-------|---------|-------------|
+| `--data-dir <path>` | `-d` | `~/.agentscribe` | Root data directory. Overridden by `AGENTSCRIBE_DATA_DIR` env var. |
+| `--config <path>` | `-c` | `~/.agentscribe/config.toml` | Path to global config file. |
+| `--json` | `-j` | off | Output in JSON format. Applies to all commands. When enabled, all output is machine-readable JSON — no human-formatted tables or progress bars. |
+| `--quiet` | `-q` | off | Suppress non-essential output. Errors still print to stderr. |
+| `--verbose` | `-v` | off | Enable debug-level logging to stderr. Repeatable (`-vv` for trace). |
+| `--color <when>` | | `auto` | Color output: `auto`, `always`, `never`. Auto-detects terminal. |
+| `--help` | `-h` | | Show help for the current command. |
+| `--version` | `-V` | | Print version and exit. |
+
+---
+
+## `agentscribe scrape`
+
+Discover agent log files, parse them, normalize to canonical format, and write to the sessions directory. Updates the Tantivy index incrementally.
+
+### Usage
+
+```
+agentscribe scrape [options]
+```
+
+### Options
+
+| Option | Short | Default | Description |
+|--------|-------|---------|-------------|
+| `--plugin <name>` | `-p` | all plugins | Scrape only the named plugin. Can be repeated (`-p claude-code -p aider`). |
+| `--project <path>` | | all projects | Scrape only sessions from the given project directory. Matches against the session's `project` field. |
+| `--file <path>` | | | Scrape a single source file. Useful for testing a plugin against one log file. Requires `--plugin`. |
+| `--dry-run` | `-n` | off | Show what would be scraped without writing any files or updating the index. |
+| `--output-events` | | off | With `--dry-run`, print each parsed event as a JSON object to stdout. Use to verify field mapping. |
+| `--force` | `-f` | off | Ignore scrape state (last-seen offsets) and re-scrape everything. Does not delete existing sessions — deduplicates by session ID. |
+| `--no-index` | | off | Write session files but skip Tantivy index update. Useful for bulk imports where you'll `index rebuild` afterward. |
+| `--since <datetime>` | | | Only scrape sessions with activity after this timestamp. ISO 8601 or relative (`24h`, `7d`, `1w`). |
+
+### Examples
+
+```bash
+# Scrape all configured plugins
+agentscribe scrape
+
+# Scrape only Claude Code sessions
+agentscribe scrape --plugin claude-code
+
+# Dry-run with event output to verify a new plugin
+agentscribe scrape --plugin pilot --dry-run --output-events
+
+# Scrape a single file for debugging
+agentscribe scrape --plugin aider --file ~/myproject/.aider.chat.history.md
+
+# Re-scrape everything from scratch
+agentscribe scrape --force
+
+# Bulk import without indexing (rebuild index after)
+agentscribe scrape --force --no-index
+agentscribe index rebuild
+```
+
+### Output
+
+Human-readable (default):
+```
+Scraping claude-code...
+  Found 12 new sessions (skipped 89 unchanged)
+  Wrote 12 session files to ~/.agentscribe/sessions/claude-code/
+Scraping aider...
+  Found 3 new sessions (skipped 5 unchanged)
+  Wrote 3 session files to ~/.agentscribe/sessions/aider/
+Index updated: 15 documents added (1,262 total)
+```
+
+JSON (`--json`):
+```json
+{
+  "plugins": [
+    {
+      "name": "claude-code",
+      "new_sessions": 12,
+      "skipped_sessions": 89,
+      "errors": []
+    },
+    {
+      "name": "aider",
+      "new_sessions": 3,
+      "skipped_sessions": 5,
+      "errors": []
+    }
+  ],
+  "index": {
+    "documents_added": 15,
+    "total_documents": 1262
+  }
+}
+```
+
+### Exit Codes
+
+| Code | Meaning |
+|------|---------|
+| 0 | Success — all plugins scraped without errors |
+| 1 | Partial failure — some plugins had errors, others succeeded. Check `errors` in JSON output. |
+| 2 | Total failure — no sessions scraped. Likely a config or permissions issue. |
+
+---
+
+## `agentscribe search`
+
+Query the Tantivy index for matching sessions. The primary interface for agents seeking past solutions.
+
+### Usage
+
+```
+agentscribe search <query> [options]
+```
+
+### Arguments
+
+| Argument | Required | Description |
+|----------|----------|-------------|
+| `<query>` | yes | Search query string. Supports Tantivy query syntax: `+required -excluded "exact phrase"`, field-scoped queries (`content:migration`), boolean operators (`AND`, `OR`, `NOT`), fuzzy terms (`migrat~1`), wildcard (`migrat*`). |
+
+### Options
+
+| Option | Short | Default | Description |
+|--------|-------|---------|-------------|
+| `--max-results <n>` | `-n` | `10` | Maximum number of sessions to return. |
+| `--snippet-length <n>` | | `200` | Maximum character length of content snippets per result. Set to `0` to omit snippets. |
+| `--agent <name>` | `-a` | all | Filter to sessions from this agent type. Can be repeated. |
+| `--project <path>` | | all | Filter to sessions from this project directory. |
+| `--since <datetime>` | | | Only match sessions after this timestamp. ISO 8601 or relative (`24h`, `7d`, `1w`). |
+| `--before <datetime>` | | | Only match sessions before this timestamp. |
+| `--tag <tag>` | `-t` | | Filter by tag. Can be repeated (AND logic). |
+| `--outcome <outcome>` | | | Filter by session outcome: `success`, `failure`, `abandoned`, `unknown`. |
+| `--fields <fields>` | | all | Comma-separated list of fields to include in output: `session_id`, `summary`, `snippet`, `agent`, `project`, `tags`, `timestamp`, `score`, `turns`, `outcome`. |
+| `--sort <field>` | `-s` | `relevance` | Sort order: `relevance` (BM25 score), `newest`, `oldest`, `turns`. |
+| `--offset <n>` | | `0` | Skip first N results. For pagination. |
+| `--fuzzy` | | off | Enable fuzzy matching on all query terms (Levenshtein distance 1). Useful when agents don't know exact terminology. |
+| `--session <id>` | | | Retrieve a specific session by ID. Ignores query and filters. Returns the full session content. |
+
+### Examples
+
+```bash
+# Basic search
+agentscribe search "postgres migration"
+
+# Agent-oriented: JSON output, limited results, short snippets
+agentscribe search "database connection timeout" --json -n 3 --snippet-length 150
+
+# Scoped to a specific agent and project
+agentscribe search "deploy" --agent claude-code --project /home/coding/myapp
+
+# Recent sessions only
+agentscribe search "build failure" --since 7d
+
+# Fuzzy search for misspellings or approximate terms
+agentscribe search "kuberntes" --fuzzy
+
+# Exact phrase search
+agentscribe search '"connection pool exhausted"'
+
+# Advanced Tantivy query syntax
+agentscribe search '+content:migration +agent:claude-code -content:rollback'
+
+# Retrieve a specific session's full content
+agentscribe search --session claude-code/83f5a4e7
+
+# Only return session IDs and summaries
+agentscribe search "auth" --fields session_id,summary --json
+```
+
+### Output
+
+Human-readable (default):
+```
+3 results for "postgres migration" (searched 1,262 sessions in 4ms)
+
+[1] claude-code/83f5a4e7  (score: 8.42)
+    Project:  /home/coding/myapp
+    Date:     2026-03-14 10:30
+    Turns:    42
+    Outcome:  success
+    Summary:  Migrated Postgres schema from v3 to v4, added rollback script
+    Snippet:  ...ran ALTER TABLE to add the new columns, then backfilled
+              existing rows. The migration took 3 minutes on a 2M row table...
+
+[2] aider/session-2026-03-10  (score: 6.18)
+    Project:  /home/coding/api-server
+    Date:     2026-03-10 14:15
+    Turns:    18
+    Outcome:  success
+    Summary:  Fixed Postgres connection pooling, added retry logic
+    Snippet:  ...the connection pool was exhausting under load because
+              max_connections was set to 10. Bumped to 50 and added...
+
+[3] codex/abc-thread-123  (score: 4.01)
+    Project:  /home/coding/data-pipeline
+    Date:     2026-03-08 09:00
+    Turns:    7
+    Outcome:  failure
+    Summary:  Attempted Postgres 14->16 upgrade, hit extension incompatibility
+    Snippet:  ...pg_trgm extension not available in pg16 container image.
+              Rolled back to pg14 and opened an issue...
+```
+
+JSON (`--json`):
+```json
+{
+  "query": "postgres migration",
+  "total_matches": 3,
+  "search_time_ms": 4,
+  "sessions_searched": 1262,
+  "results": [
+    {
+      "session_id": "claude-code/83f5a4e7",
+      "source_agent": "claude-code",
+      "project": "/home/coding/myapp",
+      "timestamp": "2026-03-14T10:30:00Z",
+      "turns": 42,
+      "outcome": "success",
+      "score": 8.42,
+      "summary": "Migrated Postgres schema from v3 to v4, added rollback script",
+      "snippet": "...ran ALTER TABLE to add the new columns, then backfilled existing rows. The migration took 3 minutes on a 2M row table...",
+      "tags": ["postgres", "migration", "schema", "alter-table"]
+    }
+  ]
+}
+```
+
+### Full Session Retrieval
+
+When `--session <id>` is used, returns the complete normalized conversation:
+
+```bash
+agentscribe search --session claude-code/83f5a4e7 --json
+```
+
+```json
+{
+  "session_id": "claude-code/83f5a4e7",
+  "source_agent": "claude-code",
+  "project": "/home/coding/myapp",
+  "started": "2026-03-14T10:30:00Z",
+  "ended": "2026-03-14T11:15:00Z",
+  "turns": 42,
+  "outcome": "success",
+  "summary": "Migrated Postgres schema from v3 to v4, added rollback script",
+  "events": [
+    {
+      "ts": "2026-03-14T10:30:00Z",
+      "role": "user",
+      "content": "I need to migrate the Postgres schema from v3 to v4..."
+    },
+    {
+      "ts": "2026-03-14T10:30:15Z",
+      "role": "assistant",
+      "content": "I'll create a migration script that..."
+    }
+  ]
+}
+```
+
+### Exit Codes
+
+| Code | Meaning |
+|------|---------|
+| 0 | Results found |
+| 0 | No results (empty results array, not an error) |
+| 1 | Query parse error or invalid filter |
+| 2 | Index not found — run `agentscribe scrape` first |
+
+---
+
+## `agentscribe index`
+
+Manage the Tantivy search index.
+
+### Usage
+
+```
+agentscribe index <subcommand> [options]
+```
+
+### Subcommands
+
+#### `agentscribe index rebuild`
+
+Drop the existing Tantivy index and rebuild it from all normalized session files. Use after a bulk import, after changing the schema, or to recover from index corruption.
+
+| Option | Short | Default | Description |
+|--------|-------|---------|-------------|
+| `--plugin <name>` | `-p` | all | Only re-index sessions from this plugin. |
+| `--heap-size <mb>` | | `50` | Tantivy writer heap size in MB. Higher = faster indexing, more RAM. |
+
+```bash
+# Full rebuild
+agentscribe index rebuild
+
+# Rebuild only Claude Code sessions
+agentscribe index rebuild --plugin claude-code
+
+# Fast rebuild with more memory
+agentscribe index rebuild --heap-size 100
+```
+
+Output:
+```
+Dropping existing index...
+Rebuilding from 1,262 session files...
+  [========================================] 1262/1262 (47/s)
+Index rebuilt in 26.8s
+```
+
+#### `agentscribe index stats`
+
+Show index statistics.
+
+```bash
+agentscribe index stats
+```
+
+Output:
+```
+Tantivy index at ~/.agentscribe/index/tantivy/
+  Documents:    1,262
+  Segments:     4
+  Size on disk: 38 MB
+  Last updated: 2026-03-16 12:30:00
+  Fields:       content, summary, session_id, source_agent, project, tags, timestamp, turn_count, outcome
+```
+
+JSON (`--json`):
+```json
+{
+  "path": "~/.agentscribe/index/tantivy/",
+  "documents": 1262,
+  "segments": 4,
+  "size_bytes": 39845888,
+  "last_updated": "2026-03-16T12:30:00Z",
+  "fields": ["content", "summary", "session_id", "source_agent", "project", "tags", "timestamp", "turn_count", "outcome"]
+}
+```
+
+#### `agentscribe index optimize`
+
+Force-merge Tantivy segments for better query performance. Normally unnecessary — Tantivy auto-merges in the background.
+
+```bash
+agentscribe index optimize
+```
+
+Output:
+```
+Merging 4 segments into 1... done (3.2s)
+Index size: 38 MB -> 35 MB
+```
+
+### Exit Codes
+
+| Code | Meaning |
+|------|---------|
+| 0 | Success |
+| 1 | Index error (corruption, missing session files) |
+| 2 | No session files found — run `agentscribe scrape` first |
+
+---
+
+## `agentscribe status`
+
+Show a summary of what AgentScribe knows: tracked agents, session counts, last scrape time, daemon state, and disk usage.
+
+### Usage
+
+```
+agentscribe status [options]
+```
+
+### Options
+
+| Option | Short | Default | Description |
+|--------|-------|---------|-------------|
+| `--plugin <name>` | `-p` | all | Show status for a specific plugin only. |
+
+### Examples
+
+```bash
+agentscribe status
+```
+
+Output:
+```
+AgentScribe v0.1.0
+Data dir: ~/.agentscribe (142 MB)
+
+Daemon: running (PID 12345, uptime 3d 14h, RSS 12 MB)
+
+Plugins:
+  claude-code    89 sessions   last scraped 2m ago     ~/.claude/projects/*/*.jsonl
+  aider           8 sessions   last scraped 2m ago     ~/projects/*/.aider.chat.history.md
+  codex          14 sessions   last scraped 2m ago     ~/.codex/sessions/**/*.jsonl
+  opencode        0 sessions   never scraped           ~/.local/share/opencode/storage/
+
+Index: 111 documents, 4 segments, 38 MB on disk
+
+Scrape state: incremental (tracking offsets for 6 source paths)
+```
+
+JSON (`--json`):
+```json
+{
+  "version": "0.1.0",
+  "data_dir": "~/.agentscribe",
+  "data_dir_bytes": 148897792,
+  "daemon": {
+    "running": true,
+    "pid": 12345,
+    "uptime_seconds": 309600,
+    "rss_bytes": 12582912
+  },
+  "plugins": [
+    {
+      "name": "claude-code",
+      "sessions": 89,
+      "last_scraped": "2026-03-16T12:28:00Z",
+      "source_paths": ["~/.claude/projects/*/*.jsonl"]
+    }
+  ],
+  "index": {
+    "documents": 111,
+    "segments": 4,
+    "size_bytes": 39845888
+  }
+}
+```
+
+### Exit Codes
+
+| Code | Meaning |
+|------|---------|
+| 0 | Success |
+| 1 | Data dir not found or not initialized |
+
+---
+
+## `agentscribe daemon`
+
+Manage the background daemon that watches for new log data and scrapes automatically.
+
+### Usage
+
+```
+agentscribe daemon <subcommand> [options]
+```
+
+### Subcommands
+
+#### `agentscribe daemon start`
+
+Start the daemon in the background. Writes PID to `~/.agentscribe/agentscribe.pid`. Logs to `~/.agentscribe/daemon.log`.
+
+| Option | Short | Default | Description |
+|--------|-------|---------|-------------|
+| `--mcp` | | off | Enable MCP server on the daemon. Listens on a Unix socket at `~/.agentscribe/mcp.sock`. |
+| `--log-level <level>` | | `info` | Daemon log level: `error`, `warn`, `info`, `debug`, `trace`. |
+| `--scrape-debounce <duration>` | | `5s` | Wait this long after a file change before scraping. Prevents thrashing during active agent sessions. |
+
+```bash
+# Start with defaults
+agentscribe daemon start
+
+# Start with MCP server enabled
+agentscribe daemon start --mcp
+
+# Start with debug logging
+agentscribe daemon start --log-level debug
+```
+
+Output:
+```
+AgentScribe daemon started (PID 12345)
+  Watching: 4 plugin source paths
+  MCP: disabled
+  Log: ~/.agentscribe/daemon.log
+```
+
+#### `agentscribe daemon stop`
+
+Stop the running daemon. Sends SIGTERM and waits for clean shutdown.
+
+| Option | Short | Default | Description |
+|--------|-------|---------|-------------|
+| `--force` | | off | Send SIGKILL if the daemon doesn't stop within 5 seconds. |
+
+```bash
+agentscribe daemon stop
+```
+
+Output:
+```
+Stopping AgentScribe daemon (PID 12345)... stopped.
+```
+
+#### `agentscribe daemon status`
+
+Show daemon state, resource usage, and activity.
+
+```bash
+agentscribe daemon status
+```
+
+Output:
+```
+AgentScribe daemon (PID 12345)
+  Status:     running
+  Uptime:     3d 14h
+  RSS:        12 MB
+  Peak RSS:   47 MB
+  MCP:        disabled
+  Log:        ~/.agentscribe/daemon.log
+
+  Watches:    4 paths
+  Last scrape: 2m ago (3 new sessions from claude-code)
+  Total scrapes: 847 since start
+  Errors:     0
+```
+
+JSON (`--json`):
+```json
+{
+  "pid": 12345,
+  "status": "running",
+  "uptime_seconds": 309600,
+  "rss_bytes": 12582912,
+  "peak_rss_bytes": 49283072,
+  "mcp_enabled": false,
+  "log_path": "~/.agentscribe/daemon.log",
+  "watches": 4,
+  "last_scrape": "2026-03-16T12:28:00Z",
+  "last_scrape_new_sessions": 3,
+  "total_scrapes": 847,
+  "errors": 0
+}
+```
+
+#### `agentscribe daemon run`
+
+Run the daemon in the foreground. Use this when managing the process via systemd, supervisord, or similar. Does not daemonize, does not write a PID file. Logs to stderr.
+
+| Option | Short | Default | Description |
+|--------|-------|---------|-------------|
+| `--mcp` | | off | Enable MCP server. |
+| `--log-level <level>` | | `info` | Log level. |
+| `--scrape-debounce <duration>` | | `5s` | Debounce period. |
+
+```bash
+# Foreground (for systemd)
+agentscribe daemon run
+
+# With MCP and debug logging
+agentscribe daemon run --mcp --log-level debug
+```
+
+#### `agentscribe daemon logs`
+
+Tail the daemon log file. Convenience wrapper for reading `~/.agentscribe/daemon.log`.
+
+| Option | Short | Default | Description |
+|--------|-------|---------|-------------|
+| `--follow` | `-f` | off | Follow new output (like `tail -f`). |
+| `--lines <n>` | `-n` | `50` | Number of lines to show. |
+| `--level <level>` | | all | Filter to this log level or above. |
+
+```bash
+# Last 50 lines
+agentscribe daemon logs
+
+# Follow in real time
+agentscribe daemon logs -f
+
+# Only errors
+agentscribe daemon logs --level error -n 100
+```
+
+### Exit Codes
+
+| Code | Meaning |
+|------|---------|
+| 0 | Success |
+| 1 | Daemon not running (for `stop`, `status`) or failed to start |
+| 2 | PID file exists but process is dead (stale PID) — cleaned up automatically |
+
+---
+
+## `agentscribe plugins`
+
+Manage scraper plugin definitions.
+
+### Usage
+
+```
+agentscribe plugins <subcommand> [options]
+```
+
+### Subcommands
+
+#### `agentscribe plugins list`
+
+Show all registered plugins, their source paths, and whether their paths match any files.
+
+```bash
+agentscribe plugins list
+```
+
+Output:
+```
+Plugins (4 registered):
+
+  claude-code  v1.0  jsonl       ~/.claude/projects/*/*.jsonl           → 101 files matched
+  aider        v1.0  markdown    ~/projects/*/.aider.chat.history.md    → 3 files matched
+  codex        v1.0  jsonl       ~/.codex/sessions/**/*.jsonl           → 0 files matched
+  opencode     v1.0  sqlite      ~/.local/share/opencode/storage/**     → 0 files matched
+
+Plugin dir: ~/.agentscribe/plugins/
+```
+
+JSON (`--json`):
+```json
+{
+  "plugin_dir": "~/.agentscribe/plugins/",
+  "plugins": [
+    {
+      "name": "claude-code",
+      "version": "1.0",
+      "format": "jsonl",
+      "source_paths": ["~/.claude/projects/*/*.jsonl"],
+      "matched_files": 101,
+      "config_path": "~/.agentscribe/plugins/claude-code.toml"
+    }
+  ]
+}
+```
+
+#### `agentscribe plugins validate <path>`
+
+Validate a plugin TOML file for correctness. Checks required fields, format compatibility, glob pattern resolution, field mapping syntax, and role map target values.
+
+| Argument | Required | Description |
+|----------|----------|-------------|
+| `<path>` | yes | Path to the plugin TOML file to validate. |
+
+```bash
+agentscribe plugins validate ~/.agentscribe/plugins/pilot.toml
+```
+
+Output (success):
+```
+Validating pilot.toml...
+  [ok] Required fields present
+  [ok] Format "jsonl" is supported
+  [ok] Source paths resolve to 14 files
+  [ok] Session detection method "one-file-per-session" is valid
+  [ok] Field mappings use valid dot-notation
+  [ok] Role map targets are valid canonical roles
+  [ok] No conflicting include/exclude type filters
+
+Valid. Ready to scrape.
+```
+
+Output (errors):
+```
+Validating broken.toml...
+  [ok] Required fields present
+  [ok] Format "jsonl" is supported
+  [WARN] Source paths resolve to 0 files — check that the paths exist
+  [ERR] Field mapping "role" references "msg.speaker" but no "msg" object found in sample data
+  [ERR] Role map target "bot" is not a valid canonical role (expected: user, assistant, system, tool_call, tool_result)
+
+2 errors, 1 warning. Fix errors before scraping.
+```
+
+#### `agentscribe plugins show <name>`
+
+Print the full plugin configuration.
+
+```bash
+agentscribe plugins show claude-code
+```
+
+Output:
+```
+Plugin: claude-code (v1.0)
+Config: ~/.agentscribe/plugins/claude-code.toml
+
+[source]
+  paths   = ["~/.claude/projects/*/*.jsonl"]
+  exclude = ["*/subagents/*"]
+  format  = jsonl
+
+[source.session_detection]
+  method          = one-file-per-session
+  session_id_from = filename
+
+[parser]
+  timestamp = timestamp
+  role      = message.role
+  content   = message.content
+  type      = type
+
+[parser.static]
+  source_agent = claude-code
+
+[metadata]
+  session_meta   = ~/.claude/usage-data/session-meta/{session_id}.json
+  session_facets = ~/.claude/usage-data/facets/{session_id}.json
+```
+
+### Exit Codes
+
+| Code | Meaning |
+|------|---------|
+| 0 | Success (or validation passed) |
+| 1 | Validation failed with errors |
+| 2 | Plugin file not found |
+
+---
+
+## `agentscribe config`
+
+View and modify global configuration.
+
+### Usage
+
+```
+agentscribe config <subcommand> [options]
+```
+
+### Subcommands
+
+#### `agentscribe config show`
+
+Print the current global configuration.
+
+```bash
+agentscribe config show
+```
+
+Output:
+```
+Config: ~/.agentscribe/config.toml
+
+[general]
+  data_dir = ~/.agentscribe
+  log_level = info
+
+[scrape]
+  debounce = 5s
+  default_heap_size_mb = 50
+
+[index]
+  tantivy_heap_size_mb = 50
+
+[daemon]
+  mcp = false
+  mcp_socket = ~/.agentscribe/mcp.sock
+
+[sqlite]
+  cache_size_pages = 2000
+```
+
+#### `agentscribe config set <key> <value>`
+
+Set a configuration value.
+
+| Argument | Required | Description |
+|----------|----------|-------------|
+| `<key>` | yes | Dot-notation config key (e.g., `daemon.mcp`, `index.tantivy_heap_size_mb`). |
+| `<value>` | yes | Value to set. Type is inferred (boolean, integer, string). |
+
+```bash
+# Enable MCP on daemon
+agentscribe config set daemon.mcp true
+
+# Increase Tantivy writer heap
+agentscribe config set index.tantivy_heap_size_mb 100
+
+# Change SQLite page cache
+agentscribe config set sqlite.cache_size_pages 4000
+```
+
+Output:
+```
+Set daemon.mcp = true in ~/.agentscribe/config.toml
+```
+
+#### `agentscribe config get <key>`
+
+Get a single configuration value.
+
+```bash
+agentscribe config get daemon.mcp
+```
+
+Output:
+```
+true
+```
+
+#### `agentscribe config init`
+
+Create the data directory and default config file. Run once after installing AgentScribe. Copies bundled plugins to the plugins directory.
+
+```bash
+agentscribe config init
+```
+
+Output:
+```
+Created ~/.agentscribe/
+Created ~/.agentscribe/config.toml (default config)
+Created ~/.agentscribe/plugins/ (4 bundled plugins)
+  claude-code.toml
+  aider.toml
+  opencode.toml
+  codex.toml
+Created ~/.agentscribe/sessions/
+Created ~/.agentscribe/index/
+Created ~/.agentscribe/state/
+
+AgentScribe initialized. Run `agentscribe scrape` to start.
+```
+
+| Option | Short | Default | Description |
+|--------|-------|---------|-------------|
+| `--force` | | off | Overwrite existing config and plugins. Does not delete session data or the index. |
+
+### Exit Codes
+
+| Code | Meaning |
+|------|---------|
+| 0 | Success |
+| 1 | Invalid key or value |
+| 2 | Config file not found (for `show`, `get`, `set` — run `config init` first) |
+
+---
+
+## `agentscribe summarize`
+
+Generate or regenerate a Markdown summary for a session. (Phase 3 feature.)
+
+### Usage
+
+```
+agentscribe summarize <session-id> [options]
+```
+
+### Arguments
+
+| Argument | Required | Description |
+|----------|----------|-------------|
+| `<session-id>` | yes | Session ID in `<agent>/<id>` format. |
+
+### Options
+
+| Option | Short | Default | Description |
+|--------|-------|---------|-------------|
+| `--force` | `-f` | off | Regenerate even if a summary already exists. |
+| `--method <method>` | | `extractive` | Summarization method: `extractive` (keyword/heuristic, no external deps) or `llm` (requires configured LLM endpoint). |
+| `--stdout` | | off | Print summary to stdout instead of writing to the session's `.md` file. |
+
+### Examples
+
+```bash
+# Summarize a session
+agentscribe summarize claude-code/83f5a4e7
+
+# Regenerate with LLM-powered summarization
+agentscribe summarize claude-code/83f5a4e7 --force --method llm
+
+# Preview without writing
+agentscribe summarize claude-code/83f5a4e7 --stdout
+```
+
+Output:
+```
+Summary written to ~/.agentscribe/sessions/claude-code/83f5a4e7.md
+```
+
+### Exit Codes
+
+| Code | Meaning |
+|------|---------|
+| 0 | Success |
+| 1 | Session not found |
+| 2 | Summary already exists (use `--force` to overwrite) |
+
+---
+
+## Environment Variables
+
+| Variable | Description |
+|----------|-------------|
+| `AGENTSCRIBE_DATA_DIR` | Override the data directory (default: `~/.agentscribe`). Takes precedence over `--data-dir` flag. |
+| `AGENTSCRIBE_LOG` | Set log level for CLI commands: `error`, `warn`, `info`, `debug`, `trace`. Equivalent to `-v` / `-vv`. |
+| `AGENTSCRIBE_NO_COLOR` | Disable color output. Equivalent to `--color never`. |
+| `AGENTSCRIBE_CONFIG` | Override config file path. |
+
+---
+
+## Shell Completions
+
+Generate shell completions for your shell (via `clap`'s built-in support):
+
+```bash
+# Bash
+agentscribe completions bash > ~/.local/share/bash-completion/completions/agentscribe
+
+# Zsh
+agentscribe completions zsh > ~/.zfunc/_agentscribe
+
+# Fish
+agentscribe completions fish > ~/.config/fish/completions/agentscribe.fish
+```
