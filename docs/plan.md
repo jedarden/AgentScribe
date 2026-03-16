@@ -276,6 +276,58 @@ agentscribe search "postgres migration error" --json --max-results 3
 - **No external dependencies** — core scraping, indexing, and search work offline with no APIs
 - **Non-invasive** — read-only access to agent logs; never modifies source files
 - **Pluggable** — new agent types are added via TOML plugin definitions, not code changes
+- **Low footprint** — daemon idles under 20MB RSS; scraping stays under 50MB regardless of source file size
+
+---
+
+## Design: Memory Budget
+
+AgentScribe runs alongside the agents it monitors. RAM is shared with Claude Code, IDEs, build tools, and the agents themselves. The memory budget is designed to be invisible.
+
+### Target: <20MB idle, <50MB active, <100MB peak
+
+| Component | Expected RSS | Notes |
+|-----------|-------------|-------|
+| **Daemon idle** (watcher + tokio) | 5-10MB | `notify` inotify watcher + minimal tokio runtime. No work happening. |
+| **JSONL streaming parse** | 1-5MB | `serde_json::StreamDeserializer` processes one line at a time. Working set is one JSON object regardless of file size. A 50MB JSONL file uses the same RAM as a 500KB one. |
+| **Tantivy index (search)** | 10-30MB | Memory-mapped segments. Virtual memory is large (Tantivy maps entire segments), but RSS is only pages actively accessed. For AgentScribe's index size (thousands of sessions, not millions of documents), resident pages stay small. After a search completes, the OS pages out unused mappings. |
+| **Tantivy indexing (write)** | 20-50MB | Controlled via `IndexWriter::new(heap_size)`. Set to 20-50MB. Tantivy buffers documents in memory until this budget is hit, then flushes a segment to disk. |
+| **SQLite reads** (Cursor/Windsurf) | 5-15MB | `rusqlite` with read-only mode. SQLite's own page cache is configurable via `PRAGMA cache_size`. Set conservatively (2000 pages = ~8MB). For Cursor's 25GB+ databases, only the queried pages are loaded — not the whole file. |
+| **Markdown parsing** (Aider) | 1-2MB | `pulldown-cmark` is a streaming pull parser. No intermediate AST allocation. |
+| **Plugin configs** | <1MB | TOML files are tiny. |
+
+### Total budget
+
+| Mode | Max RSS | When |
+|------|---------|------|
+| CLI one-shot search | 15-35MB | Loads Tantivy index, runs query, exits. Tantivy mmaps segments but only touches pages needed for the query. |
+| CLI one-shot scrape | 25-55MB | Streams source files + writes to Tantivy. Dominant cost is `IndexWriter` heap budget. |
+| Daemon idle | 8-15MB | Watcher loop, no active work. Tantivy index not loaded until a query or scrape triggers it. |
+| Daemon active scrape | 30-60MB | Same as CLI scrape, held briefly during file processing, then drops back to idle. |
+| Daemon peak (scrape + concurrent search) | 50-90MB | Both writer and reader active simultaneously. Rare. |
+
+### How to stay within budget
+
+1. **Stream, never slurp.** Never read an entire JSONL/JSON file into memory. Use `BufReader` + line-by-line deserialization. This is the single most important rule.
+2. **Cap Tantivy's writer heap.** `IndexWriter::new(arena_size)` — set to 20-50MB. When the buffer fills, Tantivy flushes to disk automatically.
+3. **Cap SQLite page cache.** `PRAGMA cache_size = -8000` (8MB). Prevents Cursor's 25GB database from ballooning resident memory.
+4. **Drop the index between operations in daemon mode.** Don't hold the Tantivy `IndexReader` open when idle. Reopen on query, let the OS reclaim mapped pages when done.
+5. **Process one source file at a time.** Don't parallelize scraping across multiple files — the I/O is already the bottleneck, and parallel parsing multiplies working set.
+6. **Use `jemalloc` or the system allocator with care.** Rust's default allocator returns memory to the OS. Avoid `jemalloc` unless profiling shows fragmentation issues, since jemalloc retains freed pages.
+
+### Monitoring
+
+The daemon should expose its own memory stats via `agentscribe daemon status`:
+
+```
+AgentScribe daemon (PID 12345)
+  Uptime:     3d 14h
+  RSS:        12MB (idle)
+  Peak RSS:   47MB
+  Sessions:   1,247 indexed
+  Index size: 38MB on disk
+  Last scrape: 2m ago (3 new sessions)
+```
 
 ---
 
