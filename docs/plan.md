@@ -155,9 +155,7 @@ CLI:
 │   ├── <agent>/<session-id>.jsonl # Normalized conversation logs
 │   └── <agent>/<session-id>.md    # Markdown summary (human/agent readable)
 ├── index/
-│   ├── keywords.jsonl             # Inverted keyword index
-│   ├── tags.jsonl                 # Tag index (agent, project, date, outcome)
-│   └── sessions.jsonl             # Session manifest (id, agent, project, date, summary)
+│   └── tantivy/                   # Tantivy search index (rebuilt from sessions if needed)
 └── state/
     └── scrape-state.json          # Last-seen offsets/timestamps per source
 ```
@@ -215,12 +213,13 @@ Every conversation turn from every agent is normalized to this format:
 - CLI: `agentscribe scrape [--plugin <name>] [--project <path>]`
 - CLI: `agentscribe plugins list|validate`
 
-### Phase 2 — Indexing & Search
-- Build inverted keyword index from normalized sessions
-- Build session manifest with metadata (agent, project, dates, turn count)
-- Tag extraction: pull tags from content (tool names, file types, error patterns)
-- CLI: `agentscribe index rebuild`
+### Phase 2 — Tantivy Indexing & Search
+- Build Tantivy index from normalized sessions (BM25 scoring, faceted fields)
+- Incremental indexing: add new sessions on scrape, no full rebuild required
+- Tag extraction: pull tags from content (tool names, file types, error patterns) into faceted fields
+- CLI: `agentscribe index rebuild` (full rebuild from flat files)
 - CLI: `agentscribe search <query> [--agent <type>] [--project <path>] [--since <date>]`
+- Fuzzy search via Tantivy's Levenshtein term queries
 - Output: ranked results with session ID, summary, and matching snippets
 - Designed for agent consumption: structured output mode (`--json`) for programmatic use
 
@@ -350,8 +349,183 @@ systemctl --user enable --now agentscribe
 - It does not open network ports (unless MCP is enabled, and even then only on localhost/unix socket)
 - It does not modify agent log files — read-only always
 
-## Open Questions
+## Decision: Language — Rust
 
-- **Language choice:** Go for single-binary distribution? Rust? Python for faster iteration?
-- **Embedding search:** worth including local embedding-based semantic search in core, or keep it as a plugin?
-- **Session boundary detection:** Aider has no session markers — how to split a continuous history file into logical sessions?
+Rust, primarily because of **Tantivy**.
+
+AgentScribe's core value is indexing and searching conversation logs. The embedded full-text search engine is the most performance-critical component. Tantivy is the best embeddable full-text search library available in any language — it matches or exceeds Lucene's feature set with 3-5x faster indexing than Go's Bleve, sub-millisecond query latency, and compact columnar index storage.
+
+### Key Rust crates for the stack
+
+| Component | Crate | Purpose |
+|-----------|-------|---------|
+| Full-text search | `tantivy` | Inverted index, BM25 scoring, faceted search, fuzzy/phrase queries |
+| JSON parsing | `serde_json` / `simd-json` | Streaming JSONL parsing, zero-copy deserialization |
+| File watching | `notify` | Cross-platform inotify/kqueue/FSEvents wrapper |
+| Markdown parsing | `pulldown-cmark` | Streaming CommonMark parser for Aider logs |
+| SQLite | `rusqlite` (bundled) | Read Cursor/Windsurf state.vscdb files |
+| TOML config | `toml` / `serde` | Plugin definition parsing |
+| CLI framework | `clap` | Command/subcommand parsing, shell completions |
+| Async runtime | `tokio` | Daemon mode, file watcher event loop |
+| Glob matching | `globset` | Source path expansion in plugin definitions |
+
+### Why not Go
+
+Go's `bleve` search library is 3-5x slower for indexing and 1.5-3x slower for queries. Go's GC adds unpredictable latency — a problem when agents invoke `agentscribe search` and expect fast, consistent responses. Go's JSON parsing allocates on every string field; Rust's `serde` borrows from the input buffer. For streaming 50MB JSONL files, Rust uses 1-5MB working memory vs Go's 10-30MB.
+
+Go's only advantage is easier cross-compilation, which Rust mitigates via `cross` (Docker-based cross-compilation) and `rusqlite`'s bundled SQLite feature.
+
+---
+
+## Decision: Search Engine Architecture — Tantivy-based (Meilisearch-inspired)
+
+Meilisearch's core engine (`milli`) demonstrates that sub-50ms full-text search is achievable through a specific combination of data structures. AgentScribe adopts the same approach at a smaller scale, using Tantivy as the foundation.
+
+### What to adopt from Meilisearch
+
+1. **FST + Levenshtein automata** for typo-tolerant vocabulary lookup — Tantivy includes this via its fuzzy term query support
+2. **Roaring bitmaps** for document ID set operations (intersection, union) — Tantivy uses these internally
+3. **Pre-computed positional data** to avoid runtime text scanning — Tantivy stores positions per term
+4. **Memory-mapped index files** for zero-copy reads — Tantivy mmaps its segments
+
+### What NOT to adopt
+
+- Meilisearch's 20+ LMDB databases per index — overkill for conversation logs
+- Word-pair proximity pre-computation — relevant for natural language search over millions of documents, not for searching thousands of agent sessions
+- The full bucket-sort ranking cascade — BM25 with field boosting is sufficient for AgentScribe's use case
+- Meilisearch's `charabia` multi-language tokenizer — agent conversations are predominantly English/code; Tantivy's default tokenizer pipeline suffices
+
+### Tantivy schema for AgentScribe
+
+```rust
+let mut schema_builder = Schema::builder();
+
+// Indexed + stored fields
+schema_builder.add_text_field("content", TEXT | STORED);      // Full conversation text
+schema_builder.add_text_field("summary", TEXT | STORED);       // Session summary
+schema_builder.add_text_field("session_id", STRING | STORED);  // Exact match
+schema_builder.add_text_field("source_agent", STRING | STORED | FAST); // Faceted filter
+schema_builder.add_text_field("project", STRING | STORED | FAST);      // Faceted filter
+schema_builder.add_text_field("tags", STRING | STORED | FAST);         // Multi-valued facet
+
+// Date + numeric for range queries
+schema_builder.add_date_field("timestamp", INDEXED | STORED | FAST);
+schema_builder.add_u64_field("turn_count", INDEXED | STORED | FAST);
+
+// Stored-only (not searchable, just returned in results)
+schema_builder.add_text_field("outcome", STORED);
+```
+
+### Index lifecycle
+
+- **One Tantivy index** for all sessions (not per-agent). Cross-agent search is the primary use case.
+- **Incremental indexing**: new sessions are added via `IndexWriter::add_document()` on scrape. No full rebuild needed.
+- **Commit on scrape completion**: `writer.commit()` after each scrape batch. Index is searchable immediately.
+- **Segment merging**: Tantivy handles background segment merging automatically via its `MergePolicy`.
+- **Index location**: `~/.agentscribe/index/tantivy/` — this directory replaces the JSONL-based index files from the earlier plan.
+
+### Flat files remain the source of truth
+
+Tantivy is the search index, not the data store. The normalized JSONL session files under `~/.agentscribe/sessions/` remain the authoritative data. If the Tantivy index corrupts, it can be rebuilt from the flat files:
+
+```bash
+agentscribe index rebuild  # Drops and rebuilds the Tantivy index from session files
+```
+
+---
+
+## Decision: Session Boundary Detection per Agent
+
+### Claude Code — One file per session
+
+Each `<session-uuid>.jsonl` file is exactly one session. The filename UUID matches the `sessionId` field on every line.
+
+- **Start signal**: First line is `type: "progress"` with `hookEvent: "SessionStart"`
+- **End signal**: None explicit — last line in the file is the end
+- **Resumed sessions**: Same file gets a second `SessionStart` event appended — treat entire file as one session
+- **Sub-agents**: `<session-uuid>/subagents/agent-<id>.jsonl` — same format with `isSidechain: true`. Exclude by default, optional separate plugin.
+- **Headless sessions** (`claude --print`): May lack `SessionStart` hook. Line 0 may be `type: "queue-operation"`. Still one file = one session.
+
+```toml
+[source.session_detection]
+method = "one-file-per-session"
+session_id_from = "filename"
+```
+
+### Aider — Delimiter in continuous file
+
+Each `aider` launch writes `# aider chat started at YYYY-MM-DD HH:MM:SS` to `.aider.chat.history.md`. Everything between one delimiter and the next (or EOF) is one session.
+
+- **Start signal**: `# aider chat started at <datetime>` (written by `io.py`)
+- **End signal**: Next delimiter line, or EOF
+- **Timestamp enrichment**: `.aider.input.history` has per-input timestamps (`# YYYY-MM-DD HH:MM:SS.ffffff`) that can correlate with chat history entries for finer granularity
+- **Edge case**: Scripted/non-interactive aider (`--yes`, piped input) may not write the session marker. Fallback to `timestamp-gap` using `.aider.input.history` timestamps if no delimiters found.
+
+```toml
+[source.session_detection]
+method = "delimiter"
+delimiter_pattern = "^# aider chat started at (.+)$"
+```
+
+### OpenCode — One row per session (SQLite)
+
+Current versions use SQLite (`.opencode/` in project dir). Each session is a row in the `sessions` table with a descending ULID.
+
+- **Start signal**: `time_created` field
+- **End signal**: `time_updated` field
+- **Child sessions**: Auto-compact creates child sessions linked via `parentID` — each is a discrete session
+- **Legacy format**: Older versions used JSON files at `~/.local/share/opencode/storage/session/{projectId}/{sessionId}.json` — one file per session
+
+```toml
+[source.session_detection]
+method = "one-file-per-session"
+session_id_from = "field:id"
+```
+
+### Codex — One file per session
+
+Each `rollout-<id>.jsonl` (or `.jsonl.zst`) file is one session. Line 1 is a `RolloutLine::Meta` header with `thread_id`.
+
+- **Start signal**: `RolloutLine::Meta` on line 1 with `thread_id`, `cwd`, `model`
+- **End signal**: EOF
+- **Resumed sessions**: New events appended to same file, no new Meta header — entire file is one session
+- **Compressed files**: May be `.jsonl.zst` (zstandard) — requires decompression
+- **Ephemeral sessions**: `EventPersistenceMode::None` writes no file at all — nothing to scrape
+- **Companion index**: `~/.codex/session_index.jsonl` maps thread IDs to metadata
+
+```toml
+[source.session_detection]
+method = "one-file-per-session"
+session_id_from = "field:thread_id"
+```
+
+### Cursor — One key per session (SQLite)
+
+Conversations stored in `state.vscdb` SQLite database. Each session is a `composerData:<composerId>` key in the `cursorDiskKV` table.
+
+- **Start signal**: `createdAt` millisecond timestamp in the JSON blob
+- **End signal**: `lastUpdatedAt` + `status` field (`"completed"` or `"aborted"`)
+- **Messages**: Separate `bubbleId:<composerId>:<bubbleId>` keys, ordered by `rowid ASC`
+- **Two databases**: Global (`globalStorage/state.vscdb`) has content, workspace (`workspaceStorage/<hash>/state.vscdb`) has UI state
+- **Schema evolution**: Pre-v2.0 used `ItemTable` key `workbench.panel.aichat.view.aichat.chatdata` with inline `tabs[]`/`bubbles[]` arrays
+- **Size warning**: Global DB can grow to 25GB+ — must open read-only (`?mode=ro`)
+
+```toml
+[source.session_detection]
+method = "one-file-per-session"
+session_id_from = "field:composerId"
+```
+
+### Windsurf — One key per session (SQLite)
+
+Same architecture as Cursor (`state.vscdb`, `cursorDiskKV` table, `composerData:<composerId>` keys).
+
+- **Start/end signals**: Same as Cursor (`createdAt`, `lastUpdatedAt`)
+- **Critical limitation**: Hard limit of 20 conversations — the 21st overwrites the oldest. **Must scrape frequently or data is permanently lost.**
+- **Format instability**: Newer versions may use protobuf with no public schema, or cloud-first storage with no local persistence. Plugin may break across Windsurf updates.
+
+```toml
+[source.session_detection]
+method = "one-file-per-session"
+session_id_from = "field:composerId"
+```
