@@ -1,0 +1,39 @@
+# Codex (OpenAI) plugin for AgentScribe
+# Codex stores conversations as JSONL files with metadata on the first line
+
+[plugin]
+name = "codex"
+version = "1.0"
+
+[source]
+paths = [
+    "~/.codex/sessions/*/*/*.jsonl",
+    "~/.codex/sessions/*/*/*.jsonl.zst"
+]
+exclude = []
+format = "jsonl"
+
+[source.session_detection]
+method = "one-file-per-session"
+session_id_from = "filename"
+
+[parser]
+# For Codex, the format varies - this is a basic mapping
+# First line is Meta with thread_id, subsequent lines are Item events
+timestamp = "time"
+role = "role"
+content = "content"
+
+[parser.static]
+source_agent = "codex"
+
+[parser.project]
+method = "field"
+field = "project"
+
+[parser.model]
+source = "static"
+value = "gpt-4"
+
+[parser.file_paths]
+content_regex = true

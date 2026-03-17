@@ -1,0 +1,36 @@
+# Aider plugin for AgentScribe
+# Aider stores conversations in append-only Markdown files
+
+[plugin]
+name = "aider"
+version = "1.0"
+
+[source]
+paths = [
+    "~/projects/*/.aider.chat.history.md",
+    "~/repos/*/.aider.chat.history.md",
+    "~/*/.aider.chat.history.md"
+]
+exclude = []
+format = "markdown"
+
+[source.session_detection]
+method = "delimiter"
+delimiter_pattern = "^# aider chat started at "
+
+[parser]
+user_prefix = "#### "
+assistant_prefix = ""
+tool_prefix = "> "
+
+[parser.static]
+source_agent = "aider"
+
+[parser.project]
+method = "parent_dir"
+
+[parser.model]
+source = "none"
+
+[parser.file_paths]
+content_regex = true

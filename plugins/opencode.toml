@@ -1,0 +1,50 @@
+# OpenCode plugin for AgentScribe
+# OpenCode stores conversations as a hierarchy of JSON files
+
+[plugin]
+name = "opencode"
+version = "1.0"
+
+[source]
+paths = [
+    "~/.local/share/opencode/storage/**",
+    "~/.opencode/**"
+]
+exclude = ["**/*.db", "**/*.db-shm", "**/*.db-wal"]
+format = "json-tree"
+
+[source.session_detection]
+method = "one-file-per-session"
+session_id_from = "filename"
+
+[source.tree]
+session_glob = "session/{projectId}/{sessionId}.json"
+message_glob = "message/{sessionId}/{messageId}.json"
+part_glob = "part/{messageId}/{partId}.json"
+session_id_field = "id"
+message_session_field = "sessionId"
+part_message_field = "messageId"
+ordering_field = "createdAt"
+
+[parser]
+timestamp = "createdAt"
+role = "role"
+content = "parts[0].text"
+
+[parser.role_map]
+"user" = "user"
+"assistant" = "assistant"
+"system" = "system"
+
+[parser.static]
+source_agent = "opencode"
+
+[parser.project]
+method = "parent_dir"
+
+[parser.model]
+source = "event"
+field = "model"
+
+[parser.file_paths]
+content_regex = true

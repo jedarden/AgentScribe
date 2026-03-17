@@ -1,0 +1,52 @@
+# Claude Code plugin for AgentScribe
+# Claude Code stores conversations as JSONL files with per-session files
+
+[plugin]
+name = "claude-code"
+version = "1.0"
+
+[source]
+paths = [
+    "~/.claude/projects/*/*.jsonl",
+    "~/.claude/projects/*/subagents/*.jsonl"
+]
+exclude = []
+format = "jsonl"
+
+[source.session_detection]
+method = "one-file-per-session"
+session_id_from = "filename"
+
+[parser]
+timestamp = "timestamp"
+role = "message.role"
+content = "message.content"
+type = "type"
+
+[parser.exclude_types]
+field = "type"
+values = ["file-history-snapshot", "progress"]
+
+[parser.role_map]
+"user" = "user"
+"assistant" = "assistant"
+"system" = "system"
+
+[parser.static]
+source_agent = "claude-code"
+
+[parser.project]
+method = "field"
+field = "cwd"
+
+[parser.model]
+source = "metadata"
+field = "model"
+
+[parser.file_paths]
+tool_call_field = "input.file_path"
+content_regex = true
+
+[metadata]
+session_meta = "~/.claude/usage-data/session-meta/{session_id}.json"
+session_facets = "~/.claude/usage-data/facets/{session_id}.json"
