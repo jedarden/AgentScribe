@@ -6,17 +6,20 @@ mod file_path_extractor;
 mod state;
 
 pub use state::StateManager;
+pub use file_path_extractor::FilePathExtractor;
 
 use crate::event::Event;
 use crate::parser::{FormatParser, JsonlParser, MarkdownParser, JsonTreeParser};
-use crate::plugin::{LogFormat, Plugin, PluginManager};
+use crate::plugin::{LogFormat, Plugin, PluginManager, ProjectDetection, ModelDetection};
 use crate::error::{AgentScribeError, Result};
 use chrono::Utc;
 use glob::glob;
+use serde_json::Value;
 use shellexpand;
 use std::path::{Path, PathBuf};
 use std::fs::File;
 use std::io::{BufWriter, Write};
+use std::process::Command;
 
 /// Scraping result
 #[derive(Debug, Clone)]
@@ -228,6 +231,9 @@ impl Scraper {
         // Detect sessions in the file
         let sessions = parser.detect_sessions(file_path, plugin)?;
 
+        // Detect project path for this file
+        let project = self.detect_project(file_path, plugin)?;
+
         let mut result = ScrapeResult {
             sessions_scraped: 0,
             events_written: 0,
@@ -237,11 +243,32 @@ impl Scraper {
         };
 
         for session_info in sessions {
+            // Detect model for this session
+            let model = self.detect_model(file_path, &session_info, plugin)?;
+
             // Parse events for this session
             match parser.parse(file_path, plugin) {
-                Ok(events) => {
+                Ok(mut events) => {
                     if events.is_empty() {
                         continue;
+                    }
+
+                    // Enrich events with project, model, and file paths
+                    for event in &mut events {
+                        // Set project
+                        if event.project.is_none() {
+                            event.project = project.clone();
+                        }
+
+                        // Set model
+                        if event.model.is_none() {
+                            event.model = model.clone();
+                        }
+
+                        // Extract file paths
+                        if event.file_paths.is_empty() {
+                            event.file_paths = FilePathExtractor::extract_from_event(event, plugin);
+                        }
                     }
 
                     // Write session to file
@@ -297,6 +324,109 @@ impl Scraper {
         )?;
 
         Ok(result)
+    }
+
+    /// Detect project path for a file
+    fn detect_project(&self, file_path: &Path, plugin: &Plugin) -> Result<Option<String>> {
+        let detection = plugin.parser.project.as_ref()
+            .unwrap_or(&crate::plugin::ProjectDetection::ParentDir);
+
+        match detection {
+            ProjectDetection::ParentDir => {
+                // Get parent directory of the log file
+                if let Some(parent) = file_path.parent() {
+                    Ok(Some(parent.to_string_lossy().to_string()))
+                } else {
+                    Ok(None)
+                }
+            }
+            ProjectDetection::GitRoot => {
+                // Use git rev-parse to find the git root
+                if let Ok(output) = Command::new("git")
+                    .args(["rev-parse", "--show-toplevel"])
+                    .current_dir(file_path.parent().unwrap_or(file_path))
+                    .output()
+                {
+                    if output.status.success() {
+                        let git_root = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                        return Ok(Some(git_root));
+                    }
+                }
+                // Fallback to parent dir
+                if let Some(parent) = file_path.parent() {
+                    Ok(Some(parent.to_string_lossy().to_string()))
+                } else {
+                    Ok(None)
+                }
+            }
+            ProjectDetection::Field { field: _ } => {
+                // For field-based detection, we need to extract from the first event
+                // This is handled in the parser, return None here
+                Ok(None)
+            }
+        }
+    }
+
+    /// Detect model for a session
+    fn detect_model(&self, _file_path: &Path, session_info: &crate::parser::SessionInfo, plugin: &Plugin) -> Result<Option<String>> {
+        let detection = plugin.parser.model.as_ref()
+            .unwrap_or(&crate::plugin::ModelDetection::None);
+
+        match detection {
+            ModelDetection::Static { value } => {
+                Ok(Some(value.clone()))
+            }
+            ModelDetection::None => Ok(None),
+            ModelDetection::Metadata { field } | ModelDetection::Event { field } => {
+                // Try to extract from session metadata
+                if let Some(ref metadata) = session_info.metadata {
+                    if let Some(value) = self.extract_field_recursive(metadata, field) {
+                        if let Some(s) = value.as_str() {
+                            return Ok(Some(s.to_string()));
+                        }
+                    }
+                }
+
+                // For metadata files, try to read them
+                if let ModelDetection::Metadata { .. } = detection {
+                    if let Some(ref metadata_config) = plugin.metadata {
+                        let session_id = &session_info.session_id;
+                        let meta_path_str = metadata_config.session_meta.as_ref()
+                            .map(|p| p.replace("{session_id}", session_id))
+                            .unwrap_or_else(|| String::new());
+
+                        if !meta_path_str.is_empty() {
+                            let expanded = shellexpand::full(&meta_path_str)
+                                .unwrap_or_default().into_owned();
+                            let meta_path = PathBuf::from(expanded.as_str());
+
+                            if meta_path.exists() {
+                                if let Ok(content) = std::fs::read_to_string(&meta_path) {
+                                    if let Ok(json) = serde_json::from_str::<Value>(&content) {
+                                        if let Some(value) = self.extract_field_recursive(&json, field) {
+                                            if let Some(s) = value.as_str() {
+                                                return Ok(Some(s.to_string()));
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                Ok(None)
+            }
+        }
+    }
+
+    /// Extract a field from JSON using dot notation (recursive helper)
+    fn extract_field_recursive(&self, value: &Value, path: &str) -> Option<Value> {
+        let mut current = value;
+        for part in path.split('.') {
+            current = current.get(part)?;
+        }
+        Some(current.clone())
     }
 
     /// Write a session to disk
