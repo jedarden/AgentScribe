@@ -9,6 +9,7 @@ mod cli;
 mod config;
 mod error;
 mod event;
+mod index;
 mod parser;
 mod plugin;
 mod scraper;

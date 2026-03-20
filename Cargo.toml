@@ -49,8 +49,14 @@ directories = "5.0"
 shellexpand = "3.1"
 path-absolutize = "3.1"
 
+# Full-text search
+tantivy = "0.22"
+
 # File locking
 fs2 = "0.4"
+
+# Process checking (daemon status)
+libc = "0.2"
 
 # Colors in terminal
 console = "0.15"
