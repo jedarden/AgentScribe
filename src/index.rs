@@ -4,6 +4,7 @@
 //! Tantivy documents from normalized session events and manifests.
 
 use crate::event::{Event, Role, SessionManifest};
+use crate::tags;
 use chrono::{DateTime, Utc};
 use std::collections::HashSet;
 
@@ -202,7 +203,13 @@ pub fn build_session_document(
     if let Some(ref project) = manifest.project {
         doc.add_text(fields.project, project);
     }
-    for tag in &manifest.tags {
+
+    // Tags: merge manifest tags with auto-extracted tags, deduplicate
+    let mut all_tags: HashSet<String> = manifest.tags.iter().cloned().collect();
+    for tag in tags::extract_tags(events) {
+        all_tags.insert(tag);
+    }
+    for tag in &all_tags {
         doc.add_text(fields.tags, tag);
     }
     if let Some(ref outcome) = manifest.outcome {

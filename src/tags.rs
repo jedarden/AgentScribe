@@ -1,7 +1,8 @@
-//! Tag extraction: explicit and structural tiers
+//! Tag extraction: three-tier pipeline
 //!
 //! Tier 1 (explicit): tool names from tool_call events, language names from code fences.
 //! Tier 2 (structural): file extension -> language mappings, bash command names, error fingerprints.
+//! Tier 3 (keyword): word-boundary matching against a bundled technology dictionary.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::LazyLock;
@@ -9,6 +10,15 @@ use std::sync::LazyLock;
 use regex::Regex;
 
 use crate::event::{Event, Role};
+
+/// Bundled keyword dictionary loaded at startup.
+static KEYWORDS: LazyLock<Vec<String>> = LazyLock::new(|| {
+    include_str!("../data/tech_keywords.txt")
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| line.trim().to_lowercase())
+        .collect()
+});
 
 static CODE_FENCE_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"```([a-zA-Z0-9_+#-]+)").unwrap());
@@ -143,6 +153,56 @@ pub fn extract_structural_tags(events: &[Event]) -> Vec<String> {
     }
 
     let mut result: Vec<String> = tags.into_iter().collect();
+    result.sort();
+    result
+}
+
+/// Extract keyword tags from content using a technology dictionary.
+///
+/// Uses word-boundary matching (case-insensitive) so "react" matches "using React"
+/// but not "reactive" or "rediscover".
+pub fn extract_keyword_tags(content: &str, dictionary: &[String]) -> Vec<String> {
+    let mut tags = HashSet::new();
+    let lower = content.to_lowercase();
+
+    for keyword in dictionary {
+        // Build word-boundary regex: \bkeyword\b
+        let pattern = format!(r"\b{}\b", regex::escape(keyword));
+        if let Ok(re) = Regex::new(&pattern) {
+            if re.is_match(&lower) {
+                tags.insert(keyword.clone());
+            }
+        }
+    }
+
+    let mut result: Vec<String> = tags.into_iter().collect();
+    result.sort();
+    result
+}
+
+/// Extract all tags from a list of events, combining all three tiers.
+///
+/// Returns deduplicated, sorted tags.
+pub fn extract_tags(events: &[Event]) -> Vec<String> {
+    let mut all_tags = HashSet::new();
+
+    // Tier 1: explicit tags
+    for tag in extract_explicit_tags(events) {
+        all_tags.insert(tag);
+    }
+
+    // Tier 2: structural tags
+    for tag in extract_structural_tags(events) {
+        all_tags.insert(tag);
+    }
+
+    // Tier 3: keyword tags (match against all event content)
+    let content: String = events.iter().map(|e| e.content.as_str()).collect::<Vec<_>>().join(" ");
+    for tag in extract_keyword_tags(&content, &KEYWORDS) {
+        all_tags.insert(tag);
+    }
+
+    let mut result: Vec<String> = all_tags.into_iter().collect();
     result.sort();
     result
 }
@@ -290,5 +350,114 @@ mod tests {
         let events: Vec<Event> = vec![];
         assert!(extract_explicit_tags(&events).is_empty());
         assert!(extract_structural_tags(&events).is_empty());
+        assert!(extract_tags(&events).is_empty());
+    }
+
+    // --- Tier 3: keyword matching tests ---
+
+    #[test]
+    fn test_keyword_match_react() {
+        let dict = vec!["react".to_string(), "postgres".to_string()];
+        let tags = extract_keyword_tags("I am using react and postgres", &dict);
+        assert!(tags.contains(&"react".to_string()));
+        assert!(tags.contains(&"postgres".to_string()));
+    }
+
+    #[test]
+    fn test_keyword_no_substring_match() {
+        // "reactive" should NOT match "react"
+        let dict = vec!["react".to_string()];
+        let tags = extract_keyword_tags("reactive programming", &dict);
+        assert!(!tags.contains(&"react".to_string()));
+    }
+
+    #[test]
+    fn test_keyword_no_redis_in_rediscover() {
+        let dict = vec!["redis".to_string()];
+        let tags = extract_keyword_tags("rediscover the lost art", &dict);
+        assert!(!tags.contains(&"redis".to_string()));
+    }
+
+    #[test]
+    fn test_keyword_case_insensitive() {
+        let dict = vec!["docker".to_string(), "kubernetes".to_string()];
+        let tags = extract_keyword_tags("Deploy with Docker and Kubernetes", &dict);
+        assert!(tags.contains(&"docker".to_string()));
+        assert!(tags.contains(&"kubernetes".to_string()));
+    }
+
+    #[test]
+    fn test_keyword_no_match() {
+        let dict = vec!["react".to_string()];
+        let tags = extract_keyword_tags("no relevant tech here", &dict);
+        assert!(tags.is_empty());
+    }
+
+    #[test]
+    fn test_keyword_deduplication() {
+        let dict = vec!["react".to_string()];
+        let tags = extract_keyword_tags("react react react", &dict);
+        assert_eq!(tags.len(), 1);
+    }
+
+    #[test]
+    fn test_keyword_with_special_chars_escaped() {
+        // Keywords with dots like "next.js" should be escaped in regex
+        let dict = vec!["next.js".to_string()];
+        let tags = extract_keyword_tags("Built with next.js framework", &dict);
+        assert!(tags.contains(&"next.js".to_string()));
+        // Should NOT match "nextXjs" or "next js"
+        let tags2 = extract_keyword_tags("using next js separately", &dict);
+        assert!(!tags2.contains(&"next.js".to_string()));
+    }
+
+    // --- Combined extract_tags tests ---
+
+    #[test]
+    fn test_extract_tags_combines_all_tiers() {
+        let events = vec![
+            // Tier 1: tool call + code fence
+            make_tool_call_event("Bash", "docker compose up"),
+            // Tier 1: code fence language
+            make_event(Role::Assistant, "```python\nprint('hi')\n```"),
+            // Tier 2: file extension
+            make_event(Role::ToolCall, "read")
+                .with_tool(Some("Read".into()))
+                .with_file_paths(vec!["src/main.rs".into()]),
+            // Tier 3: keyword
+            make_event(Role::User, "deploy this to kubernetes"),
+        ];
+        let tags = extract_tags(&events);
+        assert!(tags.contains(&"bash".to_string()));
+        assert!(tags.contains(&"python".to_string()));
+        assert!(tags.contains(&"rust".to_string()));
+        assert!(tags.contains(&"docker".to_string()));
+        assert!(tags.contains(&"kubernetes".to_string()));
+    }
+
+    #[test]
+    fn test_extract_tags_no_duplicates_across_tiers() {
+        // "docker" appears in Tier 2 (bash cmd) and could appear in Tier 3 (keyword)
+        let events = vec![
+            make_tool_call_event("Bash", "docker build ."),
+            make_event(Role::User, "use docker for containerization"),
+        ];
+        let tags = extract_tags(&events);
+        let docker_count = tags.iter().filter(|t| *t == "docker").count();
+        assert_eq!(docker_count, 1);
+    }
+
+    #[test]
+    fn test_extract_tags_sorted() {
+        let events = vec![make_tool_call_event("Edit", "content")];
+        let tags = extract_tags(&events);
+        let mut sorted = tags.clone();
+        sorted.sort();
+        assert_eq!(tags, sorted);
+    }
+
+    #[test]
+    fn test_bundled_dictionary_has_terms() {
+        assert!(KEYWORDS.len() >= 150);
     }
 }
