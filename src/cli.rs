@@ -57,6 +57,10 @@ enum Commands {
         /// JSON output
         #[arg(long)]
         json: bool,
+
+        /// Show status for a specific plugin only
+        #[arg(short, long)]
+        plugin: Option<String>,
     },
 }
 
@@ -128,7 +132,7 @@ pub fn run() -> Result<()> {
             output_events,
             json,
         } => run_scrape(plugin, file, dry_run, output_events, json),
-        Commands::Status { json } => run_status(json),
+        Commands::Status { json, plugin } => run_status(json, plugin),
     }
 }
 
@@ -404,50 +408,336 @@ fn run_scrape(
 }
 
 /// Run status command
-fn run_status(json: bool) -> Result<()> {
+fn run_status(json: bool, plugin_filter: Option<String>) -> Result<()> {
     let config = load_config()?;
     let data_dir = config.data_dir()?;
     let data_dir_str = data_dir.display().to_string();
 
     if !data_dir.exists() {
-        println!("AgentScribe not initialized. Run 'agentscribe config init' to set up.");
-        return Ok(());
+        eprintln!("AgentScribe not initialized. Run 'agentscribe config init' to set up.");
+        std::process::exit(1);
     }
 
-    let mut scraper = Scraper::new(data_dir)?;
+    let mut scraper = Scraper::new(data_dir.clone())?;
     scraper.load_plugins()?;
 
-    let plugin_names = scraper.plugin_manager().names();
+    // Determine which plugins to show
+    let plugin_names: Vec<String> = if let Some(ref filter) = plugin_filter {
+        if scraper.plugin_manager().get(filter).is_some() {
+            vec![filter.clone()]
+        } else {
+            eprintln!("Plugin '{}' not found", filter);
+            std::process::exit(1);
+        }
+    } else {
+        scraper.plugin_manager().names()
+            .into_iter()
+            .map(String::from)
+            .collect()
+    };
+
+    // Gather scrape state
+    let scrape_state = scraper.state_manager().get_all();
+
+    // Collect per-plugin status
+    let mut plugin_statuses = Vec::new();
+    let mut total_events: u64 = 0;
+    let mut total_sources: usize = 0;
+    let mut total_bytes: u64 = 0;
+
+    for plugin_name in &plugin_names {
+        let sessions = scraper.list_sessions(plugin_name)?;
+
+        // Count events across all sessions for this plugin
+        let mut plugin_events: u64 = 0;
+        for session_id in &sessions {
+            if let Ok(events) = scraper.read_session(session_id) {
+                plugin_events += events.len() as u64;
+            }
+        }
+        total_events += plugin_events;
+
+        // Get source paths from plugin config
+        let source_paths = scraper.plugin_manager()
+            .get(plugin_name)
+            .map(|p| p.source.paths.clone())
+            .unwrap_or_default();
+
+        // Find last scraped time and byte totals from scrape state for this plugin
+        let plugin_files: Vec<_> = scrape_state.sources.iter()
+            .filter(|(_, s)| s.plugin == *plugin_name)
+            .collect();
+
+        let last_scraped = plugin_files.iter()
+            .filter_map(|(_, s)| Some(s.last_scraped))
+            .max();
+
+        let mut plugin_bytes: u64 = 0;
+        for (_, file_state) in &plugin_files {
+            plugin_bytes += file_state.last_byte_offset;
+            total_bytes += file_state.last_byte_offset;
+        }
+        total_sources += plugin_files.len();
+
+        plugin_statuses.push(PluginStatus {
+            name: plugin_name.to_string(),
+            sessions: sessions.len(),
+            events: plugin_events,
+            last_scraped,
+            source_paths,
+            source_files: plugin_files.len(),
+            bytes: plugin_bytes,
+        });
+    }
+
+    // Daemon state (Phase 4 - check PID file if it exists)
+    let daemon_status = get_daemon_status(&data_dir);
+
+    // Disk usage of data directory
+    let dir_bytes = dir_size(&data_dir);
+
+    // Index stats (Phase 2 - check if index directory exists)
+    let index_dir = data_dir.join("index");
+    let index_stats = get_index_stats(&index_dir);
 
     if json {
         use serde_json::json;
+        let mut plugins_json = Vec::new();
+        for ps in &plugin_statuses {
+            let mut p = json!({
+                "name": ps.name,
+                "sessions": ps.sessions,
+                "events": ps.events,
+                "source_files": ps.source_files,
+                "bytes": ps.bytes,
+                "source_paths": ps.source_paths,
+            });
+            if let Some(ts) = ps.last_scraped {
+                p["last_scraped"] = json!(ts.to_rfc3339());
+            } else {
+                p["last_scraped"] = json!(null);
+            }
+            plugins_json.push(p);
+        }
+
         let mut status = json!({
+            "version": env!("CARGO_PKG_VERSION"),
             "data_dir": data_dir_str,
-            "plugins": []
+            "data_dir_bytes": dir_bytes,
+            "plugins": plugins_json,
+            "scrape_state": {
+                "tracked_sources": total_sources,
+                "total_bytes": total_bytes,
+            },
+            "daemon": {
+                "running": daemon_status.running,
+                "pid": daemon_status.pid,
+            },
+            "index": {
+                "exists": index_stats.exists,
+                "documents": index_stats.documents,
+                "size_bytes": index_stats.size_bytes,
+            },
         });
 
-        for plugin_name in plugin_names {
-            let sessions = scraper.list_sessions(plugin_name)?;
-            status["plugins"].as_array_mut().unwrap().push(json!({
-                "name": plugin_name,
-                "sessions": sessions.len()
-            }));
-        }
-
-        println!("{}", status);
+        println!("{}", serde_json::to_string_pretty(&status).unwrap());
     } else {
-        println!("AgentScribe Status");
-        println!("  Data directory: {}", data_dir_str);
-        println!("  Plugins loaded: {}", plugin_names.len());
-        println!();
+        println!("AgentScribe v{}", env!("CARGO_PKG_VERSION"));
+        println!("Data dir: {} ({})", data_dir_str, format_bytes(dir_bytes));
 
-        for plugin_name in plugin_names {
-            let sessions = scraper.list_sessions(plugin_name)?;
-            println!("  {}: {} session(s)", plugin_name, sessions.len());
+        // Daemon
+        if daemon_status.running {
+            if let Some(pid) = daemon_status.pid {
+                println!("Daemon: running (PID {})", pid);
+            } else {
+                println!("Daemon: running");
+            }
+        } else {
+            println!("Daemon: stopped");
         }
+
+        // Plugins
+        println!("\nPlugins:");
+        if plugin_statuses.is_empty() {
+            println!("  (none)");
+        }
+        for ps in &plugin_statuses {
+            let last = match ps.last_scraped {
+                Some(ts) => format_ago(ts),
+                None => "never scraped".to_string(),
+            };
+            println!(
+                "  {:<14} {:>4} sessions  {:>6} events  {}  ({} source files, {})",
+                ps.name, ps.sessions, ps.events, last, ps.source_files, format_bytes(ps.bytes)
+            );
+        }
+
+        // Index
+        if index_stats.exists {
+            println!(
+                "\nIndex: {} documents, {} on disk",
+                index_stats.documents,
+                format_bytes(index_stats.size_bytes)
+            );
+        } else {
+            println!("\nIndex: not built (run 'agentscribe index build')");
+        }
+
+        // Scrape state
+        println!(
+            "\nScrape state: tracking offsets for {} source paths ({} total)",
+            total_sources,
+            format_bytes(total_bytes)
+        );
     }
 
     Ok(())
+}
+
+/// Per-plugin status data
+struct PluginStatus {
+    name: String,
+    sessions: usize,
+    events: u64,
+    last_scraped: Option<chrono::DateTime<chrono::Utc>>,
+    source_paths: Vec<String>,
+    source_files: usize,
+    bytes: u64,
+}
+
+/// Daemon status info
+struct DaemonStatus {
+    running: bool,
+    pid: Option<u32>,
+}
+
+/// Index stats
+struct IndexStats {
+    exists: bool,
+    documents: usize,
+    size_bytes: u64,
+}
+
+/// Check daemon status by reading PID file
+fn get_daemon_status(data_dir: &std::path::Path) -> DaemonStatus {
+    let pid_file = data_dir.join("agentscribe.pid");
+    if let Ok(content) = std::fs::read_to_string(&pid_file) {
+        if let Ok(pid) = content.trim().parse::<u32>() {
+            // Check if process is actually running
+            unsafe {
+                // kill(pid, 0) checks if process exists without sending a signal
+                if libc::kill(pid as i32, 0) == 0 {
+                    return DaemonStatus {
+                        running: true,
+                        pid: Some(pid),
+                    };
+                }
+            }
+        }
+    }
+    DaemonStatus {
+        running: false,
+        pid: None,
+    }
+}
+
+/// Get index stats
+fn get_index_stats(index_dir: &std::path::Path) -> IndexStats {
+    if !index_dir.exists() {
+        return IndexStats {
+            exists: false,
+            documents: 0,
+            size_bytes: 0,
+        };
+    }
+
+    let size_bytes = dir_size(index_dir);
+
+    // Count JSONL session files as document proxy (index not yet built in Phase 1)
+    let documents = count_files_recursive(index_dir, "jsonl");
+
+    IndexStats {
+        exists: !documents == 0 || size_bytes > 0,
+        documents,
+        size_bytes,
+    }
+}
+
+/// Format bytes as human-readable size
+fn format_bytes(bytes: u64) -> String {
+    const KB: u64 = 1024;
+    const MB: u64 = 1024 * KB;
+    const GB: u64 = 1024 * MB;
+
+    if bytes >= GB {
+        format!("{:.1} GB", bytes as f64 / GB as f64)
+    } else if bytes >= MB {
+        format!("{:.1} MB", bytes as f64 / MB as f64)
+    } else if bytes >= KB {
+        format!("{:.1} KB", bytes as f64 / KB as f64)
+    } else {
+        format!("{} B", bytes)
+    }
+}
+
+/// Format a timestamp as relative time ago
+fn format_ago(ts: chrono::DateTime<chrono::Utc>) -> String {
+    let now = chrono::Utc::now();
+    let duration = now.signed_duration_since(ts);
+
+    if duration.num_days() > 0 {
+        format!("{}d ago", duration.num_days())
+    } else if duration.num_hours() > 0 {
+        format!("{}h ago", duration.num_hours())
+    } else if duration.num_minutes() > 0 {
+        format!("{}m ago", duration.num_minutes())
+    } else {
+        "just now".to_string()
+    }
+}
+
+/// Recursively compute directory size in bytes
+fn dir_size(path: &std::path::Path) -> u64 {
+    if !path.exists() {
+        return 0;
+    }
+
+    if path.is_file() {
+        return path.metadata().map(|m| m.len()).unwrap_or(0);
+    }
+
+    let mut total: u64 = 0;
+    if let Ok(entries) = std::fs::read_dir(path) {
+        for entry in entries.filter_map(|e| e.ok()) {
+            let p = entry.path();
+            if p.is_dir() {
+                total += dir_size(&p);
+            } else if let Ok(m) = p.metadata() {
+                total += m.len();
+            }
+        }
+    }
+    total
+}
+
+/// Count files with a given extension recursively
+fn count_files_recursive(path: &std::path::Path, ext: &str) -> usize {
+    if !path.is_dir() {
+        return 0;
+    }
+
+    let mut count = 0;
+    if let Ok(entries) = std::fs::read_dir(path) {
+        for entry in entries.filter_map(|e| e.ok()) {
+            let p = entry.path();
+            if p.is_dir() {
+                count += count_files_recursive(&p, ext);
+            } else if p.extension().and_then(|s| s.to_str()) == Some(ext) {
+                count += 1;
+            }
+        }
+    }
+    count
 }
 
 /// Load configuration from default location

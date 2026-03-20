@@ -12,6 +12,7 @@ mod event;
 mod parser;
 mod plugin;
 mod scraper;
+mod tags;
 
 use cli::run;
 use error::Result;
