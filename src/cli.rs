@@ -4,6 +4,7 @@ use crate::config::{self, Config};
 use crate::error::Result;
 use crate::plugin::validate_plugin_file;
 use crate::scraper::Scraper;
+use crate::search::{self, SearchOptions, SortOrder};
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 use tabled::{Table, Tabled};
@@ -61,6 +62,95 @@ enum Commands {
         /// Show status for a specific plugin only
         #[arg(short, long)]
         plugin: Option<String>,
+    },
+    /// Query the Tantivy index for matching sessions
+    Search {
+        /// Search query string (Tantivy query syntax)
+        query: Option<String>,
+
+        /// Error fingerprint pattern to search
+        #[arg(long)]
+        error: Option<String>,
+
+        /// Code content query
+        #[arg(long)]
+        code: Option<String>,
+
+        /// Language filter for code search
+        #[arg(long)]
+        lang: Option<String>,
+
+        /// Return only extracted solutions
+        #[arg(long)]
+        solution_only: bool,
+
+        /// Find sessions similar to this session ID
+        #[arg(long)]
+        like: Option<String>,
+
+        /// Retrieve a specific session by ID
+        #[arg(long)]
+        session: Option<String>,
+
+        /// Filter by source agent type (repeatable)
+        #[arg(short, long)]
+        agent: Vec<String>,
+
+        /// Filter by project path
+        #[arg(long)]
+        project: Option<String>,
+
+        /// Only match sessions after this timestamp
+        #[arg(long)]
+        since: Option<String>,
+
+        /// Only match sessions before this timestamp
+        #[arg(long)]
+        before: Option<String>,
+
+        /// Filter by tag (repeatable, AND logic)
+        #[arg(short = 't', long)]
+        tag: Vec<String>,
+
+        /// Filter by outcome (success, failure, abandoned, unknown)
+        #[arg(long)]
+        outcome: Option<String>,
+
+        /// Filter by doc type (session, code_artifact)
+        #[arg(long)]
+        r#type: Option<String>,
+
+        /// Filter by model name
+        #[arg(long)]
+        model: Option<String>,
+
+        /// Enable fuzzy matching on all query terms
+        #[arg(long)]
+        fuzzy: bool,
+
+        /// Maximum number of results
+        #[arg(short = 'n', long, default_value = "10")]
+        max_results: usize,
+
+        /// Maximum snippet length per result (0 to omit)
+        #[arg(long, default_value = "200")]
+        snippet_length: usize,
+
+        /// Token budget for greedy knapsack context packing
+        #[arg(long)]
+        token_budget: Option<usize>,
+
+        /// Skip first N results (pagination)
+        #[arg(long, default_value = "0")]
+        offset: usize,
+
+        /// Sort order: relevance, newest, oldest, turns
+        #[arg(short, long, default_value = "relevance")]
+        sort: String,
+
+        /// JSON output
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -133,6 +223,34 @@ pub fn run() -> Result<()> {
             json,
         } => run_scrape(plugin, file, dry_run, output_events, json),
         Commands::Status { json, plugin } => run_status(json, plugin),
+        Commands::Search {
+            query,
+            error,
+            code,
+            lang,
+            solution_only,
+            like,
+            session,
+            agent,
+            project,
+            since,
+            before,
+            tag,
+            outcome,
+            r#type,
+            model,
+            fuzzy,
+            max_results,
+            snippet_length,
+            token_budget,
+            offset,
+            sort,
+            json,
+        } => run_search(
+            query, error, code, lang, solution_only, like, session,
+            agent, project, since, before, tag, outcome, r#type, model,
+            fuzzy, max_results, snippet_length, token_budget, offset, sort, json,
+        ),
     }
 }
 
@@ -402,6 +520,86 @@ fn run_scrape(
                 eprintln!("Errors: {}", result.errors.len());
             }
         }
+    }
+
+    Ok(())
+}
+
+/// Run search command
+fn run_search(
+    query: Option<String>,
+    error: Option<String>,
+    code: Option<String>,
+    lang: Option<String>,
+    solution_only: bool,
+    like: Option<String>,
+    session: Option<String>,
+    agent: Vec<String>,
+    project: Option<String>,
+    since: Option<String>,
+    before: Option<String>,
+    tag: Vec<String>,
+    outcome: Option<String>,
+    doc_type_filter: Option<String>,
+    model: Option<String>,
+    fuzzy: bool,
+    max_results: usize,
+    snippet_length: usize,
+    token_budget: Option<usize>,
+    offset: usize,
+    sort: String,
+    json: bool,
+) -> Result<()> {
+    let config = load_config()?;
+    let data_dir = config.data_dir()?;
+
+    let sort_order = match sort.as_str() {
+        "newest" => SortOrder::Newest,
+        "oldest" => SortOrder::Oldest,
+        "turns" => SortOrder::Turns,
+        _ => SortOrder::Relevance,
+    };
+
+    let since_dt = since
+        .as_deref()
+        .map(search::parse_datetime)
+        .transpose()?;
+
+    let before_dt = before
+        .as_deref()
+        .map(search::parse_datetime)
+        .transpose()?;
+
+    let opts = SearchOptions {
+        query,
+        error_pattern: error,
+        code_query: code,
+        code_lang: lang,
+        solution_only,
+        like_session: like,
+        session_id: session,
+        agent,
+        project,
+        since: since_dt,
+        before: before_dt,
+        tag,
+        outcome,
+        doc_type_filter,
+        model,
+        fuzzy,
+        max_results,
+        snippet_length,
+        token_budget,
+        offset,
+        sort: sort_order,
+    };
+
+    let output = search::execute_search(&data_dir, &opts)?;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&output).unwrap());
+    } else {
+        println!("{}", search::format_human(&output, snippet_length));
     }
 
     Ok(())

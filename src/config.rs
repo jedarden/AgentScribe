@@ -2,6 +2,7 @@
 //!
 //! Handles global configuration and data directory initialization.
 
+use crate::enrichment::outcome::OutcomeConfig;
 use crate::error::{AgentScribeError, Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -18,6 +19,7 @@ pub struct Config {
     pub scrape: ScrapeConfig,
     pub index: IndexConfig,
     pub search: SearchConfig,
+    pub outcome: OutcomeConfig,
 }
 
 /// General configuration
@@ -65,6 +67,7 @@ impl Default for Config {
                 default_max_results: 10,
                 default_snippet_length: 200,
             },
+            outcome: OutcomeConfig::default(),
         }
     }
 }
