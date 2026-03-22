@@ -3,10 +3,13 @@
 //! Defines the full-text search index schema and provides functions to build
 //! Tantivy documents from normalized session events and manifests.
 
+use crate::error::{AgentScribeError, Result};
 use crate::event::{Event, Role, SessionManifest};
 use crate::tags;
 use chrono::{DateTime, Utc};
 use std::collections::HashSet;
+use std::path::Path;
+use tracing::{debug, warn};
 
 use tantivy::schema::*;
 use tantivy::TantivyDocument;
@@ -127,6 +130,11 @@ fn truncate_tool_result(content: &str) -> &str {
         while end > 0 && !content.is_char_boundary(end) {
             end -= 1;
         }
+        debug!(
+            original_len = content.len(),
+            truncated_len = end,
+            "truncated tool_result content"
+        );
         &content[..end]
     } else {
         content
@@ -139,6 +147,12 @@ fn trim_middle(content: String) -> String {
     if bytes <= CONTENT_MAX_BYTES {
         return content;
     }
+
+    debug!(
+        original_bytes = bytes,
+        max_bytes = CONTENT_MAX_BYTES,
+        "trimming document content (keep first+last halves)"
+    );
 
     // Find byte boundary near the half point
     let mut mid = CONTENT_HALF_BYTES;
@@ -306,6 +320,155 @@ pub fn build_code_artifact_document(
     doc.add_date(fields.timestamp, tantivy_ts);
 
     doc
+}
+
+/// Build a minimal `SessionManifest` from scraped events for indexing.
+///
+/// This creates a manifest with metadata extracted directly from the events,
+/// without enrichment data (summary, outcome, etc.) which is added later.
+pub fn build_manifest_from_events(
+    events: &[Event],
+    session_id: &str,
+    source_agent: &str,
+    project: Option<&str>,
+    model: Option<&str>,
+) -> SessionManifest {
+    let started = events.first().map(|e| e.ts).unwrap_or_else(Utc::now);
+    let ended = events.last().map(|e| e.ts);
+    let turns = events.len() as u32;
+
+    let mut files_touched: Vec<String> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+    for event in events {
+        for f in &event.file_paths {
+            if seen.insert(f.clone()) {
+                files_touched.push(f.clone());
+            }
+        }
+    }
+
+    SessionManifest {
+        session_id: session_id.to_string(),
+        source_agent: source_agent.to_string(),
+        project: project.map(|s| s.to_string()),
+        started,
+        ended,
+        turns,
+        summary: None,
+        outcome: None,
+        tags: Vec::new(),
+        files_touched,
+        model: model.map(|s| s.to_string()),
+    }
+}
+
+/// Tantivy index directory name
+pub const INDEX_DIR_NAME: &str = "tantivy";
+
+/// Manages incremental index updates during scraping.
+///
+/// The `IndexWriter` is held only during active scrape/commit operations,
+/// allowing concurrent searches to proceed against the last committed state.
+pub struct IndexManager {
+    index: tantivy::Index,
+    fields: IndexFields,
+    writer: Option<tantivy::IndexWriter>,
+}
+
+impl IndexManager {
+    /// Open an existing index or create a new one at `data_dir/index/tantivy`.
+    pub fn open(data_dir: &Path) -> Result<Self> {
+        let index_path = data_dir.join("index").join(INDEX_DIR_NAME);
+        let (schema, fields) = build_schema();
+
+        let index = if index_path.exists() {
+            tantivy::Index::open_in_dir(&index_path).map_err(|e| {
+                AgentScribeError::DataDir(format!("Failed to open index: {}", e))
+            })?
+        } else {
+            std::fs::create_dir_all(&index_path)?;
+            tantivy::Index::create_in_dir(&index_path, schema).map_err(|e| {
+                AgentScribeError::DataDir(format!("Failed to create index: {}", e))
+            })?
+        };
+
+        Ok(IndexManager {
+            index,
+            fields,
+            writer: None,
+        })
+    }
+
+    /// Begin a write session. Idempotent — no-op if writer is already active.
+    pub fn begin_write(&mut self) -> Result<()> {
+        if self.writer.is_some() {
+            return Ok(());
+        }
+
+        let writer = self.index.writer(50_000_000).map_err(|e| {
+            AgentScribeError::DataDir(format!("Failed to create index writer: {}", e))
+        })?;
+        self.writer = Some(writer);
+        Ok(())
+    }
+
+    /// Index a session: delete any existing document for the session_id, then add the new one.
+    ///
+    /// The delete is soft until `commit()` is called, so within a single write session
+    /// this correctly replaces the old document with the new one.
+    pub fn index_session(
+        &mut self,
+        events: &[Event],
+        manifest: &SessionManifest,
+    ) -> Result<()> {
+        let writer = self.writer.as_mut().ok_or_else(|| {
+            AgentScribeError::DataDir(
+                "Index writer not active. Call begin_write() first.".to_string(),
+            )
+        })?;
+
+        // Delete existing documents for this session_id
+        let term = Term::from_field_text(self.fields.session_id, &manifest.session_id);
+        writer.delete_term(term);
+
+        // Build and add new document
+        let doc = build_session_document(&self.fields, events, manifest);
+        writer.add_document(doc).map_err(|e| {
+            AgentScribeError::DataDir(format!("Failed to add document: {}", e))
+        })?;
+
+        Ok(())
+    }
+
+    /// Delete all documents for a given session_id.
+    pub fn delete_session(&mut self, session_id: &str) -> Result<()> {
+        let writer = self.writer.as_mut().ok_or_else(|| {
+            AgentScribeError::DataDir(
+                "Index writer not active. Call begin_write() first.".to_string(),
+            )
+        })?;
+
+        let term = Term::from_field_text(self.fields.session_id, session_id);
+        writer.delete_term(term);
+        Ok(())
+    }
+
+    /// Commit pending changes and release the writer.
+    ///
+    /// Idempotent — no-op if no writer is active.
+    pub fn commit(&mut self) -> Result<()> {
+        if let Some(writer) = self.writer.take() {
+            writer.commit().map_err(|e| {
+                AgentScribeError::DataDir(format!("Failed to commit index: {}", e))
+            })?;
+        }
+        Ok(())
+    }
+
+    /// Check if a writer is currently active.
+    pub fn is_writing(&self) -> bool {
+        self.writer.is_some()
+    }
 }
 
 #[cfg(test)]
