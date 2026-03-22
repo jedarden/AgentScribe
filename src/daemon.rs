@@ -259,14 +259,15 @@ pub fn status(data_dir: &Path) -> Result<DaemonInfo> {
         if let Some(close_paren) = stat.rfind(')') {
             let after_comm = &stat[close_paren + 2..]; // skip ") "
             let fields: Vec<&str> = after_comm.split_whitespace().collect();
-            // field index 21 (0-based) = start_time in clock ticks
-            // field index 23 = rss in pages
-            // field index 17 = vsize in bytes
-            if fields.len() > 23 {
-                if let Ok(rss_pages) = fields[23].parse::<u64>() {
+            // Per man 5 proc (0-indexed after comm):
+            //   field 19 = starttime (clock ticks since boot)
+            //   field 20 = vsize (bytes)
+            //   field 21 = rss  (pages)
+            if fields.len() > 21 {
+                if let Ok(rss_pages) = fields[21].parse::<u64>() {
                     info.rss_bytes = Some(rss_pages * 4096); // page size on x86_64
                 }
-                if let Ok(start_ticks) = fields[21].parse::<u64>() {
+                if let Ok(start_ticks) = fields[19].parse::<u64>() {
                     let hz = unsafe { libc::sysconf(libc::_SC_CLK_TCK) } as u64;
                     if hz > 0 {
                         let uptime_ticks = read_uptime_ticks();
@@ -280,10 +281,10 @@ pub fn status(data_dir: &Path) -> Result<DaemonInfo> {
         }
     }
 
-    // Read /proc/<pid>/status for VmPeak
+    // Read /proc/<pid>/status for VmHWM (peak RSS high water mark)
     if let Ok(status_content) = fs::read_to_string(format!("/proc/{}/status", pid_val)) {
         for line in status_content.lines() {
-            if let Some(val) = line.strip_prefix("VmPeak:") {
+            if let Some(val) = line.strip_prefix("VmHWM:") {
                 let trimmed = val.trim();
                 // Format: "12345 kB"
                 if let Some(kb) = trimmed.split_whitespace().next() {
@@ -329,8 +330,8 @@ pub fn logs(data_dir: &Path, follow: bool, lines: usize) -> Result<()> {
 
 /// The main daemon event loop. Runs a Tokio runtime and idles on a timer.
 fn run_event_loop(log_file: &Path, pid_file: &Path, state_file: &Path) {
-    let rt = tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(1) // keep it lean
+    // Use current_thread runtime — safe after fork (no thread pool)
+    let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .expect("Failed to create Tokio runtime");

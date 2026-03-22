@@ -9,6 +9,7 @@ pub use state::StateManager;
 pub use file_path_extractor::FilePathExtractor;
 
 use crate::event::Event;
+use crate::index::{build_manifest_from_events, IndexManager};
 use crate::parser::{FormatParser, JsonlParser, MarkdownParser, JsonTreeParser};
 use crate::plugin::{LogFormat, Plugin, PluginManager, ProjectDetection, ModelDetection};
 use crate::error::{AgentScribeError, Result};
@@ -20,11 +21,13 @@ use std::path::{Path, PathBuf};
 use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::process::Command;
+use tracing::{debug, info, warn};
 
 /// Scraping result
 #[derive(Debug, Clone)]
 pub struct ScrapeResult {
     pub sessions_scraped: usize,
+    pub sessions_indexed: usize,
     pub events_written: usize,
     pub errors: Vec<ScrapeError>,
     pub files_processed: usize,
@@ -45,6 +48,8 @@ pub struct Scraper {
     data_dir: PathBuf,
     sessions_dir: PathBuf,
     state_manager: StateManager,
+    index_manager: Option<IndexManager>,
+    index_write_depth: usize,
 }
 
 impl Scraper {
@@ -62,11 +67,22 @@ impl Scraper {
         let plugin_manager = PluginManager::new(plugin_dir);
         let state_manager = StateManager::new(state_file)?;
 
+        // Initialize index manager (best-effort — scraping continues without indexing if it fails)
+        let index_manager = match IndexManager::open(&data_dir) {
+            Ok(mgr) => Some(mgr),
+            Err(e) => {
+                eprintln!("Warning: Index not available: {}. Scraping without indexing.", e);
+                None
+            }
+        };
+
         Ok(Scraper {
             plugin_manager,
             data_dir,
             sessions_dir,
             state_manager,
+            index_manager,
+            index_write_depth: 0,
         })
     }
 
@@ -83,6 +99,59 @@ impl Scraper {
     /// Get the state manager
     pub fn state_manager(&self) -> &StateManager {
         &self.state_manager
+    }
+
+    /// Begin an index write session. Uses depth tracking so nested scrape calls
+    /// (scrape_all → scrape_plugin → scrape_file) only commit at the outermost level.
+    fn begin_index_write(&mut self) {
+        if self.index_write_depth == 0 {
+            if let Some(ref mut mgr) = self.index_manager {
+                if let Err(e) = mgr.begin_write() {
+                    warn!(error = %e, "failed to open index writer; disabling indexing");
+                    self.index_manager = None;
+                }
+            }
+        }
+        self.index_write_depth += 1;
+    }
+
+    /// End an index write session. Commits and releases the writer only when depth
+    /// returns to zero, making indexed documents visible to concurrent readers.
+    fn end_index_write(&mut self) {
+        if self.index_write_depth > 0 {
+            self.index_write_depth -= 1;
+        }
+        if self.index_write_depth == 0 {
+            if let Some(ref mut mgr) = self.index_manager {
+                if let Err(e) = mgr.finish() {
+                    warn!(error = %e, "failed to commit index");
+                }
+            }
+        }
+    }
+
+    /// Index a session if the index manager is available.
+    /// Returns true if the session was indexed.
+    fn index_session_events(
+        &mut self,
+        events: &[Event],
+        session_id: &str,
+        source_agent: &str,
+        project: Option<&str>,
+        model: Option<&str>,
+    ) -> bool {
+        if let Some(ref mut mgr) = self.index_manager {
+            let manifest = build_manifest_from_events(events, session_id, source_agent, project, model);
+            match mgr.index_session(events, &manifest) {
+                Ok(()) => true,
+                Err(e) => {
+                    warn!(session_id = %session_id, error = %e, "failed to index session");
+                    false
+                }
+            }
+        } else {
+            false
+        }
     }
 
     /// Discover log files for a plugin
@@ -125,8 +194,11 @@ impl Scraper {
 
     /// Scrape all plugins
     pub fn scrape_all(&mut self) -> Result<ScrapeResult> {
+        self.begin_index_write();
+
         let mut total_result = ScrapeResult {
             sessions_scraped: 0,
+            sessions_indexed: 0,
             events_written: 0,
             errors: Vec::new(),
             files_processed: 0,
@@ -138,10 +210,13 @@ impl Scraper {
             .map(String::from)
             .collect();
 
+        info!(plugins = plugin_names.len(), "starting scrape_all");
+
         for plugin_name in plugin_names {
             if let Some(plugin) = self.plugin_manager.get(&plugin_name).cloned() {
                 let result = self.scrape_plugin(&plugin)?;
                 total_result.sessions_scraped += result.sessions_scraped;
+                total_result.sessions_indexed += result.sessions_indexed;
                 total_result.events_written += result.events_written;
                 total_result.errors.extend(result.errors);
                 total_result.files_processed += result.files_processed;
@@ -152,15 +227,26 @@ impl Scraper {
         // Save updated state
         self.state_manager.save()?;
 
+        self.end_index_write();
+
+        info!(
+            sessions_scraped = total_result.sessions_scraped,
+            sessions_indexed = total_result.sessions_indexed,
+            "scrape_all complete"
+        );
+
         Ok(total_result)
     }
 
     /// Scrape a single plugin
     pub fn scrape_plugin(&mut self, plugin: &Plugin) -> Result<ScrapeResult> {
+        self.begin_index_write();
+
         let files = self.discover_files(plugin)?;
 
         let mut result = ScrapeResult {
             sessions_scraped: 0,
+            sessions_indexed: 0,
             events_written: 0,
             errors: Vec::new(),
             files_processed: 0,
@@ -186,6 +272,7 @@ impl Scraper {
                     match self.scrape_file(&file_path, plugin) {
                         Ok(file_result) => {
                             result.sessions_scraped += file_result.sessions_scraped;
+                            result.sessions_indexed += file_result.sessions_indexed;
                             result.events_written += file_result.events_written;
                             result.errors.extend(file_result.errors);
                             result.files_processed += 1;
@@ -212,16 +299,21 @@ impl Scraper {
             }
         }
 
+        self.end_index_write();
+
         Ok(result)
     }
 
     /// Scrape a single file
     pub fn scrape_file(&mut self, file_path: &Path, plugin: &Plugin) -> Result<ScrapeResult> {
+        self.begin_index_write();
+
         let parser: Box<dyn FormatParser> = match plugin.source.format {
             LogFormat::Jsonl => Box::new(JsonlParser),
             LogFormat::Markdown => Box::new(MarkdownParser),
             LogFormat::JsonTree => Box::new(JsonTreeParser),
             LogFormat::Sqlite => {
+                self.end_index_write();
                 return Err(AgentScribeError::InvalidPlugin(
                     "SQLite format not implemented in Phase 1".to_string(),
                 ));
@@ -234,8 +326,11 @@ impl Scraper {
         // Detect project path for this file
         let project = self.detect_project(file_path, plugin)?;
 
+        let path_str = file_path.to_str().unwrap_or("");
+
         let mut result = ScrapeResult {
             sessions_scraped: 0,
+            sessions_indexed: 0,
             events_written: 0,
             errors: Vec::new(),
             files_processed: 1,
@@ -243,6 +338,8 @@ impl Scraper {
         };
 
         for session_info in sessions {
+            let prefixed_session_id = format!("{}/{}", plugin.plugin.name, session_info.session_id);
+
             // Detect model for this session
             let model = self.detect_model(file_path, &session_info, plugin)?;
 
@@ -272,7 +369,6 @@ impl Scraper {
                     }
 
                     // Write session to file
-                    let prefixed_session_id = format!("{}/{}", plugin.plugin.name, session_info.session_id);
                     let session_path = self.sessions_dir
                         .join(&plugin.plugin.name)
                         .join(format!("{}.jsonl", session_info.session_id));
@@ -285,9 +381,18 @@ impl Scraper {
                             result.sessions_scraped += 1;
                             result.events_written += events.len();
 
-                            // Update state
-                            let path_str = file_path.to_str().unwrap_or("");
-                            self.state_manager.add_session(path_str, prefixed_session_id)?;
+                            // Track session in state
+                            self.state_manager.add_session(path_str, prefixed_session_id.clone())?;
+
+                            if self.index_session_events(
+                                &events,
+                                &prefixed_session_id,
+                                &plugin.plugin.name,
+                                project.as_deref(),
+                                model.as_deref(),
+                            ) {
+                                result.sessions_indexed += 1;
+                            }
                         }
                         Err(e) => {
                             result.errors.push(ScrapeError {
@@ -306,6 +411,7 @@ impl Scraper {
                             message: e.to_string(),
                         });
                     } else {
+                        self.end_index_write();
                         return Err(e);
                     }
                 }
@@ -314,14 +420,19 @@ impl Scraper {
 
         // Update file offset state
         let metadata = std::fs::metadata(file_path)?;
-        self.state_manager.set_offset(
-            file_path.to_str().unwrap_or(""),
-            metadata.len()
-        )?;
-        self.state_manager.set_modified(
-            file_path.to_str().unwrap_or(""),
-            Utc::now()
-        )?;
+        self.state_manager.set_offset(path_str, metadata.len())?;
+        self.state_manager.set_modified(path_str, Utc::now())?;
+
+        if result.sessions_scraped > 0 {
+            info!(
+                file = %file_path.display(),
+                sessions_scraped = result.sessions_scraped,
+                sessions_indexed = result.sessions_indexed,
+                "scrape complete"
+            );
+        }
+
+        self.end_index_write();
 
         Ok(result)
     }

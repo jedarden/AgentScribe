@@ -60,6 +60,10 @@ pub enum AgentScribeError {
     /// State file errors
     #[error("State file error: {0}")]
     State(String),
+
+    /// Rules extraction errors
+    #[error("Rules error: {0}")]
+    Rules(String),
 }
 
 impl AgentScribeError {

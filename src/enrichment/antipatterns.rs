@@ -331,7 +331,7 @@ mod tests {
         let manifest = make_manifest();
         // Create a minimal scraper for testing
         let temp = tempfile::tempdir().unwrap();
-        let scraper = Scraper::new(temp.path()).unwrap();
+        let scraper = Scraper::new(temp.path().to_path_buf()).unwrap();
         let patterns = detect_antipatterns(&events, &manifest, Some("success"), &scraper);
         assert!(patterns.is_empty());
     }
@@ -351,7 +351,7 @@ mod tests {
         ];
         let manifest = make_manifest();
         let temp = tempfile::tempdir().unwrap();
-        let scraper = Scraper::new(temp.path()).unwrap();
+        let scraper = Scraper::new(temp.path().to_path_buf()).unwrap();
         let patterns = detect_antipatterns(&events, &manifest, Some("failure"), &scraper);
         assert!(!patterns.is_empty());
         assert!(patterns[0].pattern.contains("Rejection window"));
@@ -366,7 +366,7 @@ mod tests {
         ];
         let manifest = make_manifest();
         let temp = tempfile::tempdir().unwrap();
-        let scraper = Scraper::new(temp.path()).unwrap();
+        let scraper = Scraper::new(temp.path().to_path_buf()).unwrap();
         let patterns = detect_antipatterns(&events, &manifest, Some("failure"), &scraper);
         assert!(patterns.iter().any(|p| p.pattern.contains("Error escalation")));
     }

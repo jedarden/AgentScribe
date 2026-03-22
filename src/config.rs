@@ -5,12 +5,35 @@
 use crate::enrichment::outcome::OutcomeConfig;
 use crate::error::{AgentScribeError, Result};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::fs;
 use directories::ProjectDirs;
 
 /// Default data directory name
 const DATA_DIR_NAME: &str = ".agentscribe";
+
+/// Model pricing for cost estimation
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModelPricing {
+    pub input_per_1m: f64,
+    pub output_per_1m: f64,
+}
+
+/// Cost configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CostConfig {
+    #[serde(default)]
+    pub models: HashMap<String, ModelPricing>,
+}
+
+impl Default for CostConfig {
+    fn default() -> Self {
+        CostConfig {
+            models: HashMap::new(),
+        }
+    }
+}
 
 /// Global configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -20,6 +43,8 @@ pub struct Config {
     pub index: IndexConfig,
     pub search: SearchConfig,
     pub outcome: OutcomeConfig,
+    #[serde(default)]
+    pub cost: CostConfig,
 }
 
 /// General configuration
@@ -68,6 +93,7 @@ impl Default for Config {
                 default_snippet_length: 200,
             },
             outcome: OutcomeConfig::default(),
+            cost: CostConfig::default(),
         }
     }
 }

@@ -13,7 +13,7 @@ use tantivy::query::{
     BooleanQuery, BoostQuery, FuzzyTermQuery, Occur, PhrasePrefixQuery, Query,
     RangeQuery, TermQuery,
 };
-use tantivy::schema::Field;
+use tantivy::schema::{Field, Value};
 use tantivy::{DateTime as TantivyDateTime, DocAddress, Searcher, TantivyDocument};
 use std::ops::Bound;
 
@@ -186,7 +186,7 @@ fn build_query(
     searcher: &Searcher,
     fields: &IndexFields,
     opts: &SearchOptions,
-    schema: &tantivy::schema::Schema,
+    _schema: &tantivy::schema::Schema,
 ) -> Result<Box<dyn Query>> {
     let mut clauses: Vec<(Occur, Box<dyn Query>)> = Vec::new();
 
@@ -256,22 +256,10 @@ fn build_query(
         }
     }
 
-    // --like <session-id>: find sessions with similar content (term-based similarity)
+    // --like <session-id>: find sessions with similar content (TF-IDF based MLT)
     if let Some(ref like_id) = opts.like_session {
-        let like_term = tantivy::schema::Term::from_field_text(fields.session_id, like_id);
-        // Try to find the document to extract terms from it
-        if let Ok(term_query) = build_more_like_this(searcher, fields, like_id) {
-            clauses.push((Occur::Must, term_query));
-        } else {
-            // Fallback: just search for the session ID
-            clauses.push((
-                Occur::Should,
-                Box::new(TermQuery::new(
-                    like_term,
-                    tantivy::schema::IndexRecordOption::Basic,
-                )),
-            ));
-        }
+        let mlt_query = build_more_like_this(searcher, fields, like_id)?;
+        clauses.push((Occur::Must, mlt_query));
     }
 
     // Filters (all as Must clauses)
@@ -460,7 +448,11 @@ fn build_fuzzy_query_for_field(field: Field, query_str: &str) -> Result<Box<dyn 
     Ok(Box::new(BooleanQuery::new(terms)))
 }
 
-/// Build a "more like this" query by extracting significant terms from a document.
+/// Build a "more like this" query using TF-IDF weighted term extraction.
+///
+/// Extracts terms from the source document's content and summary fields,
+/// ranks them by TF-IDF significance, and builds a boosted boolean query
+/// from the top-scoring terms. The original session is excluded from results.
 fn build_more_like_this(
     searcher: &Searcher,
     fields: &IndexFields,
@@ -475,7 +467,7 @@ fn build_more_like_this(
 
     if docs.is_empty() {
         return Err(AgentScribeError::DataDir(format!(
-            "Session '{}' not found",
+            "Session '{}' not found in index",
             session_id
         )));
     }
@@ -484,52 +476,99 @@ fn build_more_like_this(
         .doc(docs[0].1)
         .map_err(|e| AgentScribeError::DataDir(format!("Failed to fetch document: {}", e)))?;
 
-    // Extract text terms from the content field
-    let content_terms = doc
-        .get_all(fields.content)
-        .filter_map(|v| v.as_str())
-        .flat_map(|s| {
-            s.split_whitespace()
-                .filter(|w| w.len() > 3) // Skip short words
-                .map(|w| w.to_lowercase())
-                .collect::<Vec<_>>()
-        })
-        .collect::<Vec<_>>();
-
-    // Deduplicate and take top terms
-    let mut seen = std::collections::HashSet::new();
-    let mut unique_terms = Vec::new();
-    for term in content_terms {
-        if seen.insert(term.clone()) {
-            unique_terms.push(term);
+    // Collect text from content, summary, and tags fields
+    let mut all_text = String::new();
+    for field in [fields.content, fields.summary] {
+        if let Some(text) = doc.get_first(field).and_then(|v| v.as_str()) {
+            all_text.push_str(text);
+            all_text.push(' ');
         }
     }
+    // Tags are highly discriminative — include them
+    for tag_val in doc.get_all(fields.tags).filter_map(|v| v.as_str()) {
+        all_text.push_str(tag_val);
+        all_text.push(' ');
+    }
 
-    // Use up to 10 terms for the MLT query
-    let top_terms: Vec<_> = unique_terms.into_iter().take(10).collect();
+    // Tokenize and compute term frequencies within the document
+    let mut tf_counts: std::collections::HashMap<String, usize> =
+        std::collections::HashMap::new();
+    let total_tokens: usize = all_text
+        .split_whitespace()
+        .filter(|w| w.len() > 2) // skip very short / stopword-like tokens
+        .map(|w| {
+            let w = w.to_lowercase();
+            *tf_counts.entry(w.clone()).or_insert(0) += 1;
+            w
+        })
+        .count();
 
-    if top_terms.is_empty() {
+    if total_tokens == 0 {
         return Err(AgentScribeError::DataDir(
             "No content terms found in session".to_string(),
         ));
     }
 
+    // Compute TF-IDF for each unique term
+    let num_docs = searcher.num_docs() as f64;
+    let mut scored_terms: Vec<(String, f64)> = tf_counts
+        .into_iter()
+        .filter_map(|(term_str, tf)| {
+            let term =
+                tantivy::schema::Term::from_field_text(fields.content, &term_str);
+            let df = searcher.doc_freq(&term).unwrap_or(1) as f64;
+            if df < 1.0 {
+                return None;
+            }
+            let idf = (num_docs / df).ln();
+            let tf_norm = tf as f64 / total_tokens as f64;
+            let tfidf = tf_norm * idf;
+            Some((term_str, tfidf))
+        })
+        .collect();
+
+    // Sort by TF-IDF descending — most significant terms first
+    scored_terms.sort_by(|a, b| {
+        b.1.partial_cmp(&a.1)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    // Take top 20 significant terms
+    let top_terms: Vec<_> = scored_terms.into_iter().take(20).collect();
+
+    #[cfg(test)]
+    eprintln!("DEBUG MLT: top_terms={:?}", top_terms.iter().map(|(t, s)| format!("{}={:.4}", t, s)).collect::<Vec<_>>());
+
+    if top_terms.is_empty() {
+        return Err(AgentScribeError::DataDir(
+            "No significant terms found in session".to_string(),
+        ));
+    }
+
+    // Build MLT query: each term as a Should clause, boosted by relative TF-IDF
+    let max_score = top_terms[0].1;
     let mlt_clauses: Vec<(Occur, Box<dyn Query>)> = top_terms
         .iter()
-        .map(|term_str| {
-            let term = tantivy::schema::Term::from_field_text(fields.content, term_str);
+        .map(|(term_str, score)| {
+            let term =
+                tantivy::schema::Term::from_field_text(fields.content, term_str);
+            let boost = (score / max_score * 2.0 + 0.5) as f32;
             (
                 Occur::Should,
-                Box::new(TermQuery::new(
-                    term,
-                    tantivy::schema::IndexRecordOption::Basic,
+                Box::new(BoostQuery::new(
+                    Box::new(TermQuery::new(
+                        term,
+                        tantivy::schema::IndexRecordOption::Basic,
+                    )),
+                    boost,
                 )) as Box<dyn Query>,
             )
         })
         .collect();
 
     // Exclude the original session from results
-    let exclude_term = tantivy::schema::Term::from_field_text(fields.session_id, session_id);
+    let exclude_term =
+        tantivy::schema::Term::from_field_text(fields.session_id, session_id);
     let mut all_clauses = vec![(
         Occur::MustNot,
         Box::new(TermQuery::new(
@@ -550,7 +589,7 @@ fn doc_to_search_result(
     score: f32,
     opts: &SearchOptions,
 ) -> Option<SearchResult> {
-    let doc = searcher.doc(doc_addr).ok()?;
+    let doc: TantivyDocument = searcher.doc(doc_addr).ok()?;
 
     let session_id = doc
         .get_first(fields.session_id)
@@ -571,8 +610,8 @@ fn doc_to_search_result(
 
     let timestamp = doc
         .get_first(fields.timestamp)
-        .and_then(|v| v.as_date())
-        .map(|dt| {
+        .and_then(|v| v.as_datetime())
+        .map(|dt: tantivy::DateTime| {
             DateTime::from_timestamp(dt.into_timestamp_secs(), 0)
                 .unwrap_or_default()
                 .to_rfc3339()
@@ -679,7 +718,7 @@ fn lookup_session(
     start: &std::time::Instant,
     total_docs: u64,
 ) -> Result<SearchOutput> {
-    let (schema, fields) = build_schema();
+    let (_schema, fields) = build_schema();
 
     let term = tantivy::schema::Term::from_field_text(fields.session_id, session_id);
     let query = TermQuery::new(term, tantivy::schema::IndexRecordOption::Basic);
@@ -764,7 +803,7 @@ fn apply_sort(results: &mut [SearchResult], sort: SortOrder) {
 ///
 /// Each result costs tokens proportional to its text length (snippet + summary).
 /// Results are sorted by score (value density), then greedily selected.
-fn knapsack_pack(results: Vec<SearchResult>, token_budget: usize, snippet_length: usize) -> Vec<SearchResult> {
+fn knapsack_pack(results: Vec<SearchResult>, token_budget: usize, _snippet_length: usize) -> Vec<SearchResult> {
     let mut items: Vec<(usize, SearchResult)> = results
         .into_iter()
         .enumerate()
@@ -774,7 +813,7 @@ fn knapsack_pack(results: Vec<SearchResult>, token_budget: usize, snippet_length
             let token_cost = (text_len / CHARS_PER_TOKEN).max(1);
             (i, (token_cost, r))
         })
-        .map(|(i, (cost, r))| {
+        .map(|(_i, (cost, r))| {
             // Value = score, cost = token estimate
             (cost, r)
         })
@@ -806,7 +845,7 @@ fn knapsack_pack(results: Vec<SearchResult>, token_budget: usize, snippet_length
 }
 
 /// Format search results for human-readable output.
-pub fn format_human(output: &SearchOutput, snippet_length: usize) -> String {
+pub fn format_human(output: &SearchOutput, _snippet_length: usize) -> String {
     let mut lines = Vec::new();
 
     lines.push(format!(
@@ -1135,6 +1174,7 @@ mod tests {
 
         // Create index
         let (schema, fields) = build_schema();
+        std::fs::create_dir_all(&index_path).unwrap();
         let index = tantivy::Index::create_in_dir(&index_path, schema.clone()).unwrap();
         let mut writer = index.writer(50_000_000).unwrap();
 
@@ -1232,6 +1272,7 @@ mod tests {
         let index_path = temp_dir.path().join("index").join("tantivy");
 
         let (schema, fields) = build_schema();
+        std::fs::create_dir_all(&index_path).unwrap();
         let index = tantivy::Index::create_in_dir(&index_path, schema.clone()).unwrap();
         let mut writer = index.writer(50_000_000).unwrap();
 
@@ -1312,6 +1353,7 @@ mod tests {
         let index_path = temp_dir.path().join("index").join("tantivy");
 
         let (schema, fields) = build_schema();
+        std::fs::create_dir_all(&index_path).unwrap();
         let index = tantivy::Index::create_in_dir(&index_path, schema.clone()).unwrap();
         let mut writer = index.writer(50_000_000).unwrap();
 
@@ -1350,6 +1392,7 @@ mod tests {
         let index_path = temp_dir.path().join("index").join("tantivy");
 
         let (schema, fields) = build_schema();
+        std::fs::create_dir_all(&index_path).unwrap();
         let index = tantivy::Index::create_in_dir(&index_path, schema.clone()).unwrap();
         let mut writer = index.writer(50_000_000).unwrap();
 
@@ -1392,6 +1435,7 @@ mod tests {
         let index_path = temp_dir.path().join("index").join("tantivy");
 
         let (schema, fields) = build_schema();
+        std::fs::create_dir_all(&index_path).unwrap();
         let index = tantivy::Index::create_in_dir(&index_path, schema.clone()).unwrap();
         let mut writer = index.writer(50_000_000).unwrap();
 
@@ -1447,10 +1491,12 @@ mod tests {
 
     #[test]
     fn test_search_no_query_error() {
+        use tempfile::TempDir;
         let temp_dir = TempDir::new().unwrap();
         let index_path = temp_dir.path().join("index").join("tantivy");
 
         let (schema, _) = build_schema();
+        std::fs::create_dir_all(&index_path).unwrap();
         let index = tantivy::Index::create_in_dir(&index_path, schema).unwrap();
 
         let opts = SearchOptions {
@@ -1484,11 +1530,281 @@ mod tests {
 
     #[test]
     fn test_search_index_not_found() {
+        use tempfile::TempDir;
         let temp_dir = TempDir::new().unwrap();
         let opts = default_opts();
         let result = execute_search(temp_dir.path(), &opts);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("Index not found"));
+    }
+
+    #[test]
+    fn test_search_more_like_this() {
+        use crate::event::{Event, Role, SessionManifest};
+        use crate::index::build_session_document;
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let index_path = temp_dir.path().join("index").join("tantivy");
+
+        let (schema, fields) = build_schema();
+        std::fs::create_dir_all(&index_path).unwrap();
+        let index = tantivy::Index::create_in_dir(&index_path, schema.clone()).unwrap();
+        let mut writer = index.writer(50_000_000).unwrap();
+
+        let now = Utc::now();
+
+        // Source session: postgres migration work
+        let m1 = {
+            let mut m = SessionManifest::new("claude/src-1".to_string(), "claude-code".to_string());
+            m.project = Some("/home/user/api".to_string());
+            m.started = now;
+            m.turns = 8;
+            m.summary = Some("Migrated postgres schema from v3 to v4".to_string());
+            m.tags = vec!["postgres".to_string(), "migration".to_string()];
+            m
+        };
+        let e1 = vec![
+            Event::new(now, "claude/src-1".to_string(), "claude-code".to_string(), Role::User,
+                "I need to migrate the postgres schema from v3 to v4, including the users table and orders table".to_string()),
+            Event::new(now, "claude/src-1".to_string(), "claude-code".to_string(), Role::Assistant,
+                "I'll create the migration script that alters the users and orders tables, then backfill the data".to_string()),
+            Event::new(now, "claude/src-1".to_string(), "claude-code".to_string(), Role::Assistant,
+                "The migration ran successfully using ALTER TABLE and pg_dump for backup".to_string()),
+        ];
+        writer.add_document(build_session_document(&fields, &e1, &m1)).unwrap();
+
+        // Similar session: also postgres work
+        let m2 = {
+            let mut m = SessionManifest::new("aider/sim-1".to_string(), "aider".to_string());
+            m.project = Some("/home/user/api".to_string());
+            m.started = now - chrono::Duration::days(1);
+            m.turns = 5;
+            m.summary = Some("Added postgres connection pooling".to_string());
+            m.tags = vec!["postgres".to_string(), "pooling".to_string()];
+            m
+        };
+        let e2 = vec![
+            Event::new(now - chrono::Duration::days(1), "aider/sim-1".to_string(), "aider".to_string(), Role::User,
+                "Add connection pooling to the postgres database".to_string()),
+            Event::new(now - chrono::Duration::days(1), "aider/sim-1".to_string(), "aider".to_string(), Role::Assistant,
+                "Configured pgBouncer for postgres connection pooling with max 50 connections".to_string()),
+        ];
+        writer.add_document(build_session_document(&fields, &e2, &m2)).unwrap();
+
+        // Dissimilar session: completely different topic
+        let m3 = {
+            let mut m = SessionManifest::new("claude/unrelated".to_string(), "claude-code".to_string());
+            m.project = Some("/home/user/frontend".to_string());
+            m.started = now - chrono::Duration::days(2);
+            m.turns = 3;
+            m.summary = Some("Fixed CSS layout issue".to_string());
+            m.tags = vec!["css".to_string(), "frontend".to_string()];
+            m
+        };
+        let e3 = vec![
+            Event::new(now - chrono::Duration::days(2), "claude/unrelated".to_string(), "claude-code".to_string(), Role::User,
+                "The flexbox layout is broken on mobile".to_string()),
+            Event::new(now - chrono::Duration::days(2), "claude/unrelated".to_string(), "claude-code".to_string(), Role::Assistant,
+                "Fixed the CSS grid and flexbox properties for responsive design".to_string()),
+        ];
+        writer.add_document(build_session_document(&fields, &e3, &m3));
+
+        writer.commit().unwrap();
+        writer.wait_merging_threads().unwrap();
+
+        // --like should find the postgres session but rank it above the CSS one
+        let opts = SearchOptions {
+            query: None,
+            like_session: Some("claude/src-1".to_string()),
+            ..default_opts()
+        };
+        let result = execute_search(temp_dir.path(), &opts).unwrap();
+
+        // Should find at least the similar postgres session
+        assert!(result.total_matches >= 1);
+
+        // Source session should NOT appear in results
+        for r in &result.results {
+            assert_ne!(r.session_id, "claude/src-1");
+        }
+
+        // The postgres session should rank higher than the CSS session
+        if result.results.len() >= 2 {
+            let postgres_found = result.results.iter().any(|r| r.session_id == "aider/sim-1");
+            let css_found = result.results.iter().any(|r| r.session_id == "claude/unrelated");
+            if postgres_found && css_found {
+                let p_idx = result.results.iter().position(|r| r.session_id == "aider/sim-1").unwrap();
+                let c_idx = result.results.iter().position(|r| r.session_id == "claude/unrelated").unwrap();
+                assert!(p_idx < c_idx, "postgres session should rank higher than CSS session");
+            }
+        }
+    }
+
+    #[test]
+    fn test_search_more_like_this_nonexistent_session() {
+        use crate::event::{Event, Role, SessionManifest};
+        use crate::index::build_session_document;
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let index_path = temp_dir.path().join("index").join("tantivy");
+
+        let (schema, fields) = build_schema();
+        std::fs::create_dir_all(&index_path).unwrap();
+        let index = tantivy::Index::create_in_dir(&index_path, schema).unwrap();
+        let mut writer = index.writer(50_000_000).unwrap();
+
+        let now = Utc::now();
+        let m = SessionManifest::new("claude/exists".to_string(), "claude-code".to_string());
+        let e = vec![
+            Event::new(now, "claude/exists".to_string(), "claude-code".to_string(), Role::User, "hello".to_string()),
+        ];
+        writer.add_document(build_session_document(&fields, &e, &m)).unwrap();
+        writer.commit().unwrap();
+        writer.wait_merging_threads().unwrap();
+
+        // --like with nonexistent session should error
+        let opts = SearchOptions {
+            like_session: Some("nonexistent/session".to_string()),
+            ..default_opts()
+        };
+        let result = execute_search(temp_dir.path(), &opts);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("not found"));
+    }
+
+    #[test]
+    fn test_search_more_like_this_with_agent_filter() {
+        use crate::event::{Event, Role, SessionManifest};
+        use crate::index::build_session_document;
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let index_path = temp_dir.path().join("index").join("tantivy");
+
+        let (schema, fields) = build_schema();
+        std::fs::create_dir_all(&index_path).unwrap();
+        let index = tantivy::Index::create_in_dir(&index_path, schema).unwrap();
+        let mut writer = index.writer(50_000_000).unwrap();
+
+        let now = Utc::now();
+
+        // Source: claude-code session about postgres
+        let m1 = {
+            let mut m = SessionManifest::new("claude/src".to_string(), "claude-code".to_string());
+            m.started = now;
+            m.turns = 2;
+            m.tags = vec!["postgres".to_string()];
+            m
+        };
+        let e1 = vec![
+            Event::new(now, "claude/src".to_string(), "claude-code".to_string(), Role::User,
+                "fix the postgres connection issue".to_string()),
+            Event::new(now, "claude/src".to_string(), "claude-code".to_string(), Role::Assistant,
+                "reconfigured postgres connection string".to_string()),
+        ];
+        writer.add_document(build_session_document(&fields, &e1, &m1)).unwrap();
+
+        // Similar: aider session about postgres
+        let m2 = {
+            let mut m = SessionManifest::new("aider/sim".to_string(), "aider".to_string());
+            m.started = now;
+            m.turns = 2;
+            m.tags = vec!["postgres".to_string()];
+            m
+        };
+        let e2 = vec![
+            Event::new(now, "aider/sim".to_string(), "aider".to_string(), Role::User,
+                "postgres migration failed".to_string()),
+            Event::new(now, "aider/sim".to_string(), "aider".to_string(), Role::Assistant,
+                "fixed the postgres migration script".to_string()),
+        ];
+        writer.add_document(build_session_document(&fields, &e2, &m2)).unwrap();
+
+        writer.commit().unwrap();
+        writer.wait_merging_threads().unwrap();
+
+        // --like with --agent filter: should only return aider results
+        let opts = SearchOptions {
+            like_session: Some("claude/src".to_string()),
+            agent: vec!["aider".to_string()],
+            ..default_opts()
+        };
+        let result = execute_search(temp_dir.path(), &opts).unwrap();
+        for r in &result.results {
+            assert_eq!(r.source_agent, "aider");
+        }
+    }
+
+    #[test]
+    fn test_search_more_like_this_cross_agent() {
+        use crate::event::{Event, Role, SessionManifest};
+        use crate::index::build_session_document;
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let index_path = temp_dir.path().join("index").join("tantivy");
+
+        let (schema, fields) = build_schema();
+        std::fs::create_dir_all(&index_path).unwrap();
+        let index = tantivy::Index::create_in_dir(&index_path, schema).unwrap();
+        let mut writer = index.writer(50_000_000).unwrap();
+
+        let now = Utc::now();
+
+        // Source: claude-code session about kubernetes
+        let m1 = {
+            let mut m = SessionManifest::new("claude/k8s-1".to_string(), "claude-code".to_string());
+            m.project = Some("/home/user/cluster".to_string());
+            m.started = now;
+            m.turns = 4;
+            m.tags = vec!["kubernetes".to_string(), "deployment".to_string()];
+            m
+        };
+        let e1 = vec![
+            Event::new(now, "claude/k8s-1".to_string(), "claude-code".to_string(), Role::User,
+                "deploy the application to kubernetes cluster".to_string()),
+            Event::new(now, "claude/k8s-1".to_string(), "claude-code".to_string(), Role::Assistant,
+                "created the kubernetes deployment yaml and applied with kubectl".to_string()),
+        ];
+        writer.add_document(build_session_document(&fields, &e1, &m1)).unwrap();
+
+        // Cross-agent similar: aider session about kubernetes
+        let m2 = {
+            let mut m = SessionManifest::new("aider/k8s-2".to_string(), "aider".to_string());
+            m.project = Some("/home/user/other-project".to_string());
+            m.started = now;
+            m.turns = 3;
+            m.tags = vec!["kubernetes".to_string(), "helm".to_string()];
+            m
+        };
+        let e2 = vec![
+            Event::new(now, "aider/k8s-2".to_string(), "aider".to_string(), Role::User,
+                "set up kubernetes with helm charts".to_string()),
+            Event::new(now, "aider/k8s-2".to_string(), "aider".to_string(), Role::Assistant,
+                "created helm values and deployed to kubernetes using helm install".to_string()),
+        ];
+        writer.add_document(build_session_document(&fields, &e2, &m2)).unwrap();
+
+        writer.commit().unwrap();
+        writer.wait_merging_threads().unwrap();
+
+        // --like should discover the cross-agent session
+        let opts = SearchOptions {
+            like_session: Some("claude/k8s-1".to_string()),
+            ..default_opts()
+        };
+        let result = execute_search(temp_dir.path(), &opts).unwrap();
+        eprintln!("DEBUG: total_matches={}, results={:?}", result.total_matches, result.results.iter().map(|r| &r.session_id).collect::<Vec<_>>());
+        assert!(result.total_matches >= 1, "expected at least 1 match, got {}", result.total_matches);
+
+        // Should find the aider session (cross-agent discovery)
+        let cross_agent_found = result
+            .results
+            .iter()
+            .any(|r| r.session_id == "aider/k8s-2" && r.source_agent == "aider");
+        assert!(cross_agent_found, "should discover cross-agent similar sessions");
     }
 
     // Helper to create default search options

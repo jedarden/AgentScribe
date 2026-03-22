@@ -58,6 +58,9 @@ fs2 = "0.4"
 # Process checking (daemon status)
 libc = "0.2"
 
+# Ctrl-C handling
+ctrlc = { version = "3.4", features = ["termination"] }
+
 # Colors in terminal
 console = "0.15"
 termcolor = "1.4"

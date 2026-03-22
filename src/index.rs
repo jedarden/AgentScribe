@@ -9,7 +9,7 @@ use crate::tags;
 use chrono::{DateTime, Utc};
 use std::collections::HashSet;
 use std::path::Path;
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 use tantivy::schema::*;
 use tantivy::TantivyDocument;
@@ -400,6 +400,10 @@ impl IndexManager {
     }
 
     /// Begin a write session. Idempotent — no-op if writer is already active.
+    ///
+    /// The writer is created once and reused across multiple `index_session()`
+    /// calls. It is held only during active scrape/commit, allowing concurrent
+    /// searches to proceed against the last committed state.
     pub fn begin_write(&mut self) -> Result<()> {
         if self.writer.is_some() {
             return Ok(());
@@ -409,6 +413,7 @@ impl IndexManager {
             AgentScribeError::DataDir(format!("Failed to create index writer: {}", e))
         })?;
         self.writer = Some(writer);
+        debug!("index writer opened");
         Ok(())
     }
 
@@ -427,15 +432,17 @@ impl IndexManager {
             )
         })?;
 
-        // Delete existing documents for this session_id
+        // Delete existing documents for this session_id (soft delete until commit)
         let term = Term::from_field_text(self.fields.session_id, &manifest.session_id);
         writer.delete_term(term);
+        debug!(session_id = %manifest.session_id, "deleted old index entry");
 
         // Build and add new document
         let doc = build_session_document(&self.fields, events, manifest);
         writer.add_document(doc).map_err(|e| {
             AgentScribeError::DataDir(format!("Failed to add document: {}", e))
         })?;
+        info!(session_id = %manifest.session_id, "indexed session");
 
         Ok(())
     }
@@ -450,17 +457,31 @@ impl IndexManager {
 
         let term = Term::from_field_text(self.fields.session_id, session_id);
         writer.delete_term(term);
+        info!(session_id = %session_id, "deleted session from index");
+        Ok(())
+    }
+
+    /// Commit pending changes to make them visible to readers.
+    ///
+    /// Does NOT release the writer — subsequent calls to `index_session()` can
+    /// continue using it. Call `finish()` to release the writer.
+    pub fn commit(&mut self) -> Result<()> {
+        if let Some(ref mut writer) = self.writer {
+            writer.commit().map_err(|e| {
+                AgentScribeError::DataDir(format!("Failed to commit index: {}", e))
+            })?;
+            info!("index committed");
+        }
         Ok(())
     }
 
     /// Commit pending changes and release the writer.
     ///
-    /// Idempotent — no-op if no writer is active.
-    pub fn commit(&mut self) -> Result<()> {
-        if let Some(writer) = self.writer.take() {
-            writer.commit().map_err(|e| {
-                AgentScribeError::DataDir(format!("Failed to commit index: {}", e))
-            })?;
+    /// After this call, a new `begin_write()` is required before further indexing.
+    pub fn finish(&mut self) -> Result<()> {
+        self.commit()?;
+        if self.writer.take().is_some() {
+            debug!("index writer released");
         }
         Ok(())
     }
