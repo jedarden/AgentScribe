@@ -182,8 +182,13 @@ pub fn run_gc(
         sessions_deleted += 1;
     }
 
-    // Commit index changes and optimize
+    // Commit index changes
     index_manager.finish()?;
+
+    // Optimize: remove unused segment files from the index
+    if let Err(e) = index_manager.optimize() {
+        eprintln!("Warning: index optimization failed: {}", e);
+    }
 
     // Clean up empty plugin directories
     if let Ok(entries) = fs::read_dir(&sessions_dir) {

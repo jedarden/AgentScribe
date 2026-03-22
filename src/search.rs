@@ -448,6 +448,22 @@ fn build_fuzzy_query_for_field(field: Field, query_str: &str) -> Result<Box<dyn 
     Ok(Box::new(BooleanQuery::new(terms)))
 }
 
+/// Common English stop words to exclude from MLT term extraction.
+static MLT_STOP_WORDS: &[&str] = &[
+    "the", "and", "for", "are", "but", "not", "you", "all", "can", "had",
+    "her", "was", "one", "our", "out", "has", "have", "from", "been", "some",
+    "them", "than", "its", "over", "that", "this", "with", "will", "each",
+    "make", "like", "just", "also", "did", "get", "got", "how", "new", "now",
+    "old", "see", "way", "who", "did", "may", "after", "then", "into",
+    "could", "other", "about", "which", "their", "there", "would", "these",
+    "should", "being", "such", "were", "been", "because", "does", "doing",
+];
+
+/// Check if a token is a stop word.
+fn is_stop_word(word: &str) -> bool {
+    MLT_STOP_WORDS.binary_search(&word).is_ok()
+}
+
 /// Build a "more like this" query using TF-IDF weighted term extraction.
 ///
 /// Extracts terms from the source document's content and summary fields,
@@ -490,14 +506,18 @@ fn build_more_like_this(
         all_text.push(' ');
     }
 
-    // Tokenize and compute term frequencies within the document
+    // Tokenize and compute term frequencies, filtering stop words and short tokens
     let mut tf_counts: std::collections::HashMap<String, usize> =
         std::collections::HashMap::new();
     let total_tokens: usize = all_text
         .split_whitespace()
-        .filter(|w| w.len() > 2) // skip very short / stopword-like tokens
+        .filter(|w| w.len() > 2)
         .map(|w| {
             let w = w.to_lowercase();
+            w
+        })
+        .filter(|w| !is_stop_word(w))
+        .map(|w| {
             *tf_counts.entry(w.clone()).or_insert(0) += 1;
             w
         })
@@ -535,9 +555,6 @@ fn build_more_like_this(
 
     // Take top 20 significant terms
     let top_terms: Vec<_> = scored_terms.into_iter().take(20).collect();
-
-    #[cfg(test)]
-    eprintln!("DEBUG MLT: top_terms={:?}", top_terms.iter().map(|(t, s)| format!("{}={:.4}", t, s)).collect::<Vec<_>>());
 
     if top_terms.is_empty() {
         return Err(AgentScribeError::DataDir(
@@ -1608,7 +1625,7 @@ mod tests {
             Event::new(now - chrono::Duration::days(2), "claude/unrelated".to_string(), "claude-code".to_string(), Role::Assistant,
                 "Fixed the CSS grid and flexbox properties for responsive design".to_string()),
         ];
-        writer.add_document(build_session_document(&fields, &e3, &m3));
+        writer.add_document(build_session_document(&fields, &e3, &m3)).unwrap();
 
         writer.commit().unwrap();
         writer.wait_merging_threads().unwrap();
@@ -1652,8 +1669,8 @@ mod tests {
 
         let (schema, fields) = build_schema();
         std::fs::create_dir_all(&index_path).unwrap();
-        let index = tantivy::Index::create_in_dir(&index_path, schema).unwrap();
-        let mut writer = index.writer(50_000_000).unwrap();
+        let _index = tantivy::Index::create_in_dir(&index_path, schema).unwrap();
+        let mut writer = _index.writer(50_000_000).unwrap();
 
         let now = Utc::now();
         let m = SessionManifest::new("claude/exists".to_string(), "claude-code".to_string());
@@ -1753,7 +1770,7 @@ mod tests {
 
         let now = Utc::now();
 
-        // Source: claude-code session about kubernetes
+        // Source: claude-code session about kubernetes deployment
         let m1 = {
             let mut m = SessionManifest::new("claude/k8s-1".to_string(), "claude-code".to_string());
             m.project = Some("/home/user/cluster".to_string());
@@ -1764,13 +1781,13 @@ mod tests {
         };
         let e1 = vec![
             Event::new(now, "claude/k8s-1".to_string(), "claude-code".to_string(), Role::User,
-                "deploy the application to kubernetes cluster".to_string()),
+                "deploy the application to kubernetes cluster using kubectl".to_string()),
             Event::new(now, "claude/k8s-1".to_string(), "claude-code".to_string(), Role::Assistant,
-                "created the kubernetes deployment yaml and applied with kubectl".to_string()),
+                "created kubernetes deployment yaml manifest and applied kubectl rollout".to_string()),
         ];
         writer.add_document(build_session_document(&fields, &e1, &m1)).unwrap();
 
-        // Cross-agent similar: aider session about kubernetes
+        // Cross-agent similar: aider session about kubernetes deployment
         let m2 = {
             let mut m = SessionManifest::new("aider/k8s-2".to_string(), "aider".to_string());
             m.project = Some("/home/user/other-project".to_string());
@@ -1781,11 +1798,27 @@ mod tests {
         };
         let e2 = vec![
             Event::new(now, "aider/k8s-2".to_string(), "aider".to_string(), Role::User,
-                "set up kubernetes with helm charts".to_string()),
+                "deploy kubernetes deployment for the application".to_string()),
             Event::new(now, "aider/k8s-2".to_string(), "aider".to_string(), Role::Assistant,
-                "created helm values and deployed to kubernetes using helm install".to_string()),
+                "created kubernetes deployment yaml and applied kubectl rollout successfully".to_string()),
         ];
         writer.add_document(build_session_document(&fields, &e2, &m2)).unwrap();
+
+        // Unrelated session to dilute common terms
+        let m3 = {
+            let mut m = SessionManifest::new("claude/unrelated-css".to_string(), "claude-code".to_string());
+            m.started = now;
+            m.turns = 2;
+            m.tags = vec!["css".to_string(), "frontend".to_string()];
+            m
+        };
+        let e3 = vec![
+            Event::new(now, "claude/unrelated-css".to_string(), "claude-code".to_string(), Role::User,
+                "fix flexbox layout".to_string()),
+            Event::new(now, "claude/unrelated-css".to_string(), "claude-code".to_string(), Role::Assistant,
+                "updated css grid properties".to_string()),
+        ];
+        writer.add_document(build_session_document(&fields, &e3, &m3)).unwrap();
 
         writer.commit().unwrap();
         writer.wait_merging_threads().unwrap();
@@ -1796,7 +1829,6 @@ mod tests {
             ..default_opts()
         };
         let result = execute_search(temp_dir.path(), &opts).unwrap();
-        eprintln!("DEBUG: total_matches={}, results={:?}", result.total_matches, result.results.iter().map(|r| &r.session_id).collect::<Vec<_>>());
         assert!(result.total_matches >= 1, "expected at least 1 match, got {}", result.total_matches);
 
         // Should find the aider session (cross-agent discovery)

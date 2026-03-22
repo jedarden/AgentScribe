@@ -486,6 +486,23 @@ impl IndexManager {
         Ok(())
     }
 
+    /// Run garbage collection on the index to remove unused segment files.
+    ///
+    /// Opens a temporary writer to trigger GC, then releases it.
+    pub fn optimize(&self) -> Result<()> {
+        let writer: tantivy::IndexWriter = self.index.writer(50_000_000).map_err(|e| {
+            AgentScribeError::DataDir(format!("Failed to open writer for GC: {}", e))
+        })?;
+        writer
+            .garbage_collect_files()
+            .wait()
+            .map_err(|e| {
+                AgentScribeError::DataDir(format!("Failed to garbage collect index: {}", e))
+            })?;
+        info!("index garbage collection complete");
+        Ok(())
+    }
+
     /// Check if a writer is currently active.
     pub fn is_writing(&self) -> bool {
         self.writer.is_some()
