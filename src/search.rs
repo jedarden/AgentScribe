@@ -449,14 +449,15 @@ fn build_fuzzy_query_for_field(field: Field, query_str: &str) -> Result<Box<dyn 
 }
 
 /// Common English stop words to exclude from MLT term extraction.
+/// Must be sorted alphabetically for binary_search.
 static MLT_STOP_WORDS: &[&str] = &[
-    "the", "and", "for", "are", "but", "not", "you", "all", "can", "had",
-    "her", "was", "one", "our", "out", "has", "have", "from", "been", "some",
-    "them", "than", "its", "over", "that", "this", "with", "will", "each",
-    "make", "like", "just", "also", "did", "get", "got", "how", "new", "now",
-    "old", "see", "way", "who", "did", "may", "after", "then", "into",
-    "could", "other", "about", "which", "their", "there", "would", "these",
-    "should", "being", "such", "were", "been", "because", "does", "doing",
+    "about", "after", "all", "also", "and", "are", "because", "been", "being",
+    "but", "can", "could", "did", "does", "doing", "each", "for", "from",
+    "get", "got", "had", "has", "have", "her", "how", "into", "its", "just",
+    "like", "make", "may", "new", "not", "now", "old", "one", "other", "our",
+    "out", "over", "see", "should", "some", "such", "than", "that", "the",
+    "their", "them", "then", "there", "these", "this", "was", "way", "were",
+    "who", "will", "with", "would", "you",
 ];
 
 /// Check if a token is a stop word.
@@ -555,6 +556,9 @@ fn build_more_like_this(
 
     // Take top 20 significant terms
     let top_terms: Vec<_> = scored_terms.into_iter().take(20).collect();
+
+    #[cfg(test)]
+    eprintln!("DEBUG MLT: num_docs={}, total_tokens={}, top_terms={:?}", num_docs, total_tokens, top_terms.iter().map(|(t, s)| format!("{}={:.4}", t, s)).collect::<Vec<_>>());
 
     if top_terms.is_empty() {
         return Err(AgentScribeError::DataDir(
@@ -1829,6 +1833,22 @@ mod tests {
             ..default_opts()
         };
         let result = execute_search(temp_dir.path(), &opts).unwrap();
+
+        // Debug: verify terms are searchable
+        let reader = index.reader().unwrap();
+        let searcher = reader.searcher();
+        let k8s_term = tantivy::schema::Term::from_field_text(fields.content, "kubernetes");
+        eprintln!("DEBUG: kubernetes doc_freq={:?}", searcher.doc_freq(&k8s_term));
+        let (schema2, fields2) = build_schema();
+        let k8s_query = TermQuery::new(k8s_term, tantivy::schema::IndexRecordOption::Basic);
+        let k8s_docs: Vec<(f32, _)> = searcher.search(&k8s_query, &TopDocs::with_limit(10)).unwrap();
+        eprintln!("DEBUG: kubernetes query matched {} docs", k8s_docs.len());
+        for (score, addr) in &k8s_docs {
+            let d: TantivyDocument = searcher.doc(*addr).unwrap();
+            let sid = d.get_first(fields2.session_id).and_then(|v| v.as_str()).unwrap_or("?");
+            eprintln!("DEBUG:   {} score={}", sid, score);
+        }
+
         assert!(result.total_matches >= 1, "expected at least 1 match, got {}", result.total_matches);
 
         // Should find the aider session (cross-agent discovery)
