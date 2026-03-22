@@ -152,6 +152,25 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
+    /// Detect recurring problems from error fingerprints
+    Recurring {
+        /// Only consider sessions after this timestamp (ISO 8601, or relative like 30d, 12w)
+        #[arg(long)]
+        since: Option<String>,
+
+        /// Minimum occurrence count to report (default: 3)
+        #[arg(long, default_value = "3")]
+        threshold: usize,
+
+        /// JSON output
+        #[arg(long)]
+        json: bool,
+    },
+    /// Manage the background daemon
+    Daemon {
+        #[command(subcommand)]
+        action: DaemonAction,
+    },
 }
 
 /// Config subcommands
@@ -197,6 +216,33 @@ enum PluginsAction {
     Show {
         /// Plugin name
         name: String,
+    },
+}
+
+/// Daemon subcommands
+#[derive(Subcommand, Debug)]
+enum DaemonAction {
+    /// Start the daemon in the background
+    Start,
+    /// Run the daemon in the foreground (for systemd)
+    Run,
+    /// Stop a running daemon
+    Stop,
+    /// Show daemon status (PID, uptime, RSS, activity)
+    Status {
+        /// JSON output
+        #[arg(long)]
+        json: bool,
+    },
+    /// Tail the daemon log
+    Logs {
+        /// Follow mode (like tail -f)
+        #[arg(short = 'f', long)]
+        follow: bool,
+
+        /// Number of lines to show (default: 20)
+        #[arg(short = 'n', long, default_value = "20")]
+        lines: usize,
     },
 }
 
@@ -251,6 +297,83 @@ pub fn run() -> Result<()> {
             agent, project, since, before, tag, outcome, r#type, model,
             fuzzy, max_results, snippet_length, token_budget, offset, sort, json,
         ),
+        Commands::Recurring { since, threshold, json } => run_recurring(since, threshold, json),
+        Commands::Daemon { action } => run_daemon(action),
+    }
+}
+
+/// Run daemon commands
+fn run_daemon(action: DaemonAction) -> Result<()> {
+    let config = load_config()?;
+    let data_dir = config.data_dir()?;
+
+    // Ensure data directory exists for all daemon commands
+    if !data_dir.exists() {
+        eprintln!("AgentScribe not initialized. Run 'agentscribe config init' to set up.");
+        std::process::exit(1);
+    }
+
+    match action {
+        DaemonAction::Start => {
+            crate::daemon::start(&data_dir)?;
+            Ok(())
+        }
+        DaemonAction::Run => {
+            crate::daemon::run(&data_dir)
+        }
+        DaemonAction::Stop => {
+            crate::daemon::stop(&data_dir)
+        }
+        DaemonAction::Status { json } => {
+            let info = crate::daemon::status(&data_dir)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&info).unwrap());
+            } else {
+                print_daemon_status(&info);
+            }
+            Ok(())
+        }
+        DaemonAction::Logs { follow, lines } => {
+            crate::daemon::logs(&data_dir, follow, lines)
+        }
+    }
+}
+
+/// Format daemon status for human-readable output
+fn print_daemon_status(info: &crate::daemon::DaemonInfo) {
+    if !info.running {
+        println!("Daemon: stopped");
+        return;
+    }
+
+    println!("Daemon: running");
+
+    if let Some(pid) = info.pid {
+        println!("  PID: {}", pid);
+    }
+
+    if let Some(secs) = info.uptime_secs {
+        println!("  Uptime: {}", crate::daemon::format_duration(secs));
+    }
+
+    if let Some(rss) = info.rss_bytes {
+        println!("  RSS: {}", crate::daemon::format_bytes(rss));
+    }
+
+    if let Some(peak) = info.peak_rss_bytes {
+        println!("  Peak RSS: {}", crate::daemon::format_bytes(peak));
+    }
+
+    if let Some(sessions) = info.sessions_indexed {
+        println!("  Sessions indexed: {}", sessions);
+    }
+
+    if let Some(ts) = info.last_scrape {
+        println!("  Last scrape: {}", ts.to_rfc3339());
+    }
+
+    if let Some(ts) = info.started_at {
+        println!("  Started at: {}", ts.to_rfc3339());
     }
 }
 
@@ -459,6 +582,9 @@ fn run_scrape(
             } else {
                 let result = scraper.scrape_file(&file_path, &p)?;
                 println!("Scraped {} session(s)", result.sessions_scraped);
+                if result.sessions_indexed > 0 {
+                    println!("Indexed {} session(s)", result.sessions_indexed);
+                }
                 if !result.errors.is_empty() {
                     eprintln!("Errors: {}", result.errors.len());
                 }
@@ -485,6 +611,9 @@ fn run_scrape(
                     result.sessions_scraped,
                     result.files_processed
                 );
+                if result.sessions_indexed > 0 {
+                    println!("Indexed {} session(s)", result.sessions_indexed);
+                }
                 if result.files_skipped > 0 {
                     println!("  ({} files unchanged, skipped)", result.files_skipped);
                 }
@@ -516,6 +645,9 @@ fn run_scrape(
                 "Scraped {} session(s) total",
                 result.sessions_scraped
             );
+            if result.sessions_indexed > 0 {
+                println!("Indexed {} session(s)", result.sessions_indexed);
+            }
             if !result.errors.is_empty() {
                 eprintln!("Errors: {}", result.errors.len());
             }
@@ -946,4 +1078,35 @@ fn load_config() -> Result<Config> {
     } else {
         Ok(Config::default())
     }
+}
+
+/// Run recurring problem detection
+fn run_recurring(since: Option<String>, threshold: usize, json: bool) -> Result<()> {
+    let config = load_config()?;
+    let data_dir = config.data_dir()?;
+
+    if !data_dir.exists() {
+        eprintln!("AgentScribe not initialized. Run 'agentscribe config init' to set up.");
+        std::process::exit(1);
+    }
+
+    let since_dt = match since {
+        Some(ref s) => search::parse_datetime(s)?,
+        None => chrono::Utc::now() - chrono::Duration::days(30),
+    };
+
+    let opts = crate::recurring::RecurringOptions {
+        since: since_dt,
+        threshold,
+    };
+
+    let output = crate::recurring::detect_recurring(&data_dir, &opts)?;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&output).unwrap());
+    } else {
+        print!("{}", crate::recurring::format_human(&output));
+    }
+
+    Ok(())
 }

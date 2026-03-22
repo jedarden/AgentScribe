@@ -179,21 +179,72 @@ Markdown parsing uses prefix-based role detection:
 
 #### For `sqlite` format
 
-SQLite parsing requires specifying the query to extract conversations:
+SQLite parsing requires specifying the query to extract conversations. AgentScribe opens SQLite databases in read-only mode and never modifies them.
 
 | Field    | Required | Description                              |
 |----------|----------|------------------------------------------|
 | `query`  | yes      | SQL query that returns rows with the mapped fields. Use `{file}` as placeholder for the database path. |
-| `key_filter` | no   | For key-value stores (like Cursor/Windsurf `state.vscdb`), the key pattern to read. |
+| `key_filter` | no   | For key-value stores (like Cursor/Windsurf `state.vscdb`), the key pattern to read. When set, only rows whose key matches this pattern are selected. |
+| `content_path` | no | JSONPath expression into the extracted value blob. Used when the database stores conversations as nested JSON blobs. Supports `[*]` for array access and dot-notation for nested fields. |
+
+**Agents using this format:** Cursor, Windsurf
+
+**Key-value stores (Cursor/Windsurf):**
+
+Cursor and Windsurf store conversation data in a `state.vscdb` SQLite database as JSON blobs in a key-value table. Use `key_filter` to target the right keys:
 
 ```toml
+[plugin]
+name = "cursor"
+version = "1.0"
+
+[source]
+paths = ["~/.cursor/state.vscdb", "~/.windsurf/state.vscdb"]
+format = "sqlite"
+
+[source.session_detection]
+method = "delimiter"
+delimiter_pattern = "^---TAB---"    # Sessions are delimited within the JSON blob
+
 [parser]
 query = "SELECT value FROM ItemTable WHERE key = 'composerData'"
-content_path = "tabs[*].messages[*]"   # JSONPath into the extracted blob
+key_filter = "composerData"
+content_path = "tabs[*].messages[*]"
 role = "role"
 content = "content"
 timestamp = "timestamp"
+
+[parser.static]
+source_agent = "cursor"
 ```
+
+**Direct table queries:**
+
+If the database stores conversations in a regular table with structured columns:
+
+```toml
+[plugin]
+name = "my-agent"
+version = "1.0"
+
+[source]
+paths = ["~/.my-agent/conversations.db"]
+format = "sqlite"
+
+[source.session_detection]
+method = "field:session_id"
+
+[parser]
+query = "SELECT session_id, role, content, timestamp FROM messages ORDER BY timestamp"
+role = "role"
+content = "content"
+timestamp = "timestamp"
+
+[parser.static]
+source_agent = "my-agent"
+```
+
+**Note:** AgentScribe opens SQLite databases in read-only mode (`?mode=ro`). If you get "database is locked" errors, the source agent may have an exclusive lock — scrape when the agent is idle.
 
 ### `[parser.role_map]` — Role Translation (Optional)
 

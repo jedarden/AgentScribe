@@ -128,25 +128,32 @@ agentscribe search <query> [options]
 
 | Argument | Required | Description |
 |----------|----------|-------------|
-| `<query>` | yes | Search query string. Supports Tantivy query syntax: `+required -excluded "exact phrase"`, field-scoped queries (`content:migration`), boolean operators (`AND`, `OR`, `NOT`), fuzzy terms (`migrat~1`), wildcard (`migrat*`). |
+| `<query>` | no* | Search query string. Supports Tantivy query syntax: `+required -excluded "exact phrase"`, field-scoped queries (`content:migration`), boolean operators (`AND`, `OR`, `NOT`), fuzzy terms (`migrat~1`), wildcard (`migrat*`). Required unless using `--error`, `--code`, `--solution-only`, `--like`, or `--session`. |
 
 ### Options
 
 | Option | Short | Default | Description |
 |--------|-------|---------|-------------|
+| `--error <pattern>` | | | Search error fingerprints. Matches against normalized error patterns (e.g., `ConnectionError:Connection refused`). |
+| `--code <query>` | | | Search extracted code artifacts by content. |
+| `--lang <language>` | | | Language filter for `--code` search (e.g., `rust`, `python`, `typescript`). |
+| `--solution-only` | | off | Return only sessions that have an extracted solution. |
+| `--like <session-id>` | | | Find sessions similar to the given session ID using TF-IDF similarity. |
+| `--session <id>` | | | Retrieve a specific session by ID. Ignores query and filters. Returns the full session content. |
 | `--max-results <n>` | `-n` | `10` | Maximum number of sessions to return. |
 | `--snippet-length <n>` | | `200` | Maximum character length of content snippets per result. Set to `0` to omit snippets. |
+| `--token-budget <n>` | | | Token budget for greedy knapsack context packing. Optimally packs results within the token limit. |
 | `--agent <name>` | `-a` | all | Filter to sessions from this agent type. Can be repeated. |
 | `--project <path>` | | all | Filter to sessions from this project directory. |
 | `--since <datetime>` | | | Only match sessions after this timestamp. ISO 8601 or relative (`24h`, `7d`, `1w`). |
 | `--before <datetime>` | | | Only match sessions before this timestamp. |
 | `--tag <tag>` | `-t` | | Filter by tag. Can be repeated (AND logic). |
 | `--outcome <outcome>` | | | Filter by session outcome: `success`, `failure`, `abandoned`, `unknown`. |
-| `--fields <fields>` | | all | Comma-separated list of fields to include in output: `session_id`, `summary`, `snippet`, `agent`, `project`, `tags`, `timestamp`, `score`, `turns`, `outcome`. |
+| `--type <type>` | | all | Filter by document type: `session`, `code_artifact`. |
+| `--model <name>` | | all | Filter by LLM model name. |
 | `--sort <field>` | `-s` | `relevance` | Sort order: `relevance` (BM25 score), `newest`, `oldest`, `turns`. |
 | `--offset <n>` | | `0` | Skip first N results. For pagination. |
 | `--fuzzy` | | off | Enable fuzzy matching on all query terms (Levenshtein distance 1). Useful when agents don't know exact terminology. |
-| `--session <id>` | | | Retrieve a specific session by ID. Ignores query and filters. Returns the full session content. |
 
 ### Examples
 
@@ -175,8 +182,23 @@ agentscribe search '+content:migration +agent:claude-code -content:rollback'
 # Retrieve a specific session's full content
 agentscribe search --session claude-code/83f5a4e7
 
-# Only return session IDs and summaries
-agentscribe search "auth" --fields session_id,summary --json
+# Search by error fingerprint
+agentscribe search --error "ConnectionError"
+
+# Search code artifacts
+agentscribe search --code "fn migrate" --lang rust
+
+# Find sessions with extracted solutions
+agentscribe search "auth token" --solution-only
+
+# Find similar sessions
+agentscribe search --like claude-code/83f5a4e7
+
+# Context packing for agent prompts (fit within token budget)
+agentscribe search "error handling" --token-budget 4000 --json
+
+# Filter by document type and model
+agentscribe search "refactor" --type code_artifact --model claude-sonnet-4-20250514
 ```
 
 ### Output
@@ -902,6 +924,312 @@ Summary written to ~/.agentscribe/sessions/claude-code/83f5a4e7.md
 | 0 | Success |
 | 1 | Session not found |
 | 2 | Summary already exists (use `--force` to overwrite) |
+
+---
+
+## `agentscribe recurring`
+
+Detect recurring problems by grouping error fingerprints across sessions. Shows problems that happen repeatedly, which projects they affect, and links to sessions that fixed them.
+
+### Usage
+
+```
+agentscribe recurring [options]
+```
+
+### Options
+
+| Option | Short | Default | Description |
+|--------|-------|---------|-------------|
+| `--since <datetime>` | | `30d` | Only consider sessions after this timestamp. ISO 8601 or relative (`30d`, `12w`). |
+| `--threshold <n>` | | `3` | Minimum occurrence count to report. Problems with fewer occurrences are excluded. |
+| `--json` | | off | Output in JSON format. |
+
+### Examples
+
+```bash
+# Find recurring problems in the last 30 days
+agentscribe recurring
+
+# Only problems that occurred 5+ times
+agentscribe recurring --threshold 5
+
+# Last 90 days
+agentscribe recurring --since 90d
+
+# JSON for scripting
+agentscribe recurring --since 30d --json
+```
+
+### Output
+
+Human-readable (default):
+```
+Recurring Problems (since 2026-02-20, threshold: 3)
+
+[1] ConnectionError:Connection refused to {host}:{port}
+    Occurrences: 5 sessions, 12 events
+    Projects:    myapp, api-server
+    Agents:      claude-code, aider
+    Fixed by:    claude-code
+    Last seen:   2026-03-15
+    Last fix:    claude-code/abc123 (2026-03-15)
+
+[2] TypeError:Cannot read properties of undefined (reading 'map')
+    Occurrences: 3 sessions, 7 events
+    Projects:    frontend
+    Agents:      claude-code
+    Fixed by:    (none)
+    Last seen:   2026-03-12
+```
+
+JSON (`--json`):
+```json
+{
+  "since": "2026-02-20T00:00:00Z",
+  "threshold": 3,
+  "problems": [
+    {
+      "fingerprint": "ConnectionError:Connection refused to {host}:{port}",
+      "session_count": 5,
+      "event_count": 12,
+      "projects": ["myapp", "api-server"],
+      "agents": ["claude-code", "aider"],
+      "fix_agents": ["claude-code"],
+      "last_seen": "2026-03-15T10:30:00Z",
+      "last_fix_session": "claude-code/abc123",
+      "last_fix_at": "2026-03-15T10:45:00Z"
+    }
+  ]
+}
+```
+
+### Exit Codes
+
+| Code | Meaning |
+|------|---------|
+| 0 | Success |
+| 0 | No recurring problems found (empty array) |
+| 1 | Data dir not initialized |
+| 2 | No sessions found in the time range |
+
+---
+
+## `agentscribe rules`
+
+Distill patterns from past agent sessions into project-specific rules files. Analyzes past sessions to extract corrections, conventions, context hints, and warnings.
+
+### Usage
+
+```
+agentscribe rules <project-path> [options]
+```
+
+### Arguments
+
+| Argument | Required | Description |
+|----------|----------|-------------|
+| `<project-path>` | yes | Path to the project directory to extract rules for. |
+
+### Options
+
+| Option | Short | Default | Description |
+|--------|-------|---------|-------------|
+| `--format <format>` | | `claude` | Output format: `claude` (CLAUDE.md), `cursor` (.cursorrules), or `aider` (.aider.conf.yml). |
+| `--json` | | off | Output rules as JSON without writing to a file. |
+
+### Examples
+
+```bash
+# Generate CLAUDE.md rules for a project
+agentscribe rules ~/my-project --format claude
+
+# Generate .cursorrules
+agentscribe rules ~/my-project --format cursor
+
+# Preview rules without writing
+agentscribe rules ~/my-project --json
+```
+
+### Output
+
+Human-readable (default):
+```
+Wrote 12 rules to ~/my-project/CLAUDE.md (47 sessions analyzed)
+```
+
+JSON (`--json`):
+```json
+{
+  "project_path": "/home/user/my-project",
+  "sessions_analyzed": 47,
+  "rules": [
+    {"type": "correction", "rule": "Use `uuid v7` for all new ID columns, not v4"},
+    {"type": "convention", "rule": "API endpoints use kebab-case URLs, snake_case response fields"},
+    {"type": "context", "rule": "The `legacy` module wraps the old PHP API — don't refactor it"},
+    {"type": "warning", "rule": "Don't modify migration files after they've been applied"}
+  ]
+}
+```
+
+### Exit Codes
+
+| Code | Meaning |
+|------|---------|
+| 0 | Success (rules written or output) |
+| 1 | No sessions found for the project |
+| 2 | Data dir not initialized |
+
+---
+
+## `agentscribe analytics`
+
+Cross-agent performance comparison and analytics. Reports success rates, specialization patterns, cost estimates, and weekly trends.
+
+### Usage
+
+```
+agentscribe analytics [options]
+```
+
+### Options
+
+| Option | Short | Default | Description |
+|--------|-------|---------|-------------|
+| `--agent <name>` | `-a` | all | Filter to a specific agent. |
+| `--project <path>` | `-p` | all | Filter to sessions from this project directory. |
+| `--since <datetime>` | | all time | Only include sessions after this date. ISO 8601 or relative (`30d`, `12w`). |
+| `--json` | | off | Output in JSON format. |
+
+### Examples
+
+```bash
+# Overall analytics
+agentscribe analytics
+
+# Specific agent
+agentscribe analytics --agent claude-code
+
+# Last 30 days
+agentscribe analytics --since 30d
+
+# Specific project
+agentscribe analytics --project ~/my-project
+
+# JSON for dashboards
+agentscribe analytics --since 30d --json
+```
+
+### Output
+
+Human-readable (default):
+```
+AgentScribe Analytics (2026-02-20 to 2026-03-20)
+
+Total sessions: 47 | Success rate: 80.9% | Avg turns: 12.3
+
+Agent Breakdown:
+  claude-code    31 sessions  83.9% success  10.5 avg turns (success)  ~$2.50 est. cost
+  aider           8 sessions  75.0% success  14.2 avg turns (success)  ~$0.80 est. cost
+  codex           8 sessions  87.5% success   8.1 avg turns (success)  ~$1.20 est. cost
+
+Specialization:
+  claude-code:  debug (15), feature (10), refactor (4), configuration (2)
+  aider:        feature (5), debug (2), documentation (1)
+  codex:        debug (5), feature (3)
+
+Problem Types:
+  debug           22 sessions  81.8% success
+  feature         18 sessions  88.9% success
+  refactor         4 sessions  75.0% success
+  configuration    2 sessions  50.0% success
+  documentation    1 session  100.0% success
+```
+
+JSON (`--json`):
+```json
+{
+  "period_start": "2026-02-20T00:00:00Z",
+  "period_end": "2026-03-20T00:00:00Z",
+  "total_sessions": 47,
+  "overall_success_rate": 80.9,
+  "overall_avg_turns": 12.3,
+  "agents": [
+    {
+      "agent": "claude-code",
+      "total_sessions": 31,
+      "success_count": 26,
+      "failure_count": 3,
+      "abandoned_count": 2,
+      "success_rate": 83.9,
+      "avg_turns_success": 10.5,
+      "specialization": {"debug": 15, "feature": 10, "refactor": 4, "configuration": 2},
+      "estimated_cost": 2.50
+    }
+  ],
+  "problem_types": [...],
+  "trends": [...]
+}
+```
+
+### Exit Codes
+
+| Code | Meaning |
+|------|---------|
+| 0 | Success |
+| 1 | Data dir not initialized |
+| 2 | No sessions found |
+
+---
+
+## `agentscribe digest`
+
+Generate an activity digest summary over a configurable time period. Produces a Markdown report suitable for a 2-minute skim.
+
+### Usage
+
+```
+agentscribe digest [options]
+```
+
+### Options
+
+| Option | Short | Default | Description |
+|--------|-------|---------|-------------|
+| `--since <period>` | | `7d` | Time period to cover. ISO 8601 or relative (`7d`, `30d`, `12w`). |
+| `--output <path>` | `-o` | stdout | Write output to a file instead of printing to stdout. |
+| `--json` | | off | Output in JSON format instead of Markdown. |
+
+### Examples
+
+```bash
+# Weekly digest to stdout
+agentscribe digest --since 7d
+
+# Save monthly digest to file
+agentscribe digest --since 30d --output ~/reports/march-digest.md
+
+# JSON for custom processing
+agentscribe digest --since 7d --json
+```
+
+### Output
+
+The Markdown digest includes:
+- Session counts by agent and project
+- Recurring problems detected
+- Agent comparison table
+- Most-touched files
+- New error patterns discovered
+- Token usage and estimated costs
+
+### Exit Codes
+
+| Code | Meaning |
+|------|---------|
+| 0 | Success |
+| 1 | Data dir not initialized |
+| 2 | No sessions in the time range |
 
 ---
 

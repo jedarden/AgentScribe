@@ -7,12 +7,14 @@
 
 mod cli;
 mod config;
+mod daemon;
 mod enrichment;
 mod error;
 mod event;
 mod index;
 mod parser;
 mod plugin;
+mod recurring;
 mod scraper;
 mod search;
 mod tags;
