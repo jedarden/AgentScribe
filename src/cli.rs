@@ -171,6 +171,66 @@ enum Commands {
         #[command(subcommand)]
         action: DaemonAction,
     },
+    /// Distill session patterns into agent-specific rules files
+    Rules {
+        /// Project path to extract rules for
+        project_path: PathBuf,
+
+        /// Output format: claude, cursor, or aider
+        #[arg(long, value_enum, default_value = "claude")]
+        format: String,
+
+        /// JSON output (print rules without writing file)
+        #[arg(long)]
+        json: bool,
+    },
+    /// Cross-agent performance comparison and analytics
+    Analytics {
+        /// Filter by agent name
+        #[arg(short, long)]
+        agent: Option<String>,
+
+        /// Filter by project path
+        #[arg(short, long)]
+        project: Option<String>,
+
+        /// Only include sessions after this date (ISO 8601, or relative like 30d, 12w)
+        #[arg(long)]
+        since: Option<String>,
+
+        /// JSON structured output
+        #[arg(long)]
+        json: bool,
+    },
+    /// Garbage collect old session files and index entries
+    Gc {
+        /// Delete sessions older than this duration (e.g., 30d, 12w, 6mo)
+        /// Default: value from config.toml scrape.max_session_age_days
+        #[arg(long)]
+        older_than: Option<String>,
+
+        /// Show what would be deleted without acting
+        #[arg(long)]
+        dry_run: bool,
+
+        /// JSON output
+        #[arg(long)]
+        json: bool,
+    },
+    /// Generate an activity digest summary
+    Digest {
+        /// Only include sessions after this timestamp (ISO 8601, or relative like 7d, 30d)
+        #[arg(long, default_value = "7d")]
+        since: String,
+
+        /// Write output to file instead of stdout
+        #[arg(short, long)]
+        output: Option<String>,
+
+        /// JSON structured output
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 /// Config subcommands
@@ -299,6 +359,10 @@ pub fn run() -> Result<()> {
         ),
         Commands::Recurring { since, threshold, json } => run_recurring(since, threshold, json),
         Commands::Daemon { action } => run_daemon(action),
+        Commands::Rules { project_path, format, json } => run_rules(project_path, format, json),
+        Commands::Analytics { agent, project, since, json } => run_analytics(agent, project, since, json),
+        Commands::Gc { older_than, dry_run, json } => run_gc(older_than, dry_run, json),
+        Commands::Digest { since, output, json } => run_digest(since, output, json),
     }
 }
 
@@ -1106,6 +1170,165 @@ fn run_recurring(since: Option<String>, threshold: usize, json: bool) -> Result<
         println!("{}", serde_json::to_string_pretty(&output).unwrap());
     } else {
         print!("{}", crate::recurring::format_human(&output));
+    }
+
+    Ok(())
+}
+
+/// Run rules extraction command
+fn run_rules(project_path: PathBuf, format: String, json: bool) -> Result<()> {
+    let config = load_config()?;
+    let data_dir = config.data_dir()?;
+
+    if !data_dir.exists() {
+        eprintln!("AgentScribe not initialized. Run 'agentscribe config init' to set up.");
+        std::process::exit(1);
+    }
+
+    let output_format = match crate::rules::OutputFormat::from_str(&format) {
+        Some(f) => f,
+        None => {
+            eprintln!("Unknown format: {}. Use claude, cursor, or aider.", format);
+            std::process::exit(1);
+        }
+    };
+
+    let output = crate::rules::extract_rules(&data_dir, &project_path)?;
+
+    if json {
+        use serde_json::json;
+        let rules_json: Vec<serde_json::Value> = output.rules.iter().map(|r| {
+            match r {
+                crate::rules::Rule::Correction(s) => json!({"type": "correction", "rule": s}),
+                crate::rules::Rule::Convention(s) => json!({"type": "convention", "rule": s}),
+                crate::rules::Rule::Context(s) => json!({"type": "context", "rule": s}),
+                crate::rules::Rule::Warning(s) => json!({"type": "warning", "rule": s}),
+            }
+        }).collect();
+
+        let result = json!({
+            "project_path": output.project_path.display().to_string(),
+            "sessions_analyzed": output.sessions_analyzed,
+            "rules": rules_json,
+        });
+        println!("{}", serde_json::to_string_pretty(&result).unwrap());
+    } else {
+        if output.rules.is_empty() {
+            println!("{}", crate::rules::format_human(&output));
+            return Ok(());
+        }
+
+        let path = crate::rules::write_rules(&output, output_format, &project_path)?;
+        println!(
+            "Wrote {} rules to {} ({} sessions analyzed)",
+            output.rules.len(),
+            path.display(),
+            output.sessions_analyzed,
+        );
+    }
+
+    Ok(())
+}
+
+/// Run analytics command
+fn run_analytics(
+    agent: Option<String>,
+    project: Option<String>,
+    since: Option<String>,
+    json: bool,
+) -> Result<()> {
+    let config = load_config()?;
+    let data_dir = config.data_dir()?;
+
+    if !data_dir.exists() {
+        eprintln!("AgentScribe not initialized. Run 'agentscribe config init' to set up.");
+        std::process::exit(1);
+    }
+
+    let since_dt = match since {
+        Some(ref s) => Some(search::parse_datetime(s)?),
+        None => None,
+    };
+
+    let opts = crate::analytics::AnalyticsOptions {
+        agent,
+        project,
+        since: since_dt,
+    };
+
+    let output = crate::analytics::compute_analytics(&data_dir, &opts, &config)?;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&output).unwrap());
+    } else {
+        print!("{}", crate::analytics::format_human(&output));
+    }
+
+    Ok(())
+}
+
+/// Run garbage collection command
+fn run_gc(older_than: Option<String>, dry_run: bool, json: bool) -> Result<()> {
+    let config = load_config()?;
+    let data_dir = config.data_dir()?;
+
+    if !data_dir.exists() {
+        eprintln!("AgentScribe not initialized. Run 'agentscribe config init' to set up.");
+        std::process::exit(1);
+    }
+
+    // Determine max age: CLI arg > config > error
+    let max_age = if let Some(ref duration_str) = older_than {
+        crate::gc::parse_duration(duration_str)?
+    } else if config.scrape.max_session_age_days > 0 {
+        chrono::Duration::days(config.scrape.max_session_age_days as i64)
+    } else {
+        eprintln!("No max session age configured. Set scrape.max_session_age_days in config.toml or use --older-than.");
+        std::process::exit(1);
+    };
+
+    let result = crate::gc::run_gc(&data_dir, max_age, dry_run)?;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&result).unwrap());
+    } else {
+        print!("{}", crate::gc::format_human(&result));
+    }
+
+    Ok(())
+}
+
+/// Run digest command
+fn run_digest(since: String, output: Option<String>, json: bool) -> Result<()> {
+    let config = load_config()?;
+    let data_dir = config.data_dir()?;
+
+    if !data_dir.exists() {
+        eprintln!("AgentScribe not initialized. Run 'agentscribe config init' to set up.");
+        std::process::exit(1);
+    }
+
+    let since_dt = search::parse_datetime(&since)?;
+
+    let opts = crate::digest::DigestOptions {
+        since: since_dt,
+        output: output.clone(),
+        json,
+    };
+
+    let digest_output = crate::digest::generate_digest(&data_dir, &opts, &config)?;
+
+    let content = if json {
+        crate::digest::format_json(&digest_output)
+    } else {
+        crate::digest::format_markdown(&digest_output)
+    };
+
+    if let Some(path) = output {
+        std::fs::write(&path, &content)?;
+        eprintln!("Digest written to {}", path);
+    } else {
+        print!("{}", content);
     }
 
     Ok(())

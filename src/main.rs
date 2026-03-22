@@ -5,16 +5,20 @@
 
 #![allow(clippy::too_many_arguments)]
 
+mod analytics;
 mod cli;
 mod config;
 mod daemon;
+mod digest;
 mod enrichment;
 mod error;
 mod event;
+mod gc;
 mod index;
 mod parser;
 mod plugin;
 mod recurring;
+mod rules;
 mod scraper;
 mod search;
 mod tags;
