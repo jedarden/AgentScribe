@@ -4,7 +4,7 @@
 //! and various filter/output modes against the Tantivy index.
 
 use crate::error::{AgentScribeError, Result};
-use crate::index::{build_schema, IndexFields};
+use crate::index::{build_schema, fields_from_schema, IndexFields};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -260,6 +260,15 @@ fn build_query(
     if let Some(ref like_id) = opts.like_session {
         let mlt_query = build_more_like_this(searcher, fields, like_id)?;
         clauses.push((Occur::Must, mlt_query));
+        // Exclude the source session from results
+        let exclude_term = tantivy::schema::Term::from_field_text(fields.session_id, like_id);
+        clauses.push((
+            Occur::MustNot,
+            Box::new(TermQuery::new(
+                exclude_term,
+                tantivy::schema::IndexRecordOption::Basic,
+            )),
+        ));
     }
 
     // Filters (all as Must clauses)
@@ -469,7 +478,8 @@ fn is_stop_word(word: &str) -> bool {
 ///
 /// Extracts terms from the source document's content and summary fields,
 /// ranks them by TF-IDF significance, and builds a boosted boolean query
-/// from the top-scoring terms. The original session is excluded from results.
+/// from the top-scoring terms. The caller is responsible for excluding
+/// the original session via a MustNot clause at the outer query level.
 fn build_more_like_this(
     searcher: &Searcher,
     fields: &IndexFields,
@@ -587,19 +597,7 @@ fn build_more_like_this(
         })
         .collect();
 
-    // Exclude the original session from results
-    let exclude_term =
-        tantivy::schema::Term::from_field_text(fields.session_id, session_id);
-    let mut all_clauses = vec![(
-        Occur::MustNot,
-        Box::new(TermQuery::new(
-            exclude_term,
-            tantivy::schema::IndexRecordOption::Basic,
-        )) as Box<dyn Query>,
-    )];
-    all_clauses.extend(mlt_clauses);
-
-    Ok(Box::new(BooleanQuery::new(all_clauses)))
+    Ok(Box::new(BooleanQuery::new(mlt_clauses)))
 }
 
 /// Convert a Tantivy document to a SearchResult.
@@ -1847,6 +1845,30 @@ mod tests {
             let d: TantivyDocument = searcher.doc(*addr).unwrap();
             let sid = d.get_first(fields2.session_id).and_then(|v| v.as_str()).unwrap_or("?");
             eprintln!("DEBUG:   {} score={}", sid, score);
+        }
+
+        // Debug: test the MLT Should-only BooleanQuery directly
+        let mlt_query = build_more_like_this(&searcher, &fields, "claude/k8s-1").unwrap();
+        let mlt_docs: Vec<(f32, _)> = searcher.search(&*mlt_query, &TopDocs::with_limit(10)).unwrap();
+        eprintln!("DEBUG: MLT Should-only query matched {} docs", mlt_docs.len());
+        for (score, addr) in &mlt_docs {
+            let d: TantivyDocument = searcher.doc(*addr).unwrap();
+            let sid = d.get_first(fields2.session_id).and_then(|v| v.as_str()).unwrap_or("?");
+            eprintln!("DEBUG: MLT   {} score={}", sid, score);
+        }
+
+        // Debug: test with MustNot at same level
+        let exclude_term = tantivy::schema::Term::from_field_text(fields.session_id, "claude/k8s-1");
+        let combined = BooleanQuery::new(vec![
+            (Occur::Must, mlt_query),
+            (Occur::MustNot, Box::new(TermQuery::new(exclude_term, tantivy::schema::IndexRecordOption::Basic)) as Box<dyn Query>),
+        ]);
+        let combined_docs: Vec<(f32, _)> = searcher.search(&combined, &TopDocs::with_limit(10)).unwrap();
+        eprintln!("DEBUG: combined Must+MustNot query matched {} docs", combined_docs.len());
+        for (score, addr) in &combined_docs {
+            let d: TantivyDocument = searcher.doc(*addr).unwrap();
+            let sid = d.get_first(fields2.session_id).and_then(|v| v.as_str()).unwrap_or("?");
+            eprintln!("DEBUG: comb  {} score={}", sid, score);
         }
 
         assert!(result.total_matches >= 1, "expected at least 1 match, got {}", result.total_matches);

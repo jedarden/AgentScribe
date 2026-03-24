@@ -60,6 +60,35 @@ pub struct IndexFields {
     pub turn_count: Field,
 }
 
+/// Build IndexFields from an existing Tantivy schema (e.g., from an opened index).
+///
+/// This ensures field handles match the index's own schema rather than
+/// creating new handles that may have different field IDs.
+pub fn fields_from_schema(schema: &Schema) -> IndexFields {
+    IndexFields {
+        content: schema.get_field("content").expect("missing 'content' field in schema"),
+        summary: schema.get_field("summary").expect("missing 'summary' field in schema"),
+        solution_summary: schema.get_field("solution_summary").expect("missing 'solution_summary' field in schema"),
+        code_content: schema.get_field("code_content").expect("missing 'code_content' field in schema"),
+        session_id: schema.get_field("session_id").expect("missing 'session_id' field in schema"),
+        source_agent: schema.get_field("source_agent").expect("missing 'source_agent' field in schema"),
+        project: schema.get_field("project").expect("missing 'project' field in schema"),
+        tags: schema.get_field("tags").expect("missing 'tags' field in schema"),
+        outcome: schema.get_field("outcome").expect("missing 'outcome' field in schema"),
+        error_fingerprint: schema.get_field("error_fingerprint").expect("missing 'error_fingerprint' field in schema"),
+        file_paths: schema.get_field("file_paths").expect("missing 'file_paths' field in schema"),
+        git_commits: schema.get_field("git_commits").expect("missing 'git_commits' field in schema"),
+        doc_type: schema.get_field("doc_type").expect("missing 'doc_type' field in schema"),
+        code_language: schema.get_field("code_language").expect("missing 'code_language' field in schema"),
+        code_file_path: schema.get_field("code_file_path").expect("missing 'code_file_path' field in schema"),
+        code_is_final: schema.get_field("code_is_final").expect("missing 'code_is_final' field in schema"),
+        model: schema.get_field("model").expect("missing 'model' field in schema"),
+        session_type: schema.get_field("session_type").expect("missing 'session_type' field in schema"),
+        timestamp: schema.get_field("timestamp").expect("missing 'timestamp' field in schema"),
+        turn_count: schema.get_field("turn_count").expect("missing 'turn_count' field in schema"),
+    }
+}
+
 /// Build the Tantivy schema with all fields from plan.md.
 pub fn build_schema() -> (Schema, IndexFields) {
     let mut builder = Schema::builder();
