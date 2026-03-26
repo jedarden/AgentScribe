@@ -1,0 +1,31 @@
+[plugin]
+name = "windsurf"
+version = "1.0"
+
+[source]
+# Windsurf stores conversation history in SQLite databases under its global storage
+paths = ["~/.codeium/windsurf/db/*.vscdb"]
+exclude = []
+format = "sqlite"
+
+[source.session_detection]
+method = "one-file-per-session"
+session_id_from = "filename"
+
+[parser]
+# Each row in cursorDiskKV whose key matches the filter holds one conversation.
+# The value is a JSON blob: { "entries": [ { "role": "...", "text": "..." }, ... ] }
+query = "SELECT key, value FROM cursorDiskKV"
+key_filter = "^history\\."
+content_path = "entries"
+role = "role"
+content = "text"
+
+[parser.role_map]
+"AI" = "assistant"
+"Human" = "user"
+"user" = "user"
+"assistant" = "assistant"
+
+[parser.project]
+method = "parent_dir"

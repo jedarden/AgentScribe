@@ -5,10 +5,12 @@
 mod jsonl;
 mod markdown;
 mod json_tree;
+mod sqlite;
 
 pub use jsonl::JsonlParser;
 pub use markdown::MarkdownParser;
 pub use json_tree::JsonTreeParser;
+pub use sqlite::SqliteParser;
 
 use crate::event::Event;
 use crate::error::{AgentScribeError, Result};

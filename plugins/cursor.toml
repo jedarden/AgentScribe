@@ -1,0 +1,36 @@
+[plugin]
+name = "cursor"
+version = "1.0"
+
+[source]
+# Cursor stores its global state (including chat history) in state.vscdb.
+# These databases can be very large (25 GB+) but only chat rows are queried.
+paths = [
+    "~/.config/Cursor/User/globalStorage/state.vscdb",
+    "~/Library/Application Support/Cursor/User/globalStorage/state.vscdb",
+    "~/.cursor/User/globalStorage/state.vscdb",
+]
+exclude = []
+format = "sqlite"
+
+[source.session_detection]
+method = "one-file-per-session"
+session_id_from = "filename"
+
+[parser]
+# cursorDiskKV table: key TEXT, value TEXT (JSON blob)
+# History keys follow the pattern "history.<conversation-id>".
+# The value blob contains: { "messages": [ { "role": "...", "content": "..." }, ... ] }
+query = "SELECT key, value FROM cursorDiskKV"
+key_filter = "^history\\."
+content_path = "messages"
+role = "role"
+content = "content"
+
+[parser.role_map]
+"user" = "user"
+"assistant" = "assistant"
+"system" = "system"
+
+[parser.project]
+method = "parent_dir"

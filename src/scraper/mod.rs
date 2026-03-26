@@ -10,7 +10,7 @@ pub use file_path_extractor::FilePathExtractor;
 
 use crate::event::Event;
 use crate::index::{build_manifest_from_events, IndexManager};
-use crate::parser::{FormatParser, JsonlParser, MarkdownParser, JsonTreeParser};
+use crate::parser::{FormatParser, JsonlParser, MarkdownParser, JsonTreeParser, SqliteParser};
 use crate::plugin::{LogFormat, Plugin, PluginManager, ProjectDetection, ModelDetection};
 use crate::error::{AgentScribeError, Result};
 use chrono::Utc;
@@ -312,12 +312,7 @@ impl Scraper {
             LogFormat::Jsonl => Box::new(JsonlParser),
             LogFormat::Markdown => Box::new(MarkdownParser),
             LogFormat::JsonTree => Box::new(JsonTreeParser),
-            LogFormat::Sqlite => {
-                self.end_index_write();
-                return Err(AgentScribeError::InvalidPlugin(
-                    "SQLite format not implemented in Phase 1".to_string(),
-                ));
-            }
+            LogFormat::Sqlite => Box::new(SqliteParser),
         };
 
         // Detect sessions in the file
