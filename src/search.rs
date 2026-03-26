@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 use tantivy::collector::TopDocs;
 use tantivy::query::{
-    BooleanQuery, BoostQuery, FuzzyTermQuery, Occur, PhrasePrefixQuery, Query,
+    BooleanQuery, BoostQuery, FuzzyTermQuery, Occur, Query,
     RangeQuery, TermQuery,
 };
 use tantivy::schema::{Field, Value};
@@ -41,6 +41,8 @@ pub struct SearchResult {
     pub tags: Vec<String>,
     pub doc_type: Option<String>,
     pub model: Option<String>,
+    /// Estimated token count for this result (ceil of snippet+summary chars / 4)
+    pub token_count: usize,
 }
 
 /// Search output for JSON mode
@@ -143,10 +145,18 @@ pub fn execute_search(data_dir: &Path, opts: &SearchOptions) -> Result<SearchOut
     // Apply offset
     let top_docs: Vec<_> = top_docs.into_iter().skip(opts.offset).collect();
 
+    // When token_budget is set, convert all fetched candidates so the knapsack
+    // can select optimally; otherwise cap at max_results.
+    let result_limit = if opts.token_budget.is_some() {
+        fetch_limit
+    } else {
+        opts.max_results
+    };
+
     // Convert to SearchResult
     let mut results: Vec<SearchResult> = Vec::new();
     for (score, doc_addr) in &top_docs {
-        if results.len() >= opts.max_results {
+        if results.len() >= result_limit {
             break;
         }
         if let Some(result) = doc_to_search_result(&searcher, &fields, *doc_addr, *score, opts) {
@@ -159,7 +169,7 @@ pub fn execute_search(data_dir: &Path, opts: &SearchOptions) -> Result<SearchOut
 
     // Apply token budget if specified
     if let Some(budget) = opts.token_budget {
-        results = knapsack_pack(results, budget, opts.snippet_length);
+        results = knapsack_pack(results, budget);
     }
 
     let elapsed = start.elapsed();
@@ -195,7 +205,7 @@ fn build_query(
         let query = if opts.fuzzy {
             build_fuzzy_query(fields, query_str)?
         } else {
-            build_fulltext_query(fields, query_str)?
+            build_fulltext_query(searcher, fields, query_str)?
         };
         clauses.push((Occur::Must, query));
     }
@@ -377,29 +387,21 @@ fn build_query(
 }
 
 /// Build a full-text query across content and summary fields.
-fn build_fulltext_query(fields: &IndexFields, query_str: &str) -> Result<Box<dyn Query>> {
-    let query = BooleanQuery::new(vec![
-        (
-            Occur::Should,
-            Box::new(BoostQuery::new(
-                Box::new(PhrasePrefixQuery::new(vec![
-                    tantivy::schema::Term::from_field_text(fields.content, query_str),
-                ])),
-                1.0,
-            )),
-        ),
-        (
-            Occur::Should,
-            Box::new(BoostQuery::new(
-                Box::new(TermQuery::new(
-                    tantivy::schema::Term::from_field_text(fields.summary, query_str),
-                    tantivy::schema::IndexRecordOption::Basic,
-                )),
-                1.5,
-            )),
-        ),
-    ]);
-    Ok(Box::new(query))
+///
+/// Uses QueryParser so multi-word queries are correctly tokenized against the
+/// same analysis pipeline used at index time. Summary is boosted 1.5×.
+fn build_fulltext_query(
+    searcher: &Searcher,
+    fields: &IndexFields,
+    query_str: &str,
+) -> Result<Box<dyn Query>> {
+    let mut parser = tantivy::query::QueryParser::for_index(
+        searcher.index(),
+        vec![fields.content, fields.summary],
+    );
+    parser.set_field_boost(fields.summary, 1.5);
+    let (parsed, _errors) = parser.parse_query_lenient(query_str);
+    Ok(Box::new(parsed))
 }
 
 /// Build a fuzzy query for all query terms across content and summary.
@@ -685,6 +687,13 @@ fn doc_to_search_result(
         .map(|s| s.to_string())
         .collect();
 
+    // Estimate token cost: ceil((snippet_chars + summary_chars) / CHARS_PER_TOKEN)
+    let token_count = {
+        let snippet_chars = snippet.as_ref().map(|s| s.len()).unwrap_or(0);
+        let summary_chars = summary.as_ref().map(|s| s.len()).unwrap_or(0);
+        (snippet_chars + summary_chars + CHARS_PER_TOKEN - 1) / CHARS_PER_TOKEN
+    };
+
     Some(SearchResult {
         session_id,
         source_agent,
@@ -698,6 +707,7 @@ fn doc_to_search_result(
         tags,
         doc_type,
         model,
+        token_count,
     })
 }
 
@@ -820,43 +830,68 @@ fn apply_sort(results: &mut [SearchResult], sort: SortOrder) {
 
 /// Greedy knapsack: pack as many results as possible within a token budget.
 ///
-/// Each result costs tokens proportional to its text length (snippet + summary).
-/// Results are sorted by score (value density), then greedily selected.
-fn knapsack_pack(results: Vec<SearchResult>, token_budget: usize, _snippet_length: usize) -> Vec<SearchResult> {
-    let mut items: Vec<(usize, SearchResult)> = results
-        .into_iter()
-        .enumerate()
-        .map(|(i, r)| {
-            let text_len = r.snippet.as_ref().map(|s| s.len()).unwrap_or(0)
-                + r.summary.as_ref().map(|s| s.len()).unwrap_or(0);
-            let token_cost = (text_len / CHARS_PER_TOKEN).max(1);
-            (i, (token_cost, r))
-        })
-        .map(|(_i, (cost, r))| {
-            // Value = score, cost = token estimate
-            (cost, r)
-        })
-        .collect();
-
-    // Sort by score descending (greedy by value)
-    items.sort_by(|a, b| b.1.score.partial_cmp(&a.1.score).unwrap_or(std::cmp::Ordering::Equal));
+/// Each result's cost is `ceil((snippet_chars + summary_chars) / CHARS_PER_TOKEN)`.
+/// Results are ranked by BM25 score and greedily selected. When a result's full
+/// snippet doesn't fit in the remaining budget, the snippet is truncated to fill
+/// the remaining space rather than skipping the result entirely — this is the
+/// adaptive behaviour that trades fewer/longer snippets for more/shorter ones.
+fn knapsack_pack(results: Vec<SearchResult>, token_budget: usize) -> Vec<SearchResult> {
+    // Sort by score descending (greedy by relevance)
+    let mut items = results;
+    items.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
 
     let mut selected = Vec::new();
     let mut remaining = token_budget;
 
-    for (cost, result) in items {
-        if cost <= remaining {
-            // Truncate snippet to fit within remaining budget if needed
-            let mut result = result;
-            if let Some(ref snippet) = result.snippet {
-                let snippet_tokens = snippet.len() / CHARS_PER_TOKEN;
-                if snippet_tokens > remaining {
-                    let max_chars = remaining * CHARS_PER_TOKEN;
-                    result.snippet = extract_snippet(snippet, max_chars);
-                }
-            }
-            remaining -= cost;
+    for mut result in items {
+        if remaining == 0 {
+            break;
+        }
+
+        let snippet_chars = result.snippet.as_ref().map(|s| s.len()).unwrap_or(0);
+        let summary_chars = result.summary.as_ref().map(|s| s.len()).unwrap_or(0);
+        let full_cost = (snippet_chars + summary_chars + CHARS_PER_TOKEN - 1) / CHARS_PER_TOKEN;
+
+        if full_cost <= remaining {
+            // Full result fits unchanged
+            remaining -= full_cost;
             selected.push(result);
+        } else {
+            // Try to fit with a truncated snippet (adaptive packing).
+            // Subtract 3 chars to leave room for the "..." suffix extract_snippet may add.
+            let summary_cost = (summary_chars + CHARS_PER_TOKEN - 1) / CHARS_PER_TOKEN;
+            let available_snippet_chars = remaining
+                .saturating_sub(summary_cost)
+                .saturating_mul(CHARS_PER_TOKEN)
+                .saturating_sub(3);
+
+            if available_snippet_chars > 0 {
+                let truncated = result.snippet.as_deref()
+                    .and_then(|s| extract_snippet(s, available_snippet_chars));
+                let truncated_chars = truncated.as_ref().map(|s| s.len()).unwrap_or(0);
+                let actual_cost = (truncated_chars + summary_chars + CHARS_PER_TOKEN - 1) / CHARS_PER_TOKEN;
+
+                if actual_cost <= remaining {
+                    result.snippet = truncated;
+                    result.token_count = actual_cost;
+                    remaining -= actual_cost;
+                    selected.push(result);
+                } else if summary_cost > 0 && summary_cost <= remaining {
+                    // Snippet still too big (e.g. unusual char widths); use summary only
+                    result.snippet = None;
+                    result.token_count = summary_cost;
+                    remaining -= summary_cost;
+                    selected.push(result);
+                }
+                // Skip if nothing fits
+            } else if summary_cost > 0 && summary_cost <= remaining {
+                // No room for any snippet; include summary only
+                result.snippet = None;
+                result.token_count = summary_cost;
+                remaining -= summary_cost;
+                selected.push(result);
+            }
+            // Skip if nothing fits
         }
     }
 
@@ -1074,28 +1109,74 @@ mod tests {
             make_test_result("a", 10.0, 100),
             make_test_result("b", 8.0, 100),
         ];
-        let packed = knapsack_pack(results, 10000, 200);
+        let packed = knapsack_pack(results, 10000);
         assert_eq!(packed.len(), 2);
     }
 
     #[test]
     fn test_knapsack_pack_drops_low_value() {
+        // Each snippet is 80 chars → ceil(80/4) = 20 tokens each.
+        // Adaptive packing may truncate lower-ranked snippets to fit more results.
+        // Key properties: highest-scored result is first, budget is never exceeded.
         let results = vec![
-            make_test_result("a", 10.0, 1000),
-            make_test_result("b", 8.0, 1000),
-            make_test_result("c", 5.0, 1000),
+            make_test_result("a", 10.0, 80),
+            make_test_result("b", 8.0, 80),
+            make_test_result("c", 5.0, 80),
         ];
-        // Budget of ~50 tokens: only 1-2 results fit
-        let packed = knapsack_pack(results, 50, 200);
-        assert!(packed.len() <= 2);
-        // Highest scored result should be first
-        assert_eq!(packed[0].session_id, "a");
+        let packed = knapsack_pack(results, 45);
+        assert!(!packed.is_empty(), "highest-scored item must fit");
+        assert_eq!(packed[0].session_id, "a", "highest-scored item should come first");
+        let total: usize = packed.iter().map(|r| r.token_count).sum();
+        assert!(total <= 45, "total tokens {} exceeded budget 45", total);
     }
 
     #[test]
     fn test_knapsack_pack_empty() {
-        let packed = knapsack_pack(vec![], 1000, 200);
+        let packed = knapsack_pack(vec![], 1000);
         assert!(packed.is_empty());
+    }
+
+    #[test]
+    fn test_knapsack_pack_adaptive_truncation() {
+        // Budget is tight: fits 1 full result (100 chars = 25 tokens) plus partial second
+        // Second result has 80-char snippet but only ~15 tokens of space left after first
+        let results = vec![
+            make_test_result("a", 10.0, 100), // 25 tokens
+            make_test_result("b", 8.0, 200),  // 50 tokens — too big full, but truncatable
+        ];
+        let packed = knapsack_pack(results, 60);
+        // "a" (25 tokens) fits fully; "b" should be truncated to fit remaining 35 tokens
+        assert_eq!(packed.len(), 2, "adaptive truncation should include both results");
+        assert_eq!(packed[0].session_id, "a");
+        assert_eq!(packed[1].session_id, "b");
+        // Verify "b"'s snippet was truncated
+        let b_snippet = packed[1].snippet.as_ref().expect("truncated snippet should exist");
+        assert!(b_snippet.len() < 200, "snippet should have been truncated");
+        // Verify token_count was updated
+        assert!(packed[1].token_count <= 35);
+    }
+
+    #[test]
+    fn test_knapsack_pack_token_count_populated() {
+        // Verify token_count is set on packed results
+        let results = vec![make_test_result("a", 10.0, 80)]; // 80 chars → ceil(80/4) = 20 tokens
+        let packed = knapsack_pack(results, 1000);
+        assert_eq!(packed[0].token_count, 20);
+    }
+
+    #[test]
+    fn test_knapsack_pack_respects_budget() {
+        // Verify total token_count of all packed results is within budget
+        let results = vec![
+            make_test_result("a", 10.0, 40), // 10 tokens
+            make_test_result("b", 9.0, 40),  // 10 tokens
+            make_test_result("c", 8.0, 40),  // 10 tokens
+            make_test_result("d", 7.0, 40),  // 10 tokens
+        ];
+        let budget = 25;
+        let packed = knapsack_pack(results, budget);
+        let total: usize = packed.iter().map(|r| r.token_count).sum();
+        assert!(total <= budget, "total tokens {} exceeded budget {}", total, budget);
     }
 
     #[test]
@@ -1131,6 +1212,7 @@ mod tests {
                 tags: vec!["postgres".to_string(), "migration".to_string()],
                 doc_type: Some("session".to_string()),
                 model: Some("claude-sonnet".to_string()),
+                token_count: 12, // ceil((31 snippet + 14 summary) / 4) = ceil(45/4) = 12
             }],
         };
         let formatted = format_human(&output, 200);
@@ -1825,8 +1907,9 @@ mod tests {
         writer.commit().unwrap();
         writer.wait_merging_threads().unwrap();
 
-        // --like should discover the cross-agent session
+        // --like should discover the cross-agent session (no text query — MLT only)
         let opts = SearchOptions {
+            query: None,
             like_session: Some("claude/k8s-1".to_string()),
             ..default_opts()
         };
@@ -1910,6 +1993,7 @@ mod tests {
 
     // Helper to make a test search result
     fn make_test_result(id: &str, score: f32, text_len: usize) -> SearchResult {
+        let token_count = (text_len + CHARS_PER_TOKEN - 1) / CHARS_PER_TOKEN;
         SearchResult {
             session_id: id.to_string(),
             source_agent: "test".to_string(),
@@ -1923,6 +2007,7 @@ mod tests {
             tags: vec![],
             doc_type: None,
             model: None,
+            token_count,
         }
     }
 
@@ -1940,6 +2025,7 @@ mod tests {
             tags: vec![],
             doc_type: None,
             model: None,
+            token_count: 0,
         }
     }
 
@@ -1957,6 +2043,7 @@ mod tests {
             tags: vec![],
             doc_type: None,
             model: None,
+            token_count: 0,
         }
     }
 }

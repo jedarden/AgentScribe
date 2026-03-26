@@ -302,7 +302,7 @@ fn truncate_fingerprint(fp: &str, max_len: usize) -> String {
     // Try to split at the first colon to preserve the error type
     if let Some(colon_pos) = fp.find(':') {
         let prefix = &fp[..=colon_pos];
-        let remaining = max_len.saturating_sub(prefix.len() + 4); // 4 for " ..."
+        let remaining = max_len.saturating_sub(prefix.len() + 6); // 3 for "..." + 3 safety margin
         if remaining > 10 {
             return format!("{}{}...", prefix, &fp[colon_pos + 1..colon_pos + 1 + remaining]);
         }
@@ -386,7 +386,12 @@ version = "0.1.0"
 
 [source]
 format = "jsonl"
-paths = []
+paths = ["/tmp/test-agent-logs"]
+
+[parser]
+timestamp = "ts"
+role = "role"
+content = "content"
 "#,
         )
         .unwrap();
