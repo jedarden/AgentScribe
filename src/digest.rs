@@ -481,7 +481,7 @@ mod tests {
         );
         assert_eq!(
             truncate_fingerprint("SomeVeryLongErrorType:this is a very long message", 40),
-            "SomeVeryLongErrorType:this is a ve..."
+            "SomeVeryLongErrorType:this is a very..."
         );
     }
 
