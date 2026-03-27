@@ -738,4 +738,242 @@ mod tests {
         // but the build should succeed without errors
         let _ = doc;
     }
+
+    #[test]
+    fn test_fields_from_schema_matches_build_schema() {
+        let (schema, fields_build) = build_schema();
+        let fields = fields_from_schema(&schema);
+        assert_eq!(fields.content, fields_build.content);
+        assert_eq!(fields.session_id, fields_build.session_id);
+        assert_eq!(fields.tags, fields_build.tags);
+        assert_eq!(fields.timestamp, fields_build.timestamp);
+        assert_eq!(fields.turn_count, fields_build.turn_count);
+        assert_eq!(fields.doc_type, fields_build.doc_type);
+        assert_eq!(fields.code_is_final, fields_build.code_is_final);
+    }
+
+    #[test]
+    fn test_build_manifest_from_events_basic() {
+        use chrono::Duration;
+        let now = Utc::now();
+        let events = vec![
+            Event::new(now, "test/1".to_string(), "claude".to_string(), Role::User, "hello".to_string()),
+            Event::new(now + Duration::seconds(10), "test/1".to_string(), "claude".to_string(), Role::Assistant, "world".to_string()),
+        ];
+        let manifest = build_manifest_from_events(&events, "test/1", "claude", Some("/project"), Some("claude-3"));
+        assert_eq!(manifest.session_id, "test/1");
+        assert_eq!(manifest.source_agent, "claude");
+        assert_eq!(manifest.project, Some("/project".to_string()));
+        assert_eq!(manifest.model, Some("claude-3".to_string()));
+        assert_eq!(manifest.turns, 2);
+        assert!(manifest.summary.is_none());
+        assert!(manifest.outcome.is_none());
+        assert!(manifest.tags.is_empty());
+    }
+
+    #[test]
+    fn test_build_manifest_from_events_empty() {
+        let manifest = build_manifest_from_events(&[], "test/2", "aider", None, None);
+        assert_eq!(manifest.turns, 0);
+        assert!(manifest.project.is_none());
+        assert!(manifest.model.is_none());
+        assert!(manifest.files_touched.is_empty());
+        assert!(manifest.ended.is_none());
+    }
+
+    #[test]
+    fn test_build_manifest_from_events_files_deduped() {
+        let now = Utc::now();
+        let events = vec![
+            Event::new(now, "test/1".to_string(), "claude".to_string(), Role::ToolCall, "read".to_string())
+                .with_file_paths(vec!["src/main.rs".to_string(), "src/lib.rs".to_string()]),
+            Event::new(now, "test/1".to_string(), "claude".to_string(), Role::ToolResult, "done".to_string())
+                .with_file_paths(vec!["src/main.rs".to_string()]), // duplicate
+        ];
+        let manifest = build_manifest_from_events(&events, "test/1", "claude", None, None);
+        assert_eq!(manifest.files_touched.len(), 2);
+        assert!(manifest.files_touched.contains(&"src/main.rs".to_string()));
+        assert!(manifest.files_touched.contains(&"src/lib.rs".to_string()));
+    }
+
+    #[test]
+    fn test_build_manifest_from_events_timestamps() {
+        use chrono::Duration;
+        let t1 = Utc::now();
+        let t2 = t1 + Duration::minutes(5);
+        let events = vec![
+            Event::new(t1, "test/1".to_string(), "claude".to_string(), Role::User, "start".to_string()),
+            Event::new(t2, "test/1".to_string(), "claude".to_string(), Role::Assistant, "end".to_string()),
+        ];
+        let manifest = build_manifest_from_events(&events, "test/1", "claude", None, None);
+        // started should be the first event's timestamp
+        assert_eq!(manifest.started.timestamp(), t1.timestamp());
+        // ended should be the last event's timestamp
+        assert_eq!(manifest.ended.map(|d| d.timestamp()), Some(t2.timestamp()));
+    }
+
+    #[test]
+    fn test_build_content_unicode() {
+        let events = vec![
+            Event::new(Utc::now(), "test/1".to_string(), "test".to_string(), Role::User,
+                "日本語テスト: サンプルコード".to_string()),
+            Event::new(Utc::now(), "test/1".to_string(), "test".to_string(), Role::Assistant,
+                "Ответ на русском языке".to_string()),
+        ];
+        let content = build_content(&events);
+        assert!(content.contains("日本語テスト"));
+        assert!(content.contains("Ответ на русском языке"));
+    }
+
+    #[test]
+    fn test_build_content_very_large() {
+        // Build content that exceeds 500KB
+        let large_content = "a ".repeat(300_000); // ~600KB
+        let events = vec![
+            Event::new(Utc::now(), "test/1".to_string(), "test".to_string(), Role::User, large_content),
+        ];
+        let content = build_content(&events);
+        assert!(content.contains("[...trimmed...]"));
+        assert!(content.len() < CONTENT_MAX_BYTES + 200);
+    }
+
+    #[test]
+    fn test_build_session_document_no_optional_fields() {
+        let (_schema, fields) = build_schema();
+        let events: Vec<Event> = vec![];
+        let manifest = SessionManifest::new("test/empty".to_string(), "claude".to_string());
+        let doc = build_session_document(&fields, &events, &manifest);
+        assert_eq!(
+            doc.get_first(fields.session_id).unwrap().as_str().unwrap(),
+            "test/empty"
+        );
+        assert_eq!(
+            doc.get_first(fields.doc_type).unwrap().as_str().unwrap(),
+            "session"
+        );
+        // Optional fields should be absent
+        assert!(doc.get_first(fields.summary).is_none());
+        assert!(doc.get_first(fields.outcome).is_none());
+        assert!(doc.get_first(fields.project).is_none());
+        assert!(doc.get_first(fields.model).is_none());
+    }
+
+    #[test]
+    fn test_build_code_artifact_document_no_project_no_model() {
+        let (_schema, fields) = build_schema();
+        let doc = build_code_artifact_document(
+            &fields,
+            "claude/123",
+            "claude",
+            None,       // no project
+            Utc::now(),
+            "python",
+            "app/main.py",
+            "def main(): pass",
+            false,
+            None,       // no model
+        );
+        assert_eq!(
+            doc.get_first(fields.code_language).unwrap().as_str().unwrap(),
+            "python"
+        );
+        assert_eq!(
+            doc.get_first(fields.doc_type).unwrap().as_str().unwrap(),
+            "code_artifact"
+        );
+        assert!(doc.get_first(fields.project).is_none());
+        assert!(doc.get_first(fields.model).is_none());
+        // code_is_final = false
+        assert_eq!(
+            doc.get_first(fields.code_is_final).unwrap().as_bool().unwrap(),
+            false
+        );
+    }
+
+    #[test]
+    fn test_index_manager_write_lifecycle() {
+        use tempfile::TempDir;
+        let temp_dir = TempDir::new().unwrap();
+
+        let mut manager = IndexManager::open(temp_dir.path()).unwrap();
+        assert!(!manager.is_writing());
+
+        manager.begin_write().unwrap();
+        assert!(manager.is_writing());
+
+        // Idempotent second call
+        manager.begin_write().unwrap();
+        assert!(manager.is_writing());
+
+        let now = Utc::now();
+        let events = vec![
+            Event::new(now, "test/1".to_string(), "claude".to_string(), Role::User, "fix the bug".to_string()),
+        ];
+        let manifest = build_manifest_from_events(&events, "test/1", "claude", None, None);
+        manager.index_session(&events, &manifest).unwrap();
+
+        manager.commit().unwrap();
+        assert!(manager.is_writing()); // still active after commit
+
+        manager.finish().unwrap();
+        assert!(!manager.is_writing()); // released after finish
+    }
+
+    #[test]
+    fn test_index_manager_index_without_writer_errors() {
+        use tempfile::TempDir;
+        let temp_dir = TempDir::new().unwrap();
+        let mut manager = IndexManager::open(temp_dir.path()).unwrap();
+
+        let events = vec![
+            Event::new(Utc::now(), "test/1".to_string(), "claude".to_string(), Role::User, "hello".to_string()),
+        ];
+        let manifest = build_manifest_from_events(&events, "test/1", "claude", None, None);
+
+        // Should error because begin_write() was never called
+        let result = manager.index_session(&events, &manifest);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_index_manager_delete_without_writer_errors() {
+        use tempfile::TempDir;
+        let temp_dir = TempDir::new().unwrap();
+        let mut manager = IndexManager::open(temp_dir.path()).unwrap();
+
+        let result = manager.delete_session("test/1");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_index_manager_open_creates_index_dir() {
+        use tempfile::TempDir;
+        let temp_dir = TempDir::new().unwrap();
+        let _manager = IndexManager::open(temp_dir.path()).unwrap();
+        let index_path = temp_dir.path().join("index").join(INDEX_DIR_NAME);
+        assert!(index_path.exists());
+    }
+
+    #[test]
+    fn test_index_manager_reopen() {
+        use tempfile::TempDir;
+        let temp_dir = TempDir::new().unwrap();
+
+        // Create and write
+        {
+            let mut manager = IndexManager::open(temp_dir.path()).unwrap();
+            manager.begin_write().unwrap();
+            let now = Utc::now();
+            let events = vec![
+                Event::new(now, "test/1".to_string(), "claude".to_string(), Role::User, "hello world".to_string()),
+            ];
+            let manifest = build_manifest_from_events(&events, "test/1", "claude", None, None);
+            manager.index_session(&events, &manifest).unwrap();
+            manager.finish().unwrap();
+        }
+
+        // Reopen — should not panic
+        let manager2 = IndexManager::open(temp_dir.path()).unwrap();
+        assert!(!manager2.is_writing());
+    }
 }

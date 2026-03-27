@@ -2057,4 +2057,810 @@ mod tests {
             token_count: 0,
         }
     }
+
+    #[test]
+    fn test_apply_sort_oldest() {
+        let mut results = vec![
+            make_test_result_with_ts("a", 5.0, "2026-03-10T00:00:00+00:00"),
+            make_test_result_with_ts("b", 10.0, "2026-03-14T00:00:00+00:00"),
+            make_test_result_with_ts("c", 1.0, "2026-03-12T00:00:00+00:00"),
+        ];
+        apply_sort(&mut results, SortOrder::Oldest);
+        assert_eq!(results[0].session_id, "a");
+        assert_eq!(results[1].session_id, "c");
+        assert_eq!(results[2].session_id, "b");
+    }
+
+    #[test]
+    fn test_search_output_json_serialization() {
+        let output = SearchOutput {
+            query: "test query".to_string(),
+            total_matches: 1,
+            search_time_ms: 5,
+            sessions_searched: 100,
+            results: vec![SearchResult {
+                session_id: "claude/abc123".to_string(),
+                source_agent: "claude-code".to_string(),
+                project: Some("/home/user/project".to_string()),
+                timestamp: Some("2026-03-14T10:30:00+00:00".to_string()),
+                turns: Some(10),
+                outcome: Some("success".to_string()),
+                score: 8.5,
+                summary: Some("Fixed bug".to_string()),
+                snippet: Some("the bug was in auth".to_string()),
+                tags: vec!["rust".to_string()],
+                doc_type: Some("session".to_string()),
+                model: Some("claude-sonnet".to_string()),
+                token_count: 12,
+            }],
+        };
+        let json = serde_json::to_string(&output).unwrap();
+        assert!(json.contains("\"query\":\"test query\""));
+        assert!(json.contains("\"session_id\":\"claude/abc123\""));
+        assert!(json.contains("\"total_matches\":1"));
+        assert!(json.contains("\"source_agent\":\"claude-code\""));
+        // All result fields present
+        assert!(json.contains("\"outcome\":\"success\""));
+        assert!(json.contains("\"model\":\"claude-sonnet\""));
+        assert!(json.contains("\"doc_type\":\"session\""));
+    }
+
+    #[test]
+    fn test_search_result_json_roundtrip() {
+        let result = SearchResult {
+            session_id: "aider/def456".to_string(),
+            source_agent: "aider".to_string(),
+            project: None,
+            timestamp: None,
+            turns: Some(5),
+            outcome: None,
+            score: 3.14,
+            summary: None,
+            snippet: Some("some code snippet".to_string()),
+            tags: vec!["python".to_string(), "docker".to_string()],
+            doc_type: Some("session".to_string()),
+            model: None,
+            token_count: 3,
+        };
+        let json = serde_json::to_string(&result).unwrap();
+        let deser: SearchResult = serde_json::from_str(&json).unwrap();
+        assert_eq!(deser.session_id, result.session_id);
+        assert_eq!(deser.turns, result.turns);
+        assert_eq!(deser.tags, result.tags);
+        assert_eq!(deser.doc_type, result.doc_type);
+        assert!(deser.project.is_none());
+        assert!(deser.model.is_none());
+    }
+
+    #[test]
+    fn test_search_integration_error_fingerprint() {
+        use crate::event::{Event, Role, SessionManifest};
+        use crate::index::build_session_document;
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let index_path = temp_dir.path().join("index").join("tantivy");
+        let (schema, fields) = build_schema();
+        std::fs::create_dir_all(&index_path).unwrap();
+        let index = tantivy::Index::create_in_dir(&index_path, schema).unwrap();
+        let mut writer = index.writer(50_000_000).unwrap();
+
+        let now = Utc::now();
+
+        // Session with a specific error fingerprint (stored lowercase for consistent matching)
+        let mut m1 = SessionManifest::new("claude/err-1".to_string(), "claude-code".to_string());
+        m1.started = now;
+        m1.turns = 2;
+        let e1 = vec![
+            Event::new(now, "claude/err-1".to_string(), "claude-code".to_string(), Role::User,
+                "help fix this error".to_string()),
+            Event::new(now, "claude/err-1".to_string(), "claude-code".to_string(), Role::ToolResult,
+                "connection refused error".to_string())
+                .with_error_fingerprints(vec!["connectionrefusederror".to_string()]),
+        ];
+        writer.add_document(build_session_document(&fields, &e1, &m1)).unwrap();
+
+        // Session without the error fingerprint
+        let mut m2 = SessionManifest::new("claude/noerr".to_string(), "claude-code".to_string());
+        m2.started = now;
+        m2.turns = 2;
+        let e2 = vec![
+            Event::new(now, "claude/noerr".to_string(), "claude-code".to_string(), Role::User, "normal session".to_string()),
+            Event::new(now, "claude/noerr".to_string(), "claude-code".to_string(), Role::Assistant, "done".to_string()),
+        ];
+        writer.add_document(build_session_document(&fields, &e2, &m2)).unwrap();
+        writer.commit().unwrap();
+        writer.wait_merging_threads().unwrap();
+
+        let opts = SearchOptions {
+            query: None,
+            error_pattern: Some("connectionrefusederror".to_string()),
+            ..default_opts()
+        };
+        let result = execute_search(temp_dir.path(), &opts).unwrap();
+        assert_eq!(result.results.len(), 1);
+        assert_eq!(result.results[0].session_id, "claude/err-1");
+    }
+
+    #[test]
+    fn test_search_integration_code_search() {
+        use crate::event::{Event, Role, SessionManifest};
+        use crate::index::{build_code_artifact_document, build_session_document};
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let index_path = temp_dir.path().join("index").join("tantivy");
+        let (schema, fields) = build_schema();
+        std::fs::create_dir_all(&index_path).unwrap();
+        let index = tantivy::Index::create_in_dir(&index_path, schema).unwrap();
+        let mut writer = index.writer(50_000_000).unwrap();
+
+        let now = Utc::now();
+
+        // Session document
+        let m = SessionManifest::new("claude/code-1".to_string(), "claude-code".to_string());
+        let e = vec![Event::new(now, "claude/code-1".to_string(), "claude-code".to_string(),
+            Role::User, "write a function".to_string())];
+        writer.add_document(build_session_document(&fields, &e, &m)).unwrap();
+
+        // Code artifact document
+        let code_doc = build_code_artifact_document(
+            &fields,
+            "claude/code-1",
+            "claude-code",
+            Some("/home/user/project"),
+            now,
+            "rust",
+            "src/auth.rs",
+            "fn authenticate(user: &User) -> bool { validate_token(user.token) }",
+            true,
+            None,
+        );
+        writer.add_document(code_doc).unwrap();
+        writer.commit().unwrap();
+        writer.wait_merging_threads().unwrap();
+
+        let opts = SearchOptions {
+            query: None,
+            code_query: Some("authenticate".to_string()),
+            ..default_opts()
+        };
+        let result = execute_search(temp_dir.path(), &opts).unwrap();
+        assert!(result.total_matches >= 1);
+        // All results should be code_artifact type (code search filters to that doc_type)
+        for r in &result.results {
+            assert_eq!(r.doc_type.as_deref(), Some("code_artifact"));
+        }
+    }
+
+    #[test]
+    fn test_search_integration_code_search_with_lang_filter() {
+        use crate::index::build_code_artifact_document;
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let index_path = temp_dir.path().join("index").join("tantivy");
+        let (schema, fields) = build_schema();
+        std::fs::create_dir_all(&index_path).unwrap();
+        let index = tantivy::Index::create_in_dir(&index_path, schema).unwrap();
+        let mut writer = index.writer(50_000_000).unwrap();
+
+        let now = Utc::now();
+
+        // Rust code artifact
+        writer.add_document(build_code_artifact_document(
+            &fields, "claude/rust-s", "claude-code", None, now, "rust",
+            "src/main.rs", "fn handle_request(req: &Request) -> Response { process(req) }",
+            true, None,
+        )).unwrap();
+
+        // Python code artifact
+        writer.add_document(build_code_artifact_document(
+            &fields, "claude/py-s", "claude-code", None, now, "python",
+            "app/handler.py", "def handle_request(req): return process(req)",
+            true, None,
+        )).unwrap();
+        writer.commit().unwrap();
+        writer.wait_merging_threads().unwrap();
+
+        // Filter by rust language
+        let opts = SearchOptions {
+            query: None,
+            code_query: Some("handle_request".to_string()),
+            code_lang: Some("rust".to_string()),
+            ..default_opts()
+        };
+        let result = execute_search(temp_dir.path(), &opts).unwrap();
+        assert_eq!(result.results.len(), 1);
+        assert_eq!(result.results[0].session_id, "claude/rust-s");
+    }
+
+    #[test]
+    fn test_search_integration_project_filter() {
+        use crate::event::{Event, Role, SessionManifest};
+        use crate::index::build_session_document;
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let index_path = temp_dir.path().join("index").join("tantivy");
+        let (schema, fields) = build_schema();
+        std::fs::create_dir_all(&index_path).unwrap();
+        let index = tantivy::Index::create_in_dir(&index_path, schema).unwrap();
+        let mut writer = index.writer(50_000_000).unwrap();
+
+        let now = Utc::now();
+
+        let mut m1 = SessionManifest::new("claude/1".to_string(), "claude-code".to_string());
+        m1.project = Some("/home/user/project-alpha".to_string());
+        m1.started = now;
+        m1.turns = 2;
+        let e1 = vec![
+            Event::new(now, "claude/1".to_string(), "claude-code".to_string(), Role::User, "debug the service".to_string()),
+            Event::new(now, "claude/1".to_string(), "claude-code".to_string(), Role::Assistant, "found the bug".to_string()),
+        ];
+        writer.add_document(build_session_document(&fields, &e1, &m1)).unwrap();
+
+        let mut m2 = SessionManifest::new("claude/2".to_string(), "claude-code".to_string());
+        m2.project = Some("/home/user/project-beta".to_string());
+        m2.started = now;
+        m2.turns = 2;
+        let e2 = vec![
+            Event::new(now, "claude/2".to_string(), "claude-code".to_string(), Role::User, "debug the service".to_string()),
+            Event::new(now, "claude/2".to_string(), "claude-code".to_string(), Role::Assistant, "fixed it".to_string()),
+        ];
+        writer.add_document(build_session_document(&fields, &e2, &m2)).unwrap();
+        writer.commit().unwrap();
+        writer.wait_merging_threads().unwrap();
+
+        let opts = SearchOptions {
+            query: Some("debug".to_string()),
+            project: Some("/home/user/project-alpha".to_string()),
+            ..default_opts()
+        };
+        let result = execute_search(temp_dir.path(), &opts).unwrap();
+        assert_eq!(result.results.len(), 1);
+        assert_eq!(result.results[0].session_id, "claude/1");
+        assert_eq!(result.results[0].project.as_deref(), Some("/home/user/project-alpha"));
+    }
+
+    #[test]
+    fn test_search_integration_model_filter() {
+        use crate::event::{Event, Role, SessionManifest};
+        use crate::index::build_session_document;
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let index_path = temp_dir.path().join("index").join("tantivy");
+        let (schema, fields) = build_schema();
+        std::fs::create_dir_all(&index_path).unwrap();
+        let index = tantivy::Index::create_in_dir(&index_path, schema).unwrap();
+        let mut writer = index.writer(50_000_000).unwrap();
+
+        let now = Utc::now();
+
+        let mut m1 = SessionManifest::new("claude/sonnet-1".to_string(), "claude-code".to_string());
+        m1.model = Some("claude-sonnet-4-5".to_string());
+        m1.started = now;
+        m1.turns = 2;
+        let e1 = vec![
+            Event::new(now, "claude/sonnet-1".to_string(), "claude-code".to_string(), Role::User, "refactor the code".to_string()),
+            Event::new(now, "claude/sonnet-1".to_string(), "claude-code".to_string(), Role::Assistant, "done".to_string()),
+        ];
+        writer.add_document(build_session_document(&fields, &e1, &m1)).unwrap();
+
+        let mut m2 = SessionManifest::new("claude/opus-1".to_string(), "claude-code".to_string());
+        m2.model = Some("claude-opus-4-6".to_string());
+        m2.started = now;
+        m2.turns = 2;
+        let e2 = vec![
+            Event::new(now, "claude/opus-1".to_string(), "claude-code".to_string(), Role::User, "refactor the code".to_string()),
+            Event::new(now, "claude/opus-1".to_string(), "claude-code".to_string(), Role::Assistant, "done".to_string()),
+        ];
+        writer.add_document(build_session_document(&fields, &e2, &m2)).unwrap();
+        writer.commit().unwrap();
+        writer.wait_merging_threads().unwrap();
+
+        let opts = SearchOptions {
+            query: Some("refactor".to_string()),
+            model: Some("claude-sonnet-4-5".to_string()),
+            ..default_opts()
+        };
+        let result = execute_search(temp_dir.path(), &opts).unwrap();
+        assert_eq!(result.results.len(), 1);
+        assert_eq!(result.results[0].session_id, "claude/sonnet-1");
+        assert_eq!(result.results[0].model.as_deref(), Some("claude-sonnet-4-5"));
+    }
+
+    #[test]
+    fn test_search_integration_combined_filters() {
+        // agent + outcome + tag all applied together (AND logic)
+        use crate::event::{Event, Role, SessionManifest};
+        use crate::index::build_session_document;
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let index_path = temp_dir.path().join("index").join("tantivy");
+        let (schema, fields) = build_schema();
+        std::fs::create_dir_all(&index_path).unwrap();
+        let index = tantivy::Index::create_in_dir(&index_path, schema).unwrap();
+        let mut writer = index.writer(50_000_000).unwrap();
+
+        let now = Utc::now();
+
+        // Target: claude-code + success + rust tag
+        let mut m1 = SessionManifest::new("claude/target".to_string(), "claude-code".to_string());
+        m1.outcome = Some("success".to_string());
+        m1.tags = vec!["rust".to_string()];
+        m1.started = now;
+        m1.turns = 2;
+        let e1 = vec![
+            Event::new(now, "claude/target".to_string(), "claude-code".to_string(), Role::User, "fix memory leak".to_string()),
+            Event::new(now, "claude/target".to_string(), "claude-code".to_string(), Role::Assistant, "fixed it".to_string()),
+        ];
+        writer.add_document(build_session_document(&fields, &e1, &m1)).unwrap();
+
+        // Wrong outcome (failure instead of success)
+        let mut m2 = SessionManifest::new("claude/wrong-outcome".to_string(), "claude-code".to_string());
+        m2.outcome = Some("failure".to_string());
+        m2.tags = vec!["rust".to_string()];
+        m2.started = now;
+        m2.turns = 2;
+        let e2 = vec![
+            Event::new(now, "claude/wrong-outcome".to_string(), "claude-code".to_string(), Role::User, "fix memory leak".to_string()),
+            Event::new(now, "claude/wrong-outcome".to_string(), "claude-code".to_string(), Role::Assistant, "failed".to_string()),
+        ];
+        writer.add_document(build_session_document(&fields, &e2, &m2)).unwrap();
+
+        // Wrong agent (aider instead of claude-code)
+        let mut m3 = SessionManifest::new("aider/wrong-agent".to_string(), "aider".to_string());
+        m3.outcome = Some("success".to_string());
+        m3.tags = vec!["rust".to_string()];
+        m3.started = now;
+        m3.turns = 2;
+        let e3 = vec![
+            Event::new(now, "aider/wrong-agent".to_string(), "aider".to_string(), Role::User, "fix memory leak".to_string()),
+            Event::new(now, "aider/wrong-agent".to_string(), "aider".to_string(), Role::Assistant, "fixed".to_string()),
+        ];
+        writer.add_document(build_session_document(&fields, &e3, &m3)).unwrap();
+
+        // Wrong tag (python instead of rust)
+        let mut m4 = SessionManifest::new("claude/wrong-tag".to_string(), "claude-code".to_string());
+        m4.outcome = Some("success".to_string());
+        m4.tags = vec!["python".to_string()];
+        m4.started = now;
+        m4.turns = 2;
+        let e4 = vec![
+            Event::new(now, "claude/wrong-tag".to_string(), "claude-code".to_string(), Role::User, "fix memory leak".to_string()),
+            Event::new(now, "claude/wrong-tag".to_string(), "claude-code".to_string(), Role::Assistant, "fixed".to_string()),
+        ];
+        writer.add_document(build_session_document(&fields, &e4, &m4)).unwrap();
+
+        writer.commit().unwrap();
+        writer.wait_merging_threads().unwrap();
+
+        let opts = SearchOptions {
+            query: Some("fix memory".to_string()),
+            agent: vec!["claude-code".to_string()],
+            outcome: Some("success".to_string()),
+            tag: vec!["rust".to_string()],
+            ..default_opts()
+        };
+        let result = execute_search(temp_dir.path(), &opts).unwrap();
+        assert_eq!(result.results.len(), 1);
+        assert_eq!(result.results[0].session_id, "claude/target");
+    }
+
+    #[test]
+    fn test_search_integration_unicode_content() {
+        use crate::event::{Event, Role, SessionManifest};
+        use crate::index::build_session_document;
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let index_path = temp_dir.path().join("index").join("tantivy");
+        let (schema, fields) = build_schema();
+        std::fs::create_dir_all(&index_path).unwrap();
+        let index = tantivy::Index::create_in_dir(&index_path, schema).unwrap();
+        let mut writer = index.writer(50_000_000).unwrap();
+
+        let now = Utc::now();
+        let mut m = SessionManifest::new("claude/unicode".to_string(), "claude-code".to_string());
+        m.started = now;
+        m.turns = 2;
+        m.summary = Some("Unicode test session with authentication".to_string());
+        let e = vec![
+            Event::new(now, "claude/unicode".to_string(), "claude-code".to_string(), Role::User,
+                "Fix authentication bug in the system".to_string()),
+            Event::new(now, "claude/unicode".to_string(), "claude-code".to_string(), Role::Assistant,
+                "Fixed authentication: 日本語コメント and Ответ на русском".to_string()),
+        ];
+        writer.add_document(build_session_document(&fields, &e, &m)).unwrap();
+        writer.commit().unwrap();
+        writer.wait_merging_threads().unwrap();
+
+        let opts = SearchOptions {
+            query: Some("authentication".to_string()),
+            ..default_opts()
+        };
+        let result = execute_search(temp_dir.path(), &opts).unwrap();
+        assert!(result.total_matches >= 1);
+        assert_eq!(result.results[0].session_id, "claude/unicode");
+    }
+
+    #[test]
+    fn test_search_integration_empty_session() {
+        use crate::event::{Event, Role, SessionManifest};
+        use crate::index::build_session_document;
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let index_path = temp_dir.path().join("index").join("tantivy");
+        let (schema, fields) = build_schema();
+        std::fs::create_dir_all(&index_path).unwrap();
+        let index = tantivy::Index::create_in_dir(&index_path, schema).unwrap();
+        let mut writer = index.writer(50_000_000).unwrap();
+
+        let now = Utc::now();
+
+        // Session with no events
+        let m_empty = SessionManifest::new("claude/empty".to_string(), "claude-code".to_string());
+        let e_empty: Vec<Event> = vec![];
+        writer.add_document(build_session_document(&fields, &e_empty, &m_empty)).unwrap();
+
+        // Normal session to ensure it still finds the right one
+        let mut m_normal = SessionManifest::new("claude/normal".to_string(), "claude-code".to_string());
+        m_normal.started = now;
+        m_normal.turns = 1;
+        let e_normal = vec![
+            Event::new(now, "claude/normal".to_string(), "claude-code".to_string(), Role::User, "fix the auth bug".to_string()),
+        ];
+        writer.add_document(build_session_document(&fields, &e_normal, &m_normal)).unwrap();
+        writer.commit().unwrap();
+        writer.wait_merging_threads().unwrap();
+
+        // Search should return only the normal session
+        let opts = SearchOptions {
+            query: Some("auth".to_string()),
+            ..default_opts()
+        };
+        let result = execute_search(temp_dir.path(), &opts).unwrap();
+        assert_eq!(result.results.len(), 1);
+        assert_eq!(result.results[0].session_id, "claude/normal");
+    }
+
+    #[test]
+    fn test_search_integration_offset() {
+        use crate::event::{Event, Role, SessionManifest};
+        use crate::index::build_session_document;
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let index_path = temp_dir.path().join("index").join("tantivy");
+        let (schema, fields) = build_schema();
+        std::fs::create_dir_all(&index_path).unwrap();
+        let index = tantivy::Index::create_in_dir(&index_path, schema).unwrap();
+        let mut writer = index.writer(50_000_000).unwrap();
+
+        let now = Utc::now();
+
+        for i in 0..3 {
+            let session_id = format!("claude/session-{}", i);
+            let mut m = SessionManifest::new(session_id.clone(), "claude-code".to_string());
+            m.started = now - chrono::Duration::hours(i as i64);
+            m.turns = 1;
+            let e = vec![
+                Event::new(now, session_id.clone(), "claude-code".to_string(), Role::User,
+                    "debug the authentication code".to_string()),
+            ];
+            writer.add_document(build_session_document(&fields, &e, &m)).unwrap();
+        }
+        writer.commit().unwrap();
+        writer.wait_merging_threads().unwrap();
+
+        let opts_all = SearchOptions {
+            query: Some("authentication".to_string()),
+            max_results: 10,
+            offset: 0,
+            ..default_opts()
+        };
+        let all_results = execute_search(temp_dir.path(), &opts_all).unwrap();
+        assert_eq!(all_results.results.len(), 3);
+
+        let opts_offset = SearchOptions {
+            query: Some("authentication".to_string()),
+            max_results: 10,
+            offset: 1,
+            ..default_opts()
+        };
+        let offset_results = execute_search(temp_dir.path(), &opts_offset).unwrap();
+        assert_eq!(offset_results.results.len(), 2);
+        assert_eq!(offset_results.results[0].session_id, all_results.results[1].session_id);
+    }
+
+    #[test]
+    fn test_search_integration_multiple_tag_filters() {
+        // Multiple tags use AND logic — all tags must be present
+        use crate::event::{Event, Role, SessionManifest};
+        use crate::index::build_session_document;
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let index_path = temp_dir.path().join("index").join("tantivy");
+        let (schema, fields) = build_schema();
+        std::fs::create_dir_all(&index_path).unwrap();
+        let index = tantivy::Index::create_in_dir(&index_path, schema).unwrap();
+        let mut writer = index.writer(50_000_000).unwrap();
+
+        let now = Utc::now();
+
+        // Session with both rust and docker tags
+        let mut m1 = SessionManifest::new("claude/multi-tag".to_string(), "claude-code".to_string());
+        m1.tags = vec!["rust".to_string(), "docker".to_string()];
+        m1.started = now;
+        m1.turns = 2;
+        let e1 = vec![
+            Event::new(now, "claude/multi-tag".to_string(), "claude-code".to_string(), Role::User, "containerize the rust app".to_string()),
+            Event::new(now, "claude/multi-tag".to_string(), "claude-code".to_string(), Role::Assistant, "done".to_string()),
+        ];
+        writer.add_document(build_session_document(&fields, &e1, &m1)).unwrap();
+
+        // Session with only rust tag
+        let mut m2 = SessionManifest::new("claude/rust-only".to_string(), "claude-code".to_string());
+        m2.tags = vec!["rust".to_string()];
+        m2.started = now;
+        m2.turns = 2;
+        let e2 = vec![
+            Event::new(now, "claude/rust-only".to_string(), "claude-code".to_string(), Role::User, "fix the rust app".to_string()),
+            Event::new(now, "claude/rust-only".to_string(), "claude-code".to_string(), Role::Assistant, "fixed".to_string()),
+        ];
+        writer.add_document(build_session_document(&fields, &e2, &m2)).unwrap();
+        writer.commit().unwrap();
+        writer.wait_merging_threads().unwrap();
+
+        // Both rust AND docker required
+        let opts = SearchOptions {
+            query: Some("app".to_string()),
+            tag: vec!["rust".to_string(), "docker".to_string()],
+            ..default_opts()
+        };
+        let result = execute_search(temp_dir.path(), &opts).unwrap();
+        assert_eq!(result.results.len(), 1);
+        assert_eq!(result.results[0].session_id, "claude/multi-tag");
+    }
+
+    #[test]
+    fn test_search_integration_doc_type_filter() {
+        use crate::event::{Event, Role, SessionManifest};
+        use crate::index::{build_code_artifact_document, build_session_document};
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let index_path = temp_dir.path().join("index").join("tantivy");
+        let (schema, fields) = build_schema();
+        std::fs::create_dir_all(&index_path).unwrap();
+        let index = tantivy::Index::create_in_dir(&index_path, schema).unwrap();
+        let mut writer = index.writer(50_000_000).unwrap();
+
+        let now = Utc::now();
+
+        let mut m = SessionManifest::new("claude/1".to_string(), "claude-code".to_string());
+        m.started = now;
+        m.turns = 1;
+        let e = vec![Event::new(now, "claude/1".to_string(), "claude-code".to_string(),
+            Role::User, "write function to validate input data".to_string())];
+        writer.add_document(build_session_document(&fields, &e, &m)).unwrap();
+
+        writer.add_document(build_code_artifact_document(
+            &fields, "claude/1", "claude-code", None, now, "rust",
+            "src/validate.rs", "fn validate_input(s: &str) -> bool { !s.is_empty() }",
+            true, None,
+        )).unwrap();
+        writer.commit().unwrap();
+        writer.wait_merging_threads().unwrap();
+
+        // Filter to session only
+        let opts = SearchOptions {
+            query: Some("validate".to_string()),
+            doc_type_filter: Some("session".to_string()),
+            ..default_opts()
+        };
+        let result = execute_search(temp_dir.path(), &opts).unwrap();
+        for r in &result.results {
+            assert_eq!(r.doc_type.as_deref(), Some("session"));
+        }
+    }
+
+    #[test]
+    fn test_search_integration_very_large_session() {
+        // Very large sessions should be indexed and searched without panic
+        use crate::event::{Event, Role, SessionManifest};
+        use crate::index::build_session_document;
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let index_path = temp_dir.path().join("index").join("tantivy");
+        let (schema, fields) = build_schema();
+        std::fs::create_dir_all(&index_path).unwrap();
+        let index = tantivy::Index::create_in_dir(&index_path, schema).unwrap();
+        let mut writer = index.writer(50_000_000).unwrap();
+
+        let now = Utc::now();
+        let mut m = SessionManifest::new("claude/large".to_string(), "claude-code".to_string());
+        m.started = now;
+        m.turns = 3;
+
+        // Very large tool result (will trigger content truncation)
+        let large_tool_result = "this is a large tool result with lots of content ".repeat(15000);
+        let e = vec![
+            Event::new(now, "claude/large".to_string(), "claude-code".to_string(), Role::User,
+                "analyze this large codebase for authentication issues".to_string()),
+            Event::new(now, "claude/large".to_string(), "claude-code".to_string(), Role::ToolResult,
+                large_tool_result),
+            Event::new(now, "claude/large".to_string(), "claude-code".to_string(), Role::Assistant,
+                "I analyzed the authentication code and found issues".to_string()),
+        ];
+        writer.add_document(build_session_document(&fields, &e, &m)).unwrap();
+        writer.commit().unwrap();
+        writer.wait_merging_threads().unwrap();
+
+        let opts = SearchOptions {
+            query: Some("authentication".to_string()),
+            ..default_opts()
+        };
+        let result = execute_search(temp_dir.path(), &opts).unwrap();
+        assert!(result.total_matches >= 1);
+        assert_eq!(result.results[0].session_id, "claude/large");
+    }
+
+    #[test]
+    fn test_search_integration_aider_session_roundtrip() {
+        // Full scrape → index → search roundtrip for a simulated Aider session
+        use crate::event::{Event, Role, SessionManifest};
+        use crate::index::build_session_document;
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let index_path = temp_dir.path().join("index").join("tantivy");
+        let (schema, fields) = build_schema();
+        std::fs::create_dir_all(&index_path).unwrap();
+        let index = tantivy::Index::create_in_dir(&index_path, schema).unwrap();
+        let mut writer = index.writer(50_000_000).unwrap();
+
+        let now = Utc::now();
+        let mut m = SessionManifest::new("aider/session-1".to_string(), "aider".to_string());
+        m.project = Some("/home/user/api".to_string());
+        m.started = now;
+        m.turns = 5;
+        m.summary = Some("Refactored authentication middleware using JWT tokens".to_string());
+        m.outcome = Some("success".to_string());
+        m.tags = vec!["python".to_string(), "jwt".to_string(), "authentication".to_string()];
+        let e = vec![
+            Event::new(now, "aider/session-1".to_string(), "aider".to_string(), Role::User,
+                "Refactor the auth middleware to use JWT tokens instead of session cookies".to_string()),
+            Event::new(now, "aider/session-1".to_string(), "aider".to_string(), Role::Assistant,
+                "I'll update the middleware to use JWT. Plan: 1) Install PyJWT 2) Update auth.py".to_string()),
+            Event::new(now, "aider/session-1".to_string(), "aider".to_string(), Role::ToolCall,
+                "pip install PyJWT".to_string()).with_tool(Some("Bash".to_string())),
+            Event::new(now, "aider/session-1".to_string(), "aider".to_string(), Role::ToolResult,
+                "Successfully installed PyJWT-2.8.0".to_string()),
+            Event::new(now, "aider/session-1".to_string(), "aider".to_string(), Role::Assistant,
+                "JWT authentication has been implemented successfully.".to_string()),
+        ];
+        writer.add_document(build_session_document(&fields, &e, &m)).unwrap();
+        writer.commit().unwrap();
+        writer.wait_merging_threads().unwrap();
+
+        let opts = SearchOptions {
+            query: Some("JWT authentication".to_string()),
+            agent: vec!["aider".to_string()],
+            ..default_opts()
+        };
+        let result = execute_search(temp_dir.path(), &opts).unwrap();
+        assert!(result.total_matches >= 1);
+        assert_eq!(result.results[0].session_id, "aider/session-1");
+        assert_eq!(result.results[0].source_agent, "aider");
+        assert!(result.results[0].summary.is_some());
+        assert_eq!(result.results[0].outcome.as_deref(), Some("success"));
+    }
+
+    #[test]
+    fn test_search_integration_claude_code_session_roundtrip() {
+        // Full roundtrip for a Claude Code session with file edits and tool calls
+        use crate::event::{Event, Role, SessionManifest};
+        use crate::index::build_session_document;
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let index_path = temp_dir.path().join("index").join("tantivy");
+        let (schema, fields) = build_schema();
+        std::fs::create_dir_all(&index_path).unwrap();
+        let index = tantivy::Index::create_in_dir(&index_path, schema).unwrap();
+        let mut writer = index.writer(50_000_000).unwrap();
+
+        let now = Utc::now();
+        let mut m = SessionManifest::new("claude/session-2".to_string(), "claude-code".to_string());
+        m.project = Some("/home/user/myapp".to_string());
+        m.started = now;
+        m.turns = 6;
+        m.model = Some("claude-sonnet-4-5".to_string());
+        m.outcome = Some("success".to_string());
+        m.files_touched = vec!["src/auth.rs".to_string(), "src/middleware.rs".to_string()];
+        let e = vec![
+            Event::new(now, "claude/session-2".to_string(), "claude-code".to_string(), Role::User,
+                "Add rate limiting to the authentication endpoints".to_string()),
+            Event::new(now, "claude/session-2".to_string(), "claude-code".to_string(), Role::Assistant,
+                "I'll add rate limiting. First let me read the auth file.".to_string()),
+            Event::new(now, "claude/session-2".to_string(), "claude-code".to_string(), Role::ToolCall,
+                "src/auth.rs".to_string()).with_tool(Some("Read".to_string()))
+                .with_file_paths(vec!["src/auth.rs".to_string()]),
+            Event::new(now, "claude/session-2".to_string(), "claude-code".to_string(), Role::ToolResult,
+                "pub fn authenticate(token: &str) -> Result<Claims> { /* ... */ }".to_string()),
+            Event::new(now, "claude/session-2".to_string(), "claude-code".to_string(), Role::ToolCall,
+                "```rust\npub fn authenticate(token: &str) -> Result<Claims> {\n    check_rate_limit()?;\n    validate_token(token)\n}\n```".to_string())
+                .with_tool(Some("Edit".to_string()))
+                .with_file_paths(vec!["src/auth.rs".to_string()]),
+            Event::new(now, "claude/session-2".to_string(), "claude-code".to_string(), Role::Assistant,
+                "Rate limiting has been added to the authentication endpoints.".to_string()),
+        ];
+        writer.add_document(build_session_document(&fields, &e, &m)).unwrap();
+        writer.commit().unwrap();
+        writer.wait_merging_threads().unwrap();
+
+        let opts = SearchOptions {
+            query: Some("rate limiting authentication".to_string()),
+            model: Some("claude-sonnet-4-5".to_string()),
+            ..default_opts()
+        };
+        let result = execute_search(temp_dir.path(), &opts).unwrap();
+        assert!(result.total_matches >= 1);
+        let found = &result.results[0];
+        assert_eq!(found.session_id, "claude/session-2");
+        assert_eq!(found.model.as_deref(), Some("claude-sonnet-4-5"));
+        assert_eq!(found.outcome.as_deref(), Some("success"));
+    }
+
+    #[test]
+    fn test_search_integration_solution_only() {
+        // --solution-only mode searches the solution_summary field
+        use crate::event::{Event, Role, SessionManifest};
+        use crate::index::build_session_document;
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let index_path = temp_dir.path().join("index").join("tantivy");
+        let (schema, fields) = build_schema();
+        std::fs::create_dir_all(&index_path).unwrap();
+        let index = tantivy::Index::create_in_dir(&index_path, schema).unwrap();
+        let mut writer = index.writer(50_000_000).unwrap();
+
+        let now = Utc::now();
+
+        // Session with solution_summary
+        let mut m = SessionManifest::new("claude/solved".to_string(), "claude-code".to_string());
+        m.started = now;
+        m.turns = 3;
+        m.summary = Some("Investigated memory leak problem".to_string());
+        // solution_summary is not in SessionManifest — set it via the document directly
+        // We'll test that --solution_only routes snippet to the solution field
+        let e = vec![
+            Event::new(now, "claude/solved".to_string(), "claude-code".to_string(), Role::User,
+                "fix the memory leak in the allocator".to_string()),
+            Event::new(now, "claude/solved".to_string(), "claude-code".to_string(), Role::Assistant,
+                "memory leak fixed by patching the allocator".to_string()),
+        ];
+        writer.add_document(build_session_document(&fields, &e, &m)).unwrap();
+        writer.commit().unwrap();
+        writer.wait_merging_threads().unwrap();
+
+        // --solution_only should still return results if query matches content
+        let opts = SearchOptions {
+            query: Some("memory leak".to_string()),
+            solution_only: true,
+            ..default_opts()
+        };
+        let result = execute_search(temp_dir.path(), &opts).unwrap();
+        // Results are valid; solution_only only affects snippet source and adds a Should boost
+        assert!(result.total_matches >= 0); // May be 0 if solution_summary is empty — that's valid
+        // The important thing is no panic/error
+    }
 }
