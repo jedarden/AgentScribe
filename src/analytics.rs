@@ -74,15 +74,17 @@ static INVESTIGATION_PATTERN: LazyLock<Regex> =
 static DOCUMENTATION_PATTERN: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?i)\b(document|readme|changelog|docstring|comment|docs)\b").unwrap());
 
-/// Config file extensions for configuration problem type
+/// Config file extensions for configuration problem type (without leading dot)
 const CONFIG_EXTENSIONS: &[&str] = &[
-    ".toml", ".yaml", ".yml", ".json", ".env", ".ini", ".cfg", ".conf",
+    "toml", "yaml", "yml", "json", "ini", "cfg", "conf",
 ];
 
-const CONFIG_FILENAMES: &[&str] = &["Dockerfile", "Makefile", "docker-compose.yml", "docker-compose.yaml"];
+const CONFIG_FILENAMES: &[&str] = &[
+    "Dockerfile", "Makefile", "docker-compose.yml", "docker-compose.yaml", ".env",
+];
 
-/// Doc file extensions for documentation problem type
-const DOC_EXTENSIONS: &[&str] = &[".md", ".rst", ".txt", ".adoc"];
+/// Doc file extensions for documentation problem type (without leading dot)
+const DOC_EXTENSIONS: &[&str] = &["md", "rst", "txt", "adoc"];
 
 /// Data extracted from a single indexed session for analytics
 pub(crate) struct SessionData {
