@@ -172,7 +172,7 @@ static ERROR_RE: LazyLock<Regex> = LazyLock::new(|| {
 });
 
 static SUCCESS_TOOL_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)\b(success|ok|completed|done|passed)\b").unwrap()
+    Regex::new(r"(?i)\b(success\w*|ok|completed|done|passed)\b").unwrap()
 });
 
 /// Detect the outcome of a session based on events and configuration.
@@ -252,9 +252,21 @@ pub fn detect_outcome(events: &[Event], manifest: &SessionManifest, config: &Out
                     score += config.final_edit_write;
                 }
             }
-        }
+        } else if last_event.role == Role::ToolResult {
+            // Check if the preceding event was an edit/write tool call
+            if events.len() >= 2 {
+                if let Some(prev_event) = events.get(events.len() - 2) {
+                    if prev_event.role == Role::ToolCall {
+                        if let Some(ref tool) = prev_event.tool {
+                            if matches!(tool.as_str(), "Edit" | "Write" | "apply_edit") {
+                                signals.push(OutcomeSignal::FinalEditWrite);
+                                score += config.final_edit_write;
+                            }
+                        }
+                    }
+                }
+            }
 
-        if last_event.role == Role::ToolResult {
             if ERROR_RE.is_match(&last_event.content) {
                 signals.push(OutcomeSignal::FinalError);
                 score += config.final_error;

@@ -56,8 +56,8 @@ pub fn extract_code_artifacts(events: &[Event]) -> Vec<CodeArtifact> {
             let language = cap.get(1).map_or("", |m| m.as_str()).to_lowercase();
             let code = cap.get(2).map_or("", |m| m.as_str()).to_string();
 
-            // Skip empty code blocks or very short ones (likely inline)
-            if code.trim().is_empty() || code.lines().count() < 2 {
+            // Skip empty code blocks
+            if code.trim().is_empty() {
                 continue;
             }
 

@@ -17,8 +17,8 @@ static ERROR_EXTRACT_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
         r"error\[?[E\d]{4,5}\]?:.*",
         // Rust panics
         r"thread '.*' panicked at.*",
-        // Python tracebacks (full line)
-        r"(?:Traceback \(most recent call last\):.*?(?=\n\n|\Z))",
+        // Python tracebacks (header line)
+        r"Traceback \(most recent call last\):",
         // Python exceptions
         r"\w+Error: .+",
         // JavaScript/TypeScript errors

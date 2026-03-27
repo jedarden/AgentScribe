@@ -98,6 +98,13 @@ pub struct IndexConfig {
 pub struct SearchConfig {
     pub default_max_results: usize,
     pub default_snippet_length: usize,
+    /// Levenshtein edit distance for fuzzy term queries (default: 1)
+    #[serde(default = "default_fuzzy_edit_distance")]
+    pub fuzzy_edit_distance: u8,
+}
+
+fn default_fuzzy_edit_distance() -> u8 {
+    1
 }
 
 impl Default for Config {
@@ -117,6 +124,7 @@ impl Default for Config {
             search: SearchConfig {
                 default_max_results: 10,
                 default_snippet_length: 200,
+                fuzzy_edit_distance: 1,
             },
             outcome: OutcomeConfig::default(),
             cost: CostConfig::default(),
