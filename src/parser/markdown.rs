@@ -275,6 +275,7 @@ mod tests {
                     delimiter_pattern: r"^# aider chat started at".to_string(),
                 },
                 tree: None,
+                truncation_limit: None,
             },
             parser: Parser {
                 user_prefix: Some("#### ".to_string()),

@@ -254,18 +254,26 @@ impl Scraper {
         };
 
         for file_path in files {
+            let path_str = file_path.to_str().unwrap_or("");
+
+            // Sources with a rolling-window truncation_limit (e.g. Windsurf's 20-conversation
+            // cap) can silently overwrite old conversations without shrinking the file.  Clear
+            // the per-file state before each scrape so we always get a fresh full-read and
+            // never leave stale session files from overwritten conversations.
+            if plugin.source.truncation_limit.is_some() {
+                let _ = self.state_manager.remove_file(path_str);
+            }
+
             // Check if file needs scraping
             match self.state_manager.needs_rescrape(&file_path, &plugin.plugin.name) {
                 Ok(true) => {
-                    // Check if truncated
-                    let file_state = self.state_manager.get_file_state(
-                        file_path.to_str().unwrap_or("")
-                    );
+                    // Check if truncated (physical file shrink)
+                    let file_state = self.state_manager.get_file_state(path_str);
                     if let Some(state) = file_state {
                         let metadata = std::fs::metadata(&file_path)?;
                         if metadata.len() < state.last_byte_offset {
                             // File was truncated - remove state and rescan fully
-                            self.state_manager.remove_file(file_path.to_str().unwrap_or(""))?;
+                            self.state_manager.remove_file(path_str)?;
                         }
                     }
 
@@ -332,83 +340,102 @@ impl Scraper {
             files_skipped: 0,
         };
 
+        // Parse all events once.  For multi-session files (e.g. Cursor/Windsurf
+        // with key_session_id_regex) each event already carries the correct
+        // session_id set by the parser; we filter below rather than re-parsing
+        // the source for every session.
+        let all_events: Vec<Event> = match parser.parse(file_path, plugin) {
+            Ok(events) => events,
+            Err(e) => {
+                if e.is_skippable() {
+                    result.errors.push(ScrapeError {
+                        file: file_path.display().to_string(),
+                        line: None,
+                        message: e.to_string(),
+                    });
+                    Vec::new()
+                } else {
+                    self.end_index_write();
+                    return Err(e);
+                }
+            }
+        };
+
+        let multi_session = sessions.len() > 1;
+
         for session_info in sessions {
             let prefixed_session_id = format!("{}/{}", plugin.plugin.name, session_info.session_id);
 
             // Detect model for this session
             let model = self.detect_model(file_path, &session_info, plugin)?;
 
-            // Parse events for this session
-            match parser.parse(file_path, plugin) {
-                Ok(mut events) => {
-                    if events.is_empty() {
-                        continue;
-                    }
+            // Select events that belong to this session.
+            // For single-session sources every event goes to the one session.
+            // For multi-session sources (key_session_id_regex) filter by session_id.
+            let mut events: Vec<Event> = if multi_session {
+                all_events
+                    .iter()
+                    .filter(|e| e.session_id == session_info.session_id)
+                    .cloned()
+                    .collect()
+            } else {
+                all_events.clone()
+            };
 
-                    // Enrich events with project, model, and file paths
-                    for event in &mut events {
-                        // Set project
-                        if event.project.is_none() {
-                            event.project = project.clone();
-                        }
+            if events.is_empty() {
+                continue;
+            }
 
-                        // Set model
-                        if event.model.is_none() {
-                            event.model = model.clone();
-                        }
+            // Enrich events with project, model, and file paths
+            for event in &mut events {
+                // Set project
+                if event.project.is_none() {
+                    event.project = project.clone();
+                }
 
-                        // Extract file paths
-                        if event.file_paths.is_empty() {
-                            event.file_paths = FilePathExtractor::extract_from_event(event, plugin);
-                        }
-                    }
+                // Set model
+                if event.model.is_none() {
+                    event.model = model.clone();
+                }
 
-                    // Write session to file
-                    let session_path = self.sessions_dir
-                        .join(&plugin.plugin.name)
-                        .join(format!("{}.jsonl", session_info.session_id));
+                // Extract file paths
+                if event.file_paths.is_empty() {
+                    event.file_paths = FilePathExtractor::extract_from_event(event, plugin);
+                }
+            }
 
-                    // Create plugin directory if needed
-                    std::fs::create_dir_all(session_path.parent().unwrap())?;
+            // Write session to file
+            let session_path = self.sessions_dir
+                .join(&plugin.plugin.name)
+                .join(format!("{}.jsonl", session_info.session_id));
 
-                    match Self::write_session(&session_path, &events, plugin) {
-                        Ok(_) => {
-                            result.sessions_scraped += 1;
-                            result.events_written += events.len();
+            // Create plugin directory if needed
+            std::fs::create_dir_all(session_path.parent().unwrap())?;
 
-                            // Track session in state
-                            self.state_manager.add_session(path_str, prefixed_session_id.clone())?;
+            match Self::write_session(&session_path, &events, plugin) {
+                Ok(_) => {
+                    result.sessions_scraped += 1;
+                    result.events_written += events.len();
 
-                            if self.index_session_events(
-                                &events,
-                                &prefixed_session_id,
-                                &plugin.plugin.name,
-                                project.as_deref(),
-                                model.as_deref(),
-                            ) {
-                                result.sessions_indexed += 1;
-                            }
-                        }
-                        Err(e) => {
-                            result.errors.push(ScrapeError {
-                                file: file_path.display().to_string(),
-                                line: None,
-                                message: format!("Write error: {}", e),
-                            });
-                        }
+                    // Track session in state
+                    self.state_manager.add_session(path_str, prefixed_session_id.clone())?;
+
+                    if self.index_session_events(
+                        &events,
+                        &prefixed_session_id,
+                        &plugin.plugin.name,
+                        project.as_deref(),
+                        model.as_deref(),
+                    ) {
+                        result.sessions_indexed += 1;
                     }
                 }
                 Err(e) => {
-                    if e.is_skippable() {
-                        result.errors.push(ScrapeError {
-                            file: file_path.display().to_string(),
-                            line: None,
-                            message: e.to_string(),
-                        });
-                    } else {
-                        self.end_index_write();
-                        return Err(e);
-                    }
+                    result.errors.push(ScrapeError {
+                        file: file_path.display().to_string(),
+                        line: None,
+                        message: format!("Write error: {}", e),
+                    });
                 }
             }
         }

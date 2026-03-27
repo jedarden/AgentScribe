@@ -37,6 +37,12 @@ pub struct Source {
     pub session_detection: SessionDetection,
     #[serde(default)]
     pub tree: Option<TreeConfig>,
+    /// Hard limit on the number of conversations the source retains (rolling window).
+    /// When set the scraper clears per-file state before each scrape so that
+    /// overwritten conversations do not leave stale data in the output.
+    /// Example: Windsurf keeps at most 20 conversations; set this to 20.
+    #[serde(default)]
+    pub truncation_limit: Option<u32>,
 }
 
 /// Supported log formats
@@ -151,6 +157,13 @@ pub struct Parser {
     pub key_filter: Option<String>,
     #[serde(default)]
     pub content_path: Option<String>,
+    /// Regex applied to the key column to extract a per-row session ID (first
+    /// capture group).  When set, `detect_sessions` queries distinct IDs from
+    /// the DB and `parse` tags every event with its composerId so the scraper
+    /// can route events to the correct session output file.
+    /// Example: `"^bubbleId:([^:]+):"` extracts composerId from Cursor/Windsurf keys.
+    #[serde(default)]
+    pub key_session_id_regex: Option<String>,
 
     // Field filtering
     #[serde(default)]

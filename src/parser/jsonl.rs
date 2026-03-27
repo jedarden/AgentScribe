@@ -304,6 +304,7 @@ mod tests {
                     session_id_from: SessionIdSource::Filename,
                 },
                 tree: None,
+                truncation_limit: None,
             },
             parser: Parser {
                 timestamp: Some("ts".to_string()),

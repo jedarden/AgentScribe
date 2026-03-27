@@ -68,6 +68,14 @@ impl SqliteParser {
         }
     }
 
+    /// Extract a per-key session ID using `key_session_id_regex` (capture group 1).
+    /// Returns `None` if the regex doesn't match.
+    fn extract_key_session_id(re: &Regex, key: &str) -> Option<String> {
+        re.captures(key)
+            .and_then(|c| c.get(1))
+            .map(|m| m.as_str().to_string())
+    }
+
     /// Parse a JSON value blob from one DB row and return its events.
     ///
     /// `row_num` is used for error location only.
@@ -223,9 +231,24 @@ impl super::FormatParser for SqliteParser {
             })
             .transpose()?;
 
-        let session_id = Self::session_id_from_path(source_path, plugin);
-        let context = ParseContext::new(
-            session_id,
+        // Compile the per-key session-ID regex once.
+        let key_session_re: Option<Regex> = plugin
+            .parser
+            .key_session_id_regex
+            .as_deref()
+            .map(|pat| {
+                Regex::new(pat).map_err(|e| {
+                    AgentScribeError::InvalidPlugin(format!(
+                        "invalid key_session_id_regex: {}",
+                        e
+                    ))
+                })
+            })
+            .transpose()?;
+
+        let default_session_id = Self::session_id_from_path(source_path, plugin);
+        let base_context = ParseContext::new(
+            default_session_id.clone(),
             plugin.plugin.name.clone(),
             source_path.display().to_string(),
         );
@@ -283,6 +306,20 @@ impl super::FormatParser for SqliteParser {
                 continue;
             }
 
+            // Derive per-row session ID from the key when key_session_id_regex is set.
+            let context = if let Some(ref re) = key_session_re {
+                match Self::extract_key_session_id(re, &key) {
+                    Some(sid) => {
+                        let mut ctx = base_context.clone();
+                        ctx.session_id = sid;
+                        ctx
+                    }
+                    None => base_context.clone(),
+                }
+            } else {
+                base_context.clone()
+            };
+
             match Self::parse_value_blob(&key, &value_str, &context, plugin, row_num) {
                 Ok(mut row_events) => events.append(&mut row_events),
                 Err(e) if e.is_skippable() => {
@@ -296,9 +333,103 @@ impl super::FormatParser for SqliteParser {
     }
 
     fn detect_sessions(&self, source_path: &Path, plugin: &Plugin) -> Result<Vec<SessionInfo>> {
-        let session_id = Self::session_id_from_path(source_path, plugin);
         let file_size = std::fs::metadata(source_path)?.len();
 
+        // When key_session_id_regex is set, query the DB to discover distinct
+        // session IDs so the scraper can route events to separate output files.
+        if let Some(ref regex_str) = plugin.parser.key_session_id_regex {
+            let re = Regex::new(regex_str).map_err(|e| {
+                AgentScribeError::InvalidPlugin(format!(
+                    "invalid key_session_id_regex: {}",
+                    e
+                ))
+            })?;
+
+            let key_re: Option<Regex> = plugin
+                .parser
+                .key_filter
+                .as_deref()
+                .map(|pat| Regex::new(pat))
+                .transpose()
+                .map_err(|e| {
+                    AgentScribeError::InvalidPlugin(format!("invalid key_filter regex: {}", e))
+                })?;
+
+            let query_str = plugin
+                .parser
+                .query
+                .as_deref()
+                .ok_or_else(|| AgentScribeError::InvalidPlugin("SQLite format requires query".into()))?;
+
+            let conn = Self::open_db(source_path)?;
+            let mut stmt = conn.prepare(query_str).map_err(|e| AgentScribeError::Parse {
+                file: source_path.display().to_string(),
+                line: None,
+                message: format!("cannot prepare query: {}", e),
+            })?;
+
+            let col_count = stmt.column_count();
+            let mut rows = stmt.query([]).map_err(|e| AgentScribeError::Parse {
+                file: source_path.display().to_string(),
+                line: None,
+                message: format!("cannot execute query: {}", e),
+            })?;
+
+            let mut session_ids: Vec<String> = Vec::new();
+            loop {
+                let row = rows.next().map_err(|e| AgentScribeError::Parse {
+                    file: source_path.display().to_string(),
+                    line: None,
+                    message: format!("row read error: {}", e),
+                })?;
+                let row = match row {
+                    Some(r) => r,
+                    None => break,
+                };
+
+                let key: String = if col_count >= 2 {
+                    row.get(0).unwrap_or_default()
+                } else {
+                    String::new()
+                };
+
+                if let Some(ref kre) = key_re {
+                    if !kre.is_match(&key) {
+                        continue;
+                    }
+                }
+
+                if let Some(sid) = Self::extract_key_session_id(&re, &key) {
+                    if !session_ids.contains(&sid) {
+                        session_ids.push(sid);
+                    }
+                }
+            }
+
+            if session_ids.is_empty() {
+                // No matching keys — return a single placeholder so the scraper
+                // still marks the file as processed.
+                return Ok(vec![SessionInfo {
+                    session_id: Self::session_id_from_path(source_path, plugin),
+                    start_offset: 0,
+                    end_offset: file_size,
+                    metadata: None,
+                }]);
+            }
+
+            return Ok(session_ids
+                .into_iter()
+                .map(|sid| SessionInfo {
+                    session_id: sid,
+                    start_offset: 0,
+                    end_offset: file_size,
+                    metadata: None,
+                })
+                .collect());
+        }
+
+        // Default: one session per file, ID from filename.
+        let session_id = Self::session_id_from_path(source_path, plugin);
         Ok(vec![SessionInfo {
             session_id,
             start_offset: 0,
@@ -331,6 +462,7 @@ mod tests {
                     session_id_from: SessionIdSource::Filename,
                 },
                 tree: None,
+                truncation_limit: None,
             },
             parser: Parser {
                 query: Some(query.to_string()),

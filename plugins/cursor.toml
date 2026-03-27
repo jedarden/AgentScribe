@@ -1,14 +1,22 @@
 [plugin]
 name = "cursor"
-version = "1.0"
+version = "2.0"
 
 [source]
-# Cursor stores its global state (including chat history) in state.vscdb.
-# These databases can be very large (25 GB+) but only chat rows are queried.
+# Cursor stores conversation history in state.vscdb SQLite databases using the
+# cursorDiskKV key-value table.  The global DB can be 25 GB+ but only the
+# chat-related keys are queried so memory usage stays bounded (8 MB SQLite
+# cache; rows streamed one at a time).
+#
+# Two database locations:
+#   globalStorage/state.vscdb   – message content (bubbleId: keys)
+#   workspaceStorage/*/state.vscdb – per-project UI state (optional)
 paths = [
     "~/.config/Cursor/User/globalStorage/state.vscdb",
     "~/Library/Application Support/Cursor/User/globalStorage/state.vscdb",
     "~/.cursor/User/globalStorage/state.vscdb",
+    "~/.config/Cursor/User/workspaceStorage/*/state.vscdb",
+    "~/Library/Application Support/Cursor/User/workspaceStorage/*/state.vscdb",
 ]
 exclude = []
 format = "sqlite"
@@ -18,19 +26,32 @@ method = "one-file-per-session"
 session_id_from = "filename"
 
 [parser]
-# cursorDiskKV table: key TEXT, value TEXT (JSON blob)
-# History keys follow the pattern "history.<conversation-id>".
-# The value blob contains: { "messages": [ { "role": "...", "content": "..." }, ... ] }
-query = "SELECT key, value FROM cursorDiskKV"
-key_filter = "^history\\."
-content_path = "messages"
-role = "role"
-content = "content"
+# Cursor (post-0.40) stores each conversation bubble as a separate row:
+#   key   = "bubbleId:<composerId>:<bubbleId>"
+#   value = JSON message object
+#
+# Rows are ordered by rowid ASC to preserve conversation flow.
+# key_session_id_regex extracts the composerId (capture group 1) so that each
+# Cursor conversation becomes its own AgentScribe session.
+#
+# Session metadata lives in "composerData:<composerId>" keys but the full
+# message content is in the bubbleId rows, so we target those exclusively.
+query = "SELECT key, value FROM cursorDiskKV ORDER BY rowid ASC"
+key_filter = "^bubbleId:"
+key_session_id_regex = "^bubbleId:([^:]+):"
+role = "type"
+content = "text"
+timestamp = "createdAt"
 
 [parser.role_map]
+# Cursor uses integer type codes for message roles.
+"1" = "user"
+"2" = "assistant"
+# Also map string variants for forward-compatibility.
 "user" = "user"
 "assistant" = "assistant"
-"system" = "system"
+"human" = "user"
+"ai" = "assistant"
 
 [parser.project]
 method = "parent_dir"

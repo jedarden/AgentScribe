@@ -1,31 +1,52 @@
 [plugin]
 name = "windsurf"
-version = "1.0"
+version = "2.0"
 
 [source]
-# Windsurf stores conversation history in SQLite databases under its global storage
-paths = ["~/.codeium/windsurf/db/*.vscdb"]
+# Windsurf uses the same cursorDiskKV pattern as Cursor.
+#
+# CRITICAL – rolling-window truncation:
+#   Windsurf retains at most 20 conversations.  When the 21st is created the
+#   oldest is silently overwritten.  truncation_limit = 20 tells AgentScribe to
+#   always do a full rescan rather than an incremental one, so that overwritten
+#   conversations do not leave stale session files.  Scrape frequently (e.g.
+#   every few hours via `agentscribe daemon`) to avoid losing data.
+#
+# Newer Windsurf versions may encode some values with protobuf.  The parser
+# skips non-JSON values gracefully (logged as warnings, not errors).
+paths = [
+    "~/.config/Windsurf/User/globalStorage/state.vscdb",
+    "~/Library/Application Support/Windsurf/User/globalStorage/state.vscdb",
+]
 exclude = []
 format = "sqlite"
+truncation_limit = 20
 
 [source.session_detection]
 method = "one-file-per-session"
 session_id_from = "filename"
 
 [parser]
-# Each row in cursorDiskKV whose key matches the filter holds one conversation.
-# The value is a JSON blob: { "entries": [ { "role": "...", "text": "..." }, ... ] }
-query = "SELECT key, value FROM cursorDiskKV"
-key_filter = "^history\\."
-content_path = "entries"
-role = "role"
+# Same bubbleId key structure as Cursor.
+# key_session_id_regex groups bubbles by composerId into separate sessions.
+query = "SELECT key, value FROM cursorDiskKV ORDER BY rowid ASC"
+key_filter = "^bubbleId:"
+key_session_id_regex = "^bubbleId:([^:]+):"
+role = "type"
 content = "text"
+timestamp = "createdAt"
 
 [parser.role_map]
-"AI" = "assistant"
-"Human" = "user"
+# Integer type codes (same as Cursor).
+"1" = "user"
+"2" = "assistant"
+# String variants for forward-compatibility and older Windsurf versions.
 "user" = "user"
 "assistant" = "assistant"
+"Human" = "user"
+"AI" = "assistant"
+"human" = "user"
+"ai" = "assistant"
 
 [parser.project]
 method = "parent_dir"
