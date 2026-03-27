@@ -35,6 +35,30 @@ impl Default for CostConfig {
     }
 }
 
+/// Shell hook configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ShellHookConfig {
+    /// Whether to run search in a background subprocess (recommended; false = blocking)
+    #[serde(default = "default_true")]
+    pub background: bool,
+    /// Whether to capture stderr of the failed command (fragile, not recommended)
+    #[serde(default)]
+    pub stderr_capture: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+impl Default for ShellHookConfig {
+    fn default() -> Self {
+        ShellHookConfig {
+            background: true,
+            stderr_capture: false,
+        }
+    }
+}
+
 /// Global configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
@@ -45,6 +69,8 @@ pub struct Config {
     pub outcome: OutcomeConfig,
     #[serde(default)]
     pub cost: CostConfig,
+    #[serde(default)]
+    pub shell_hook: ShellHookConfig,
 }
 
 /// General configuration
@@ -94,6 +120,7 @@ impl Default for Config {
             },
             outcome: OutcomeConfig::default(),
             cost: CostConfig::default(),
+            shell_hook: ShellHookConfig::default(),
         }
     }
 }

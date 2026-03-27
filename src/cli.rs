@@ -128,6 +128,10 @@ enum Commands {
         #[arg(long)]
         fuzzy: bool,
 
+        /// Levenshtein edit distance for fuzzy matching (overrides config; default: 1)
+        #[arg(long)]
+        edit_distance: Option<u8>,
+
         /// Maximum number of results
         #[arg(short = 'n', long, default_value = "10")]
         max_results: usize,
@@ -147,6 +151,10 @@ enum Commands {
         /// Sort order: relevance, newest, oldest, turns
         #[arg(short, long, default_value = "relevance")]
         sort: String,
+
+        /// Output a single-line hint (for shell hook integration)
+        #[arg(long)]
+        hint: bool,
 
         /// JSON output
         #[arg(long)]
@@ -216,6 +224,11 @@ enum Commands {
         /// JSON output
         #[arg(long)]
         json: bool,
+    },
+    /// Generate shell integration snippet for auto-querying on error
+    ShellHook {
+        /// Shell to generate snippet for (bash, zsh, fish)
+        shell: String,
     },
     /// Generate an activity digest summary
     Digest {
@@ -346,22 +359,25 @@ pub fn run() -> Result<()> {
             r#type,
             model,
             fuzzy,
+            edit_distance,
             max_results,
             snippet_length,
             token_budget,
             offset,
             sort,
+            hint,
             json,
         } => run_search(
             query, error, code, lang, solution_only, like, session,
             agent, project, since, before, tag, outcome, r#type, model,
-            fuzzy, max_results, snippet_length, token_budget, offset, sort, json,
+            fuzzy, edit_distance, max_results, snippet_length, token_budget, offset, sort, hint, json,
         ),
         Commands::Recurring { since, threshold, json } => run_recurring(since, threshold, json),
         Commands::Daemon { action } => run_daemon(action),
         Commands::Rules { project_path, format, json } => run_rules(project_path, format, json),
         Commands::Analytics { agent, project, since, json } => run_analytics(agent, project, since, json),
         Commands::Gc { older_than, dry_run, json } => run_gc(older_than, dry_run, json),
+        Commands::ShellHook { shell } => run_shell_hook(&shell),
         Commands::Digest { since, output, json } => run_digest(since, output, json),
     }
 }
@@ -722,6 +738,7 @@ fn run_scrape(
 }
 
 /// Run search command
+#[allow(clippy::too_many_arguments)]
 fn run_search(
     query: Option<String>,
     error: Option<String>,
@@ -739,11 +756,13 @@ fn run_search(
     doc_type_filter: Option<String>,
     model: Option<String>,
     fuzzy: bool,
+    edit_distance: Option<u8>,
     max_results: usize,
     snippet_length: usize,
     token_budget: Option<usize>,
     offset: usize,
     sort: String,
+    hint: bool,
     json: bool,
 ) -> Result<()> {
     let config = load_config()?;
@@ -783,6 +802,7 @@ fn run_search(
         doc_type_filter,
         model,
         fuzzy,
+        fuzzy_distance: edit_distance.unwrap_or(1),
         max_results,
         snippet_length,
         token_budget,
@@ -792,12 +812,38 @@ fn run_search(
 
     let output = search::execute_search(&data_dir, &opts)?;
 
-    if json {
+    if hint {
+        // Print a single-line hint for shell hook integration
+        if let Some(result) = output.results.first() {
+            let text = result
+                .snippet
+                .as_deref()
+                .or(result.summary.as_deref())
+                .unwrap_or("")
+                .trim();
+            let one_line: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
+            if !one_line.is_empty() {
+                if one_line.len() > 120 {
+                    println!("{}...", &one_line[..117]);
+                } else {
+                    println!("{}", one_line);
+                }
+            }
+        }
+    } else if json {
         println!("{}", serde_json::to_string_pretty(&output).unwrap());
     } else {
         println!("{}", search::format_human(&output, snippet_length));
     }
 
+    Ok(())
+}
+
+/// Run shell-hook command
+fn run_shell_hook(shell: &str) -> Result<()> {
+    let config = load_config().unwrap_or_default();
+    let snippet = crate::shell_hook::generate_hook(shell, &config.shell_hook)?;
+    print!("{}", snippet);
     Ok(())
 }
 

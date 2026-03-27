@@ -21,6 +21,7 @@ mod recurring;
 mod rules;
 mod scraper;
 mod search;
+mod shell_hook;
 mod tags;
 
 use cli::run;

@@ -73,6 +73,7 @@ pub struct SearchOptions {
     pub doc_type_filter: Option<String>,
     pub model: Option<String>,
     pub fuzzy: bool,
+    pub fuzzy_distance: u8,
     pub max_results: usize,
     pub snippet_length: usize,
     pub token_budget: Option<usize>,
@@ -203,7 +204,7 @@ fn build_query(
     // Main text query
     if let Some(ref query_str) = opts.query {
         let query = if opts.fuzzy {
-            build_fuzzy_query(fields, query_str)?
+            build_fuzzy_query(fields, query_str, opts.fuzzy_distance)?
         } else {
             build_fulltext_query(searcher, fields, query_str)?
         };
@@ -220,7 +221,7 @@ fn build_query(
     // Code search
     if let Some(ref code_q) = opts.code_query {
         let text_query = if opts.fuzzy {
-            build_fuzzy_query_for_field(fields.code_content, code_q)?
+            build_fuzzy_query_for_field(fields.code_content, code_q, opts.fuzzy_distance)?
         } else {
             let (parsed, _errors) = tantivy::query::QueryParser::for_index(
                 searcher.index(),
@@ -404,8 +405,8 @@ fn build_fulltext_query(
     Ok(Box::new(parsed))
 }
 
-/// Build a fuzzy query for all query terms across content and summary.
-fn build_fuzzy_query(fields: &IndexFields, query_str: &str) -> Result<Box<dyn Query>> {
+/// Build a fuzzy query for all query terms across content, summary, and solution_summary.
+fn build_fuzzy_query(fields: &IndexFields, query_str: &str, distance: u8) -> Result<Box<dyn Query>> {
     let terms: Vec<(Occur, Box<dyn Query>)> = query_str
         .split_whitespace()
         .filter(|w| !w.is_empty())
@@ -415,13 +416,19 @@ fn build_fuzzy_query(fields: &IndexFields, query_str: &str) -> Result<Box<dyn Qu
                 tantivy::schema::Term::from_field_text(fields.content, word);
             sub.push((
                 Occur::Should,
-                Box::new(FuzzyTermQuery::new(term_content, 1, true)) as Box<dyn Query>,
+                Box::new(FuzzyTermQuery::new(term_content, distance, true)) as Box<dyn Query>,
             ));
             let term_summary =
                 tantivy::schema::Term::from_field_text(fields.summary, word);
             sub.push((
                 Occur::Should,
-                Box::new(FuzzyTermQuery::new(term_summary, 1, true)) as Box<dyn Query>,
+                Box::new(FuzzyTermQuery::new(term_summary, distance, true)) as Box<dyn Query>,
+            ));
+            let term_solution =
+                tantivy::schema::Term::from_field_text(fields.solution_summary, word);
+            sub.push((
+                Occur::Should,
+                Box::new(FuzzyTermQuery::new(term_solution, distance, true)) as Box<dyn Query>,
             ));
             sub
         })
@@ -437,7 +444,7 @@ fn build_fuzzy_query(fields: &IndexFields, query_str: &str) -> Result<Box<dyn Qu
 }
 
 /// Build a fuzzy query for a specific field.
-fn build_fuzzy_query_for_field(field: Field, query_str: &str) -> Result<Box<dyn Query>> {
+fn build_fuzzy_query_for_field(field: Field, query_str: &str, distance: u8) -> Result<Box<dyn Query>> {
     let terms: Vec<(Occur, Box<dyn Query>)> = query_str
         .split_whitespace()
         .filter(|w| !w.is_empty())
@@ -445,7 +452,7 @@ fn build_fuzzy_query_for_field(field: Field, query_str: &str) -> Result<Box<dyn 
             let term = tantivy::schema::Term::from_field_text(field, word);
             (
                 Occur::Should,
-                Box::new(FuzzyTermQuery::new(term, 1, true)) as Box<dyn Query>,
+                Box::new(FuzzyTermQuery::new(term, distance, true)) as Box<dyn Query>,
             )
         })
         .collect();
@@ -775,6 +782,7 @@ fn lookup_session(
             doc_type_filter: None,
             model: None,
             fuzzy: false,
+            fuzzy_distance: 1,
             max_results: 1,
             snippet_length: 500,
             token_budget: None,
@@ -1345,6 +1353,7 @@ mod tests {
             doc_type_filter: None,
             model: None,
             fuzzy: false,
+            fuzzy_distance: 1,
             max_results: 10,
             snippet_length: 200,
             token_budget: None,
@@ -1617,6 +1626,7 @@ mod tests {
             doc_type_filter: None,
             model: None,
             fuzzy: false,
+            fuzzy_distance: 1,
             max_results: 10,
             snippet_length: 200,
             token_budget: None,
@@ -1983,6 +1993,7 @@ mod tests {
             doc_type_filter: None,
             model: None,
             fuzzy: false,
+            fuzzy_distance: 1,
             max_results: 10,
             snippet_length: 200,
             token_budget: None,
