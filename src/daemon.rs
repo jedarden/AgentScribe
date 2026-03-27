@@ -468,42 +468,36 @@ fn tail_log(log_file: &Path, n: usize) -> Result<()> {
 
 /// Follow a log file, printing new lines as they appear.
 fn follow_log(log_file: &Path, initial_lines: usize) -> Result<()> {
+    use std::io::{BufRead, Seek, SeekFrom};
+
     // Print initial lines
     tail_log(log_file, initial_lines)?;
-
-    use std::io::BufRead;
 
     // Set up a ctrlc handler to break out of the loop
     let _ = ctrlc::set_handler(|| {
         std::process::exit(0);
     });
 
+    // Open and seek to end so we only print new content
+    let file = fs::File::open(log_file)?;
+    let mut reader = std::io::BufReader::new(file);
+    reader.seek(SeekFrom::End(0))?;
+
     loop {
-        let file = match fs::File::open(log_file) {
-            Ok(f) => f,
+        let mut line = String::new();
+        match reader.read_line(&mut line) {
+            Ok(0) => {
+                // EOF — wait for more data (file is not rotated for daemon.log)
+                std::thread::sleep(Duration::from_millis(200));
+            }
+            Ok(_) => {
+                print!("{}", line);
+                let _ = std::io::stdout().lock().flush();
+            }
             Err(_) => {
                 std::thread::sleep(Duration::from_millis(200));
-                continue;
-            }
-        };
-        let mut reader = std::io::BufReader::new(file);
-
-        loop {
-            let mut line = String::new();
-            match reader.read_line(&mut line) {
-                Ok(0) => break, // EOF — reopen
-                Ok(_) => {
-                    print!("{}", line);
-                    let _ = std::io::stdout().lock().flush();
-                }
-                Err(_) => {
-                    std::thread::sleep(Duration::from_millis(200));
-                    break;
-                }
             }
         }
-
-        std::thread::sleep(Duration::from_millis(200));
     }
 }
 
