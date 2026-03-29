@@ -21,6 +21,7 @@ use std::path::{Path, PathBuf};
 use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::process::Command;
+use std::time::Duration;
 use tracing::{debug, info, warn};
 
 /// Scraping result
@@ -55,8 +56,17 @@ pub struct Scraper {
 }
 
 impl Scraper {
-    /// Create a new scraper
+    /// Create a new scraper with the default 30-second lock timeout.
     pub fn new(data_dir: PathBuf) -> Result<Self> {
+        Self::new_with_lock_timeout(data_dir, 30)
+    }
+
+    /// Create a new scraper with a configurable lock timeout (seconds).
+    ///
+    /// The timeout controls how long `save()` waits for the exclusive file
+    /// lock on `scrape-state.json` before returning an error.  Pass `0` to
+    /// disable the timeout (wait indefinitely).
+    pub fn new_with_lock_timeout(data_dir: PathBuf, lock_timeout_secs: u64) -> Result<Self> {
         let plugin_dir = data_dir.join("plugins");
         let state_file = data_dir.join("state").join("scrape-state.json");
         let sessions_dir = data_dir.join("sessions");
@@ -67,7 +77,8 @@ impl Scraper {
         std::fs::create_dir_all(state_file.parent().unwrap())?;
 
         let plugin_manager = PluginManager::new(plugin_dir);
-        let state_manager = StateManager::new(state_file)?;
+        let lock_timeout = Duration::from_secs(lock_timeout_secs);
+        let state_manager = StateManager::new_with_timeout(state_file, lock_timeout)?;
 
         // Initialize index manager (best-effort — scraping continues without indexing if it fails)
         let index_manager = match IndexManager::open(&data_dir) {

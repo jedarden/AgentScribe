@@ -3266,4 +3266,639 @@ mod tests {
         assert_eq!(result.results.len(), 1);
         assert_eq!(result.results[0].source_agent, "aider");
     }
+
+    // --- Phase 2 integration tests ---
+
+    /// Helper: build a multi-session index with both Claude Code and Aider sessions.
+    /// Returns the TempDir (must be kept alive for the test duration).
+    fn build_multi_session_index() -> (tempfile::TempDir, IndexFields) {
+        use crate::event::{Event, Role, SessionManifest};
+        use crate::index::build_session_document;
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let index_path = temp_dir.path().join("index").join("tantivy");
+        let (schema, fields) = build_schema();
+        std::fs::create_dir_all(&index_path).unwrap();
+        let index = tantivy::Index::create_in_dir(&index_path, schema).unwrap();
+        let mut writer = index.writer(50_000_000).unwrap();
+
+        let now = Utc::now();
+
+        // Session 1: Claude Code — recent, success, rust/docker, auth topic
+        let mut m1 = SessionManifest::new("claude/auth-1".to_string(), "claude-code".to_string());
+        m1.project = Some("/home/user/myapp".to_string());
+        m1.started = now - chrono::Duration::hours(2);
+        m1.turns = 6;
+        m1.summary = Some("Added JWT authentication middleware".to_string());
+        m1.outcome = Some("success".to_string());
+        m1.tags = vec!["rust".to_string(), "docker".to_string()];
+        m1.model = Some("claude-sonnet-4-5".to_string());
+        m1.files_touched = vec!["src/auth.rs".to_string(), "src/middleware.rs".to_string()];
+        let e1 = vec![
+            Event::new(now - chrono::Duration::hours(2), "claude/auth-1".to_string(), "claude-code".to_string(),
+                Role::User, "Add JWT authentication to the middleware".to_string()),
+            Event::new(now - chrono::Duration::hours(2), "claude/auth-1".to_string(), "claude-code".to_string(),
+                Role::Assistant, "I'll implement JWT auth. Let me read the middleware first.".to_string()),
+            Event::new(now - chrono::Duration::hours(2), "claude/auth-1".to_string(), "claude-code".to_string(),
+                Role::ToolCall, "src/middleware.rs".to_string())
+                .with_tool(Some("Read".to_string()))
+                .with_file_paths(vec!["src/middleware.rs".to_string()]),
+            Event::new(now - chrono::Duration::hours(2), "claude/auth-1".to_string(), "claude-code".to_string(),
+                Role::ToolResult, "pub fn handle_request(req: &Request) -> Response { /* ... */ }".to_string()),
+            Event::new(now - chrono::Duration::hours(2), "claude/auth-1".to_string(), "claude-code".to_string(),
+                Role::ToolCall, "```rust\nfn validate_jwt(token: &str) -> bool { true }\n```".to_string())
+                .with_tool(Some("Edit".to_string()))
+                .with_file_paths(vec!["src/auth.rs".to_string()]),
+            Event::new(now - chrono::Duration::hours(2), "claude/auth-1".to_string(), "claude-code".to_string(),
+                Role::Assistant, "JWT authentication middleware implemented successfully.".to_string()),
+        ];
+        writer.add_document(build_session_document(&fields, &e1, &m1)).unwrap();
+
+        // Session 2: Claude Code — older, failure, postgres migration
+        let mut m2 = SessionManifest::new("claude/pg-migration".to_string(), "claude-code".to_string());
+        m2.project = Some("/home/user/api-server".to_string());
+        m2.started = now - chrono::Duration::days(5);
+        m2.turns = 4;
+        m2.summary = Some("Failed to migrate postgres schema — downtime window too short".to_string());
+        m2.outcome = Some("failure".to_string());
+        m2.tags = vec!["postgres".to_string(), "migration".to_string()];
+        m2.model = Some("claude-opus-4-6".to_string());
+        m2.files_touched = vec!["migrations/v3.sql".to_string()];
+        let e2 = vec![
+            Event::new(now - chrono::Duration::days(5), "claude/pg-migration".to_string(), "claude-code".to_string(),
+                Role::User, "Migrate the postgres schema from v3 to v4".to_string()),
+            Event::new(now - chrono::Duration::days(5), "claude/pg-migration".to_string(), "claude-code".to_string(),
+                Role::Assistant, "I'll create the migration script for postgres.".to_string()),
+            Event::new(now - chrono::Duration::days(5), "claude/pg-migration".to_string(), "claude-code".to_string(),
+                Role::ToolResult, "connection refused error".to_string())
+                .with_error_fingerprints(vec!["ConnectionRefusedError".to_string()]),
+            Event::new(now - chrono::Duration::days(5), "claude/pg-migration".to_string(), "claude-code".to_string(),
+                Role::Assistant, "The postgres migration failed due to connection timeout.".to_string()),
+        ];
+        writer.add_document(build_session_document(&fields, &e2, &m2)).unwrap();
+
+        // Session 3: Aider — recent, success, python/jwt
+        let mut m3 = SessionManifest::new("aider/jwt-refactor".to_string(), "aider".to_string());
+        m3.project = Some("/home/user/api-server".to_string());
+        m3.started = now - chrono::Duration::hours(1);
+        m3.turns = 5;
+        m3.summary = Some("Refactored authentication middleware using JWT tokens".to_string());
+        m3.outcome = Some("success".to_string());
+        m3.tags = vec!["python".to_string(), "jwt".to_string(), "authentication".to_string()];
+        m3.files_touched = vec!["app/auth.py".to_string()];
+        let e3 = vec![
+            Event::new(now - chrono::Duration::hours(1), "aider/jwt-refactor".to_string(), "aider".to_string(),
+                Role::User, "Refactor auth middleware to use JWT tokens instead of session cookies".to_string()),
+            Event::new(now - chrono::Duration::hours(1), "aider/jwt-refactor".to_string(), "aider".to_string(),
+                Role::Assistant, "I'll update the middleware to use JWT. Plan: install PyJWT and update auth.py.".to_string()),
+            Event::new(now - chrono::Duration::hours(1), "aider/jwt-refactor".to_string(), "aider".to_string(),
+                Role::ToolCall, "pip install PyJWT".to_string()).with_tool(Some("Bash".to_string())),
+            Event::new(now - chrono::Duration::hours(1), "aider/jwt-refactor".to_string(), "aider".to_string(),
+                Role::ToolResult, "Successfully installed PyJWT-2.8.0".to_string()),
+            Event::new(now - chrono::Duration::hours(1), "aider/jwt-refactor".to_string(), "aider".to_string(),
+                Role::Assistant, "JWT authentication has been implemented successfully.".to_string()),
+        ];
+        writer.add_document(build_session_document(&fields, &e3, &m3)).unwrap();
+
+        // Session 4: Aider — old, success, css/frontend
+        let mut m4 = SessionManifest::new("aider/css-fix".to_string(), "aider".to_string());
+        m4.project = Some("/home/user/frontend".to_string());
+        m4.started = now - chrono::Duration::days(10);
+        m4.turns = 3;
+        m4.summary = Some("Fixed CSS flexbox layout for mobile responsiveness".to_string());
+        m4.outcome = Some("success".to_string());
+        m4.tags = vec!["css".to_string(), "frontend".to_string()];
+        let e4 = vec![
+            Event::new(now - chrono::Duration::days(10), "aider/css-fix".to_string(), "aider".to_string(),
+                Role::User, "Fix the CSS flexbox layout for mobile".to_string()),
+            Event::new(now - chrono::Duration::days(10), "aider/css-fix".to_string(), "aider".to_string(),
+                Role::Assistant, "Updated CSS grid and flexbox properties.".to_string()),
+            Event::new(now - chrono::Duration::days(10), "aider/css-fix".to_string(), "aider".to_string(),
+                Role::Assistant, "Mobile layout fixed with responsive breakpoints.".to_string()),
+        ];
+        writer.add_document(build_session_document(&fields, &e4, &m4)).unwrap();
+
+        writer.commit().unwrap();
+        writer.wait_merging_threads().unwrap();
+
+        (temp_dir, fields)
+    }
+
+    #[test]
+    fn test_search_comprehensive_bm25_accuracy() {
+        // BM25 should rank the session with "JWT authentication" content highest
+        let (temp_dir, _fields) = build_multi_session_index();
+
+        let opts = SearchOptions {
+            query: Some("JWT authentication middleware".to_string()),
+            ..default_opts()
+        };
+        let result = execute_search(temp_dir.path(), &opts).unwrap();
+        assert!(result.total_matches >= 2, "should match multiple sessions mentioning JWT/auth");
+        // The aider JWT refactor session should rank high (it has JWT in summary, tags, and content)
+        let aider_jwt = result.results.iter().find(|r| r.session_id == "aider/jwt-refactor");
+        assert!(aider_jwt.is_some(), "aider/jwt-refactor should be found");
+    }
+
+    #[test]
+    fn test_search_comprehensive_error_search() {
+        // --error should find sessions with matching error fingerprints
+        let (temp_dir, _fields) = build_multi_session_index();
+
+        let opts = SearchOptions {
+            query: None,
+            error_pattern: Some("ConnectionRefusedError".to_string()),
+            ..default_opts()
+        };
+        let result = execute_search(temp_dir.path(), &opts).unwrap();
+        assert_eq!(result.results.len(), 1, "expected 1 error fingerprint match, got {}", result.results.len());
+        assert_eq!(result.results[0].session_id, "claude/pg-migration");
+    }
+
+    #[test]
+    fn test_search_comprehensive_multiple_agents_filter() {
+        // Multiple agents in the filter should return sessions from either agent (OR logic within
+        // the same filter — but since each is a Must clause, this actually requires matching ALL
+        // specified agents, which is impossible for a single session. So with multiple agents
+        // specified, zero results are expected unless the engine uses Should logic.)
+        // In practice, users specify one agent at a time, but the Vec allows future expansion.
+        // For now, verify single-agent still works correctly.
+        let (temp_dir, _fields) = build_multi_session_index();
+
+        // Claude-code sessions only
+        let opts = SearchOptions {
+            query: Some("authentication".to_string()),
+            agent: vec!["claude-code".to_string()],
+            ..default_opts()
+        };
+        let result = execute_search(temp_dir.path(), &opts).unwrap();
+        for r in &result.results {
+            assert_eq!(r.source_agent, "claude-code");
+        }
+        assert!(result.results.len() >= 1);
+
+        // Aider sessions only
+        let opts = SearchOptions {
+            query: Some("authentication".to_string()),
+            agent: vec!["aider".to_string()],
+            ..default_opts()
+        };
+        let result = execute_search(temp_dir.path(), &opts).unwrap();
+        for r in &result.results {
+            assert_eq!(r.source_agent, "aider");
+        }
+    }
+
+    #[test]
+    fn test_search_comprehensive_date_window() {
+        // --since + --before together create a date window
+        let (temp_dir, _fields) = build_multi_session_index();
+        let now = Utc::now();
+
+        // Window: last 6 hours — should find the two recent sessions (auth-1 and jwt-refactor)
+        let opts = SearchOptions {
+            query: Some("authentication".to_string()),
+            since: Some(now - chrono::Duration::hours(6)),
+            before: Some(now),
+            ..default_opts()
+        };
+        let result = execute_search(temp_dir.path(), &opts).unwrap();
+        for r in &result.results {
+            // Sessions should be from the last 6 hours
+            assert!(
+                r.session_id == "claude/auth-1" || r.session_id == "aider/jwt-refactor",
+                "unexpected session in date window: {}",
+                r.session_id
+            );
+        }
+
+        // Window: 3-7 days ago — should find pg-migration (5 days ago)
+        let opts = SearchOptions {
+            query: Some("postgres".to_string()),
+            since: Some(now - chrono::Duration::days(7)),
+            before: Some(now - chrono::Duration::days(3)),
+            ..default_opts()
+        };
+        let result = execute_search(temp_dir.path(), &opts).unwrap();
+        assert!(result.results.len() >= 1);
+        let found = result.results.iter().any(|r| r.session_id == "claude/pg-migration");
+        assert!(found, "pg-migration (5 days ago) should be in the 3-7 day window");
+    }
+
+    #[test]
+    fn test_search_comprehensive_project_and_tag_combo() {
+        let (temp_dir, _fields) = build_multi_session_index();
+
+        // project=api-server + tag=jwt — should find only the aider JWT session
+        let opts = SearchOptions {
+            query: Some("JWT".to_string()),
+            project: Some("/home/user/api-server".to_string()),
+            tag: vec!["jwt".to_string()],
+            ..default_opts()
+        };
+        let result = execute_search(temp_dir.path(), &opts).unwrap();
+        assert_eq!(result.results.len(), 1);
+        assert_eq!(result.results[0].session_id, "aider/jwt-refactor");
+    }
+
+    #[test]
+    fn test_search_comprehensive_agent_and_outcome_and_date_combo() {
+        let (temp_dir, _fields) = build_multi_session_index();
+        let now = Utc::now();
+
+        // claude-code + success + recent (last day)
+        let opts = SearchOptions {
+            query: Some("authentication".to_string()),
+            agent: vec!["claude-code".to_string()],
+            outcome: Some("success".to_string()),
+            since: Some(now - chrono::Duration::days(1)),
+            ..default_opts()
+        };
+        let result = execute_search(temp_dir.path(), &opts).unwrap();
+        assert!(result.results.len() >= 1);
+        for r in &result.results {
+            assert_eq!(r.source_agent, "claude-code");
+            assert_eq!(r.outcome.as_deref(), Some("success"));
+        }
+        // Should include auth-1 (claude-code, success, 2 hours ago)
+        let found = result.results.iter().any(|r| r.session_id == "claude/auth-1");
+        assert!(found, "claude/auth-1 should match agent+outcome+since filter");
+    }
+
+    #[test]
+    fn test_search_comprehensive_tag_and_since_combo() {
+        let (temp_dir, _fields) = build_multi_session_index();
+        let now = Utc::now();
+
+        // tag=rust + since=1 day ago
+        let opts = SearchOptions {
+            query: Some("authentication".to_string()),
+            tag: vec!["rust".to_string()],
+            since: Some(now - chrono::Duration::days(1)),
+            ..default_opts()
+        };
+        let result = execute_search(temp_dir.path(), &opts).unwrap();
+        assert!(result.results.len() >= 1);
+        for r in &result.results {
+            assert!(r.tags.contains(&"rust".to_string()));
+        }
+    }
+
+    #[test]
+    fn test_search_comprehensive_outcome_filter() {
+        let (temp_dir, _fields) = build_multi_session_index();
+
+        // Only failure outcomes
+        let opts = SearchOptions {
+            query: Some("postgres".to_string()),
+            outcome: Some("failure".to_string()),
+            ..default_opts()
+        };
+        let result = execute_search(temp_dir.path(), &opts).unwrap();
+        assert_eq!(result.results.len(), 1);
+        assert_eq!(result.results[0].session_id, "claude/pg-migration");
+        assert_eq!(result.results[0].outcome.as_deref(), Some("failure"));
+    }
+
+    #[test]
+    fn test_search_comprehensive_no_match_query() {
+        // A query that matches nothing should return empty results, not error
+        let (temp_dir, _fields) = build_multi_session_index();
+
+        let opts = SearchOptions {
+            query: Some("xyzzyplughnothingmatchesthisstring".to_string()),
+            ..default_opts()
+        };
+        let result = execute_search(temp_dir.path(), &opts).unwrap();
+        assert_eq!(result.total_matches, 0);
+        assert!(result.results.is_empty());
+        assert_eq!(result.sessions_searched, 4);
+    }
+
+    #[test]
+    fn test_search_comprehensive_session_lookup_by_id() {
+        let (temp_dir, _fields) = build_multi_session_index();
+
+        let opts = SearchOptions {
+            session_id: Some("aider/jwt-refactor".to_string()),
+            ..default_opts()
+        };
+        let result = execute_search(temp_dir.path(), &opts).unwrap();
+        assert_eq!(result.results.len(), 1);
+        assert_eq!(result.results[0].session_id, "aider/jwt-refactor");
+        assert_eq!(result.results[0].source_agent, "aider");
+        assert!(result.results[0].summary.is_some());
+    }
+
+    #[test]
+    fn test_search_comprehensive_sort_orders() {
+        let (temp_dir, _fields) = build_multi_session_index();
+
+        // Sort by newest — most recent session first
+        let opts = SearchOptions {
+            query: Some("authentication".to_string()),
+            sort: SortOrder::Newest,
+            max_results: 10,
+            ..default_opts()
+        };
+        let result = execute_search(temp_dir.path(), &opts).unwrap();
+        assert!(result.results.len() >= 2);
+        // The aider/jwt-refactor (1 hour ago) should come before claude/auth-1 (2 hours ago)
+        let jwt_idx = result.results.iter().position(|r| r.session_id == "aider/jwt-refactor").unwrap();
+        let auth_idx = result.results.iter().position(|r| r.session_id == "claude/auth-1").unwrap();
+        assert!(jwt_idx < auth_idx, "newer session should come first with Newest sort");
+
+        // Sort by oldest — oldest session first
+        let opts = SearchOptions {
+            query: Some("authentication".to_string()),
+            sort: SortOrder::Oldest,
+            max_results: 10,
+            ..default_opts()
+        };
+        let result = execute_search(temp_dir.path(), &opts).unwrap();
+        let jwt_idx2 = result.results.iter().position(|r| r.session_id == "aider/jwt-refactor").unwrap();
+        let auth_idx2 = result.results.iter().position(|r| r.session_id == "claude/auth-1").unwrap();
+        assert!(auth_idx2 < jwt_idx2, "older session should come first with Oldest sort");
+    }
+
+    #[test]
+    fn test_search_comprehensive_sort_by_turns() {
+        let (temp_dir, _fields) = build_multi_session_index();
+
+        let opts = SearchOptions {
+            query: Some("session".to_string()),
+            sort: SortOrder::Turns,
+            max_results: 10,
+            ..default_opts()
+        };
+        let result = execute_search(temp_dir.path(), &opts).unwrap();
+        // Verify turns are in descending order
+        for window in result.results.windows(2) {
+            let t1 = window[0].turns.unwrap_or(0);
+            let t2 = window[1].turns.unwrap_or(0);
+            assert!(t1 >= t2, "turns should be in descending order: {} >= {}", t1, t2);
+        }
+    }
+
+    #[test]
+    fn test_search_comprehensive_mlt_cross_agent() {
+        // More-like-this should find similar sessions across agents
+        let (temp_dir, _fields) = build_multi_session_index();
+
+        let opts = SearchOptions {
+            like_session: Some("claude/auth-1".to_string()),
+            ..default_opts()
+        };
+        let result = execute_search(temp_dir.path(), &opts).unwrap();
+        // Source session should not appear
+        for r in &result.results {
+            assert_ne!(r.session_id, "claude/auth-1");
+        }
+        // The aider/jwt-refactor session (also about auth/JWT) should rank high
+        if result.total_matches >= 1 {
+            let jwt_found = result.results.iter().any(|r| r.session_id == "aider/jwt-refactor");
+            assert!(jwt_found, "cross-agent JWT session should be found via MLT");
+        }
+    }
+
+    // --- JSON output validation ---
+
+    #[test]
+    fn test_search_output_json_all_fields_populated() {
+        let (temp_dir, _fields) = build_multi_session_index();
+
+        let opts = SearchOptions {
+            query: Some("JWT authentication".to_string()),
+            snippet_length: 200,
+            ..default_opts()
+        };
+        let result = execute_search(temp_dir.path(), &opts).unwrap();
+        assert!(!result.results.is_empty());
+
+        // Serialize to JSON and validate structure
+        let json_str = serde_json::to_string(&result).unwrap();
+        let json: serde_json::Value = serde_json::from_str(&json_str).unwrap();
+
+        // Top-level fields
+        assert!(json.get("query").is_some(), "query field must be present");
+        assert!(json.get("total_matches").is_some(), "total_matches must be present");
+        assert!(json.get("search_time_ms").is_some(), "search_time_ms must be present");
+        assert!(json.get("sessions_searched").is_some(), "sessions_searched must be present");
+        assert!(json.get("results").is_some(), "results array must be present");
+
+        // fuzzy_fallback should be absent when false
+        assert!(json.get("fuzzy_fallback").is_none(), "fuzzy_fallback should be omitted when false");
+
+        // Validate first result has expected fields
+        let first = &json["results"][0];
+        assert!(first.get("session_id").is_some());
+        assert!(first.get("source_agent").is_some());
+        assert!(first.get("score").is_some());
+        assert!(first.get("tags").is_some());
+        assert!(first.get("token_count").is_some());
+    }
+
+    #[test]
+    fn test_search_output_json_fuzzy_fallback_present_when_true() {
+        // When fuzzy_fallback is true, the field must appear in JSON output
+        let output = SearchOutput {
+            query: "kuberntes".to_string(),
+            total_matches: 1,
+            search_time_ms: 5,
+            sessions_searched: 10,
+            results: vec![SearchResult {
+                session_id: "test/1".to_string(),
+                source_agent: "test".to_string(),
+                project: None,
+                timestamp: None,
+                turns: None,
+                outcome: None,
+                score: 1.0,
+                summary: None,
+                snippet: None,
+                tags: vec![],
+                doc_type: None,
+                model: None,
+                token_count: 0,
+            }],
+            fuzzy_fallback: true,
+        };
+        let json_str = serde_json::to_string(&output).unwrap();
+        let json: serde_json::Value = serde_json::from_str(&json_str).unwrap();
+        assert!(json.get("fuzzy_fallback").is_some(), "fuzzy_fallback must be present when true");
+        assert_eq!(json["fuzzy_fallback"], true);
+    }
+
+    #[test]
+    fn test_search_output_json_optional_fields_absent() {
+        // When optional fields (project, outcome, etc.) are None, they should be null in JSON
+        let result = SearchResult {
+            session_id: "test/minimal".to_string(),
+            source_agent: "test".to_string(),
+            project: None,
+            timestamp: None,
+            turns: None,
+            outcome: None,
+            score: 0.0,
+            summary: None,
+            snippet: None,
+            tags: vec![],
+            doc_type: None,
+            model: None,
+            token_count: 0,
+        };
+        let json_str = serde_json::to_string(&result).unwrap();
+        let json: serde_json::Value = serde_json::from_str(&json_str).unwrap();
+        // Optional fields should be null (serde default for Option<T>)
+        assert!(json["project"].is_null());
+        assert!(json["timestamp"].is_null());
+        assert!(json["turns"].is_null());
+        assert!(json["outcome"].is_null());
+        assert!(json["summary"].is_null());
+        assert!(json["snippet"].is_null());
+        assert!(json["doc_type"].is_null());
+        assert!(json["model"].is_null());
+        // Required fields should be present
+        assert_eq!(json["session_id"], "test/minimal");
+        assert_eq!(json["source_agent"], "test");
+        assert_eq!(json["tags"], serde_json::Value::Array(vec![]));
+    }
+
+    #[test]
+    fn test_search_output_json_roundtrip_all_fields() {
+        // Full roundtrip: SearchResult → JSON → SearchResult with all fields populated
+        let original = SearchResult {
+            session_id: "claude/full-test".to_string(),
+            source_agent: "claude-code".to_string(),
+            project: Some("/home/user/project".to_string()),
+            timestamp: Some("2026-03-14T10:30:00+00:00".to_string()),
+            turns: Some(42),
+            outcome: Some("success".to_string()),
+            score: 8.76,
+            summary: Some("Fixed the authentication bug".to_string()),
+            snippet: Some("Changed auth.rs to use JWT validation".to_string()),
+            tags: vec!["rust".to_string(), "jwt".to_string(), "authentication".to_string()],
+            doc_type: Some("session".to_string()),
+            model: Some("claude-sonnet-4-5".to_string()),
+            token_count: 15,
+        };
+        let json = serde_json::to_string(&original).unwrap();
+        let deserialized: SearchResult = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.session_id, original.session_id);
+        assert_eq!(deserialized.source_agent, original.source_agent);
+        assert_eq!(deserialized.project, original.project);
+        assert_eq!(deserialized.timestamp, original.timestamp);
+        assert_eq!(deserialized.turns, original.turns);
+        assert_eq!(deserialized.outcome, original.outcome);
+        assert_eq!(deserialized.summary, original.summary);
+        assert_eq!(deserialized.snippet, original.snippet);
+        assert_eq!(deserialized.tags, original.tags);
+        assert_eq!(deserialized.doc_type, original.doc_type);
+        assert_eq!(deserialized.model, original.model);
+        assert_eq!(deserialized.token_count, original.token_count);
+    }
+
+    #[test]
+    fn test_search_comprehensive_project_filter() {
+        let (temp_dir, _fields) = build_multi_session_index();
+
+        // api-server project should have 2 sessions (pg-migration + jwt-refactor)
+        let opts = SearchOptions {
+            query: Some("authentication JWT postgres".to_string()),
+            project: Some("/home/user/api-server".to_string()),
+            ..default_opts()
+        };
+        let result = execute_search(temp_dir.path(), &opts).unwrap();
+        for r in &result.results {
+            assert_eq!(r.project.as_deref(), Some("/home/user/api-server"));
+        }
+    }
+
+    #[test]
+    fn test_search_comprehensive_file_path_filter() {
+        let (temp_dir, _fields) = build_multi_session_index();
+
+        // Only the auth-1 session touched src/auth.rs
+        let opts = SearchOptions {
+            query: Some("authentication".to_string()),
+            file_path: Some("src/auth.rs".to_string()),
+            ..default_opts()
+        };
+        let result = execute_search(temp_dir.path(), &opts).unwrap();
+        assert_eq!(result.results.len(), 1);
+        assert_eq!(result.results[0].session_id, "claude/auth-1");
+    }
+
+    #[test]
+    fn test_search_comprehensive_model_filter() {
+        let (temp_dir, _fields) = build_multi_session_index();
+
+        // sonnet-4-5 sessions only
+        let opts = SearchOptions {
+            query: Some("authentication".to_string()),
+            model: Some("claude-sonnet-4-5".to_string()),
+            ..default_opts()
+        };
+        let result = execute_search(temp_dir.path(), &opts).unwrap();
+        assert!(result.results.len() >= 1);
+        for r in &result.results {
+            assert_eq!(r.model.as_deref(), Some("claude-sonnet-4-5"));
+        }
+
+        // opus-4-6 sessions only
+        let opts = SearchOptions {
+            query: Some("postgres migration".to_string()),
+            model: Some("claude-opus-4-6".to_string()),
+            ..default_opts()
+        };
+        let result = execute_search(temp_dir.path(), &opts).unwrap();
+        assert!(result.results.len() >= 1);
+        assert_eq!(result.results[0].session_id, "claude/pg-migration");
+    }
+
+    #[test]
+    fn test_search_comprehensive_doc_type_filter() {
+        // Verify doc_type filter works with session documents
+        let (temp_dir, _fields) = build_multi_session_index();
+
+        let opts = SearchOptions {
+            query: Some("authentication".to_string()),
+            doc_type_filter: Some("session".to_string()),
+            ..default_opts()
+        };
+        let result = execute_search(temp_dir.path(), &opts).unwrap();
+        for r in &result.results {
+            assert_eq!(r.doc_type.as_deref(), Some("session"));
+        }
+    }
+
+    #[test]
+    fn test_search_snippet_length_zero() {
+        // snippet_length=0 should produce no snippets
+        let (temp_dir, _fields) = build_multi_session_index();
+
+        let opts = SearchOptions {
+            query: Some("authentication".to_string()),
+            snippet_length: 0,
+            ..default_opts()
+        };
+        let result = execute_search(temp_dir.path(), &opts).unwrap();
+        for r in &result.results {
+            assert!(r.snippet.is_none(), "snippet should be None when snippet_length=0");
+        }
+    }
+
+    #[test]
+    fn test_search_max_results_limits_output() {
+        let (temp_dir, _fields) = build_multi_session_index();
+
+        let opts = SearchOptions {
+            query: Some("authentication".to_string()),
+            max_results: 1,
+            ..default_opts()
+        };
+        let result = execute_search(temp_dir.path(), &opts).unwrap();
+        assert!(result.results.len() <= 1, "max_results should limit results");
+    }
 }

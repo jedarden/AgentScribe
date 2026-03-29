@@ -10,17 +10,66 @@ use std::fs::{File, OpenOptions};
 use std::io::{BufReader, BufWriter};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 use chrono::Utc;
+
+/// Default lock timeout (30 seconds).
+const DEFAULT_LOCK_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Poll interval when waiting for the exclusive file lock.
+const LOCK_POLL_INTERVAL: Duration = Duration::from_millis(50);
+
+/// Acquire an exclusive file lock, retrying until `timeout` elapses.
+///
+/// Uses `try_lock_exclusive()` (non-blocking attempt) in a loop so the caller
+/// never blocks indefinitely.  Returns an error if the lock cannot be obtained
+/// within the allotted time.
+///
+/// When `timeout` is `Duration::ZERO` the function falls back to the blocking
+/// `lock_exclusive()` call, effectively disabling the timeout.
+fn lock_exclusive_with_timeout(file: &File, timeout: Duration) -> Result<()> {
+    if timeout.is_zero() {
+        // Blocking mode: wait indefinitely (legacy / opt-out behaviour)
+        file.lock_exclusive()?;
+        return Ok(());
+    }
+
+    let start = Instant::now();
+    loop {
+        match file.try_lock_exclusive() {
+            Ok(()) => return Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                if start.elapsed() >= timeout {
+                    return Err(crate::error::AgentScribeError::State(format!(
+                        "timed out waiting for exclusive lock on state file after {}s",
+                        timeout.as_secs()
+                    )));
+                }
+                std::thread::sleep(LOCK_POLL_INTERVAL);
+            }
+            Err(e) => return Err(e.into()),
+        }
+    }
+}
 
 /// Scrape state manager
 pub struct StateManager {
     state_file: PathBuf,
     state: Arc<Mutex<ScrapeState>>,
+    /// Maximum time to wait for the exclusive file lock when saving.
+    lock_timeout: Duration,
 }
 
 impl StateManager {
-    /// Create a new state manager
+    /// Create a new state manager with the default 30-second lock timeout.
     pub fn new(state_file: PathBuf) -> Result<Self> {
+        Self::new_with_timeout(state_file, DEFAULT_LOCK_TIMEOUT)
+    }
+
+    /// Create a new state manager with a configurable lock timeout.
+    ///
+    /// Pass `Duration::ZERO` to disable the timeout (wait indefinitely).
+    pub fn new_with_timeout(state_file: PathBuf, lock_timeout: Duration) -> Result<Self> {
         let state = if state_file.exists() {
             Self::load_state(&state_file)?
         } else {
@@ -30,6 +79,7 @@ impl StateManager {
         Ok(StateManager {
             state_file,
             state: Arc::new(Mutex::new(state)),
+            lock_timeout,
         })
     }
 
@@ -49,30 +99,41 @@ impl StateManager {
         Ok(state)
     }
 
-    /// Save state to file (with file locking)
+    /// Save state to file (with file locking).
+    ///
+    /// The exclusive lock is acquired **before** truncating the file.  This
+    /// prevents a concurrent reader from observing an empty file between the
+    /// truncation and the subsequent write.
     pub fn save(&self) -> Result<()> {
         let state = self.state.lock().unwrap();
-        let state_ref = &*state; // Deref to get &ScrapeState
+        let state_ref = &*state;
 
         // Ensure parent directory exists
         if let Some(parent) = self.state_file.parent() {
             std::fs::create_dir_all(parent)?;
         }
 
-        // Open with exclusive lock
+        // Open WITHOUT O_TRUNC — we must acquire the exclusive lock first so
+        // that no reader can see the file in a truncated-but-not-yet-written
+        // state.
         let file = OpenOptions::new()
             .write(true)
             .create(true)
-            .truncate(true)
             .open(&self.state_file)?;
 
-        file.lock_exclusive()?;
+        // Acquire the exclusive lock before modifying the file.
+        lock_exclusive_with_timeout(&file, self.lock_timeout)?;
 
+        // Safe to truncate now that we hold the exclusive lock.
+        file.set_len(0)?;
+
+        // File position for a freshly-opened (non-append) file is always 0,
+        // so writing immediately after set_len(0) is correct.
         let writer = BufWriter::new(file);
         serde_json::to_writer_pretty(writer, state_ref)
             .map_err(|e| crate::error::AgentScribeError::State(format!("Failed to write state: {}", e)))?;
 
-        // Lock is released when file is dropped
+        // Lock is released when the file handle inside BufWriter is dropped.
         Ok(())
     }
 
@@ -223,6 +284,7 @@ impl StateManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
     use tempfile::NamedTempFile;
 
     #[test]
@@ -255,5 +317,77 @@ mod tests {
 
         // New file should need scraping
         assert!(manager.needs_rescrape(temp_file.path(), "test").unwrap());
+    }
+
+    /// Two concurrent saves must not corrupt the state file.
+    ///
+    /// Both managers write different offsets for the same key.  After both
+    /// complete, the file must be valid JSON with a parseable ScrapeState.
+    #[test]
+    fn test_concurrent_saves_no_corruption() {
+        let temp_file = NamedTempFile::new().unwrap();
+        let state_path = temp_file.path().to_path_buf();
+
+        let m1 = Arc::new(
+            StateManager::new_with_timeout(state_path.clone(), Duration::from_secs(10)).unwrap(),
+        );
+        let m2 = Arc::new(
+            StateManager::new_with_timeout(state_path.clone(), Duration::from_secs(10)).unwrap(),
+        );
+
+        m1.update_file_state("/test/file.jsonl", |s| s.last_byte_offset = 111).unwrap();
+        m2.update_file_state("/test/file.jsonl", |s| s.last_byte_offset = 222).unwrap();
+
+        let m1c = m1.clone();
+        let m2c = m2.clone();
+
+        let t1 = std::thread::spawn(move || m1c.save().unwrap());
+        let t2 = std::thread::spawn(move || m2c.save().unwrap());
+
+        t1.join().unwrap();
+        t2.join().unwrap();
+
+        // The file must be valid, parseable JSON — not a truncated/empty blob.
+        let content = std::fs::read_to_string(&state_path).unwrap();
+        assert!(!content.is_empty(), "state file must not be empty after concurrent saves");
+        let _: ScrapeState = serde_json::from_str(&content)
+            .expect("state file must be valid JSON after concurrent saves");
+    }
+
+    /// When a process already holds the exclusive lock, save() must time out
+    /// and return an error rather than hanging forever.
+    #[test]
+    fn test_lock_timeout() {
+        let temp_file = NamedTempFile::new().unwrap();
+        let state_path = temp_file.path().to_path_buf();
+
+        // Seed the file with valid initial state so the manager can load it.
+        {
+            let seed = StateManager::new(state_path.clone()).unwrap();
+            seed.save().unwrap();
+        }
+
+        // Hold an exclusive lock on the state file via a separate fd.
+        let lock_fd = OpenOptions::new()
+            .write(true)
+            .open(&state_path)
+            .unwrap();
+        lock_fd.lock_exclusive().unwrap();
+
+        // A manager with a very short timeout should fail quickly.
+        let manager =
+            StateManager::new_with_timeout(state_path.clone(), Duration::from_millis(300)).unwrap();
+        let result = manager.save();
+
+        // Release the external lock
+        lock_fd.unlock().unwrap();
+
+        assert!(result.is_err(), "expected timeout error when lock is held externally");
+        let err_str = result.unwrap_err().to_string();
+        assert!(
+            err_str.contains("timed out"),
+            "error message should mention timeout, got: {}",
+            err_str
+        );
     }
 }

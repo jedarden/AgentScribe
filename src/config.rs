@@ -110,6 +110,14 @@ pub struct ScrapeConfig {
     /// The data directory must be inside a git repository for this to take effect.
     #[serde(default)]
     pub git_auto_commit: bool,
+    /// Maximum seconds to wait for the scrape-state.json file lock before giving up (default: 30).
+    /// Set to 0 to disable the timeout (wait indefinitely).
+    #[serde(default = "default_lock_timeout_seconds")]
+    pub lock_timeout_seconds: u64,
+}
+
+fn default_lock_timeout_seconds() -> u64 {
+    30
 }
 
 /// Index configuration
@@ -143,6 +151,7 @@ impl Default for Config {
                 debounce_seconds: 5,
                 max_session_age_days: 0,
                 git_auto_commit: false,
+                lock_timeout_seconds: 30,
             },
             index: IndexConfig {
                 tantivy_heap_size_mb: 50,
