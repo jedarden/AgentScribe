@@ -408,17 +408,22 @@ impl IndexManager {
     /// Open an existing index or create a new one at `data_dir/index/tantivy`.
     pub fn open(data_dir: &Path) -> Result<Self> {
         let index_path = data_dir.join("index").join(INDEX_DIR_NAME);
-        let (schema, fields) = build_schema();
 
-        let index = if index_path.exists() {
-            tantivy::Index::open_in_dir(&index_path).map_err(|e| {
+        let (index, fields) = if index_path.exists() {
+            let index = tantivy::Index::open_in_dir(&index_path).map_err(|e| {
                 AgentScribeError::DataDir(format!("Failed to open index: {}", e))
-            })?
+            })?;
+            // Derive field handles from the stored schema so IDs are always
+            // in sync with whatever schema the index was originally created with.
+            let fields = fields_from_schema(&index.schema());
+            (index, fields)
         } else {
+            let (schema, fields) = build_schema();
             std::fs::create_dir_all(&index_path)?;
-            tantivy::Index::create_in_dir(&index_path, schema).map_err(|e| {
+            let index = tantivy::Index::create_in_dir(&index_path, schema).map_err(|e| {
                 AgentScribeError::DataDir(format!("Failed to create index: {}", e))
-            })?
+            })?;
+            (index, fields)
         };
 
         Ok(IndexManager {
@@ -975,5 +980,110 @@ mod tests {
         // Reopen — should not panic
         let manager2 = IndexManager::open(temp_dir.path()).unwrap();
         assert!(!manager2.is_writing());
+    }
+
+    #[test]
+    fn test_incremental_update_replaces_old_document() {
+        // Re-indexing a session must produce exactly one document with the new
+        // content, not duplicate the old one.
+        use tantivy::collector::Count;
+        use tantivy::query::TermQuery;
+        use tantivy::schema::IndexRecordOption;
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let now = Utc::now();
+
+        // --- First index pass: original content ---
+        {
+            let mut manager = IndexManager::open(temp_dir.path()).unwrap();
+            manager.begin_write().unwrap();
+            let events = vec![
+                Event::new(now, "test/abc".to_string(), "claude".to_string(), Role::User, "original query".to_string()),
+                Event::new(now, "test/abc".to_string(), "claude".to_string(), Role::Assistant, "original answer".to_string()),
+            ];
+            let manifest = build_manifest_from_events(&events, "test/abc", "claude", None, None);
+            manager.index_session(&events, &manifest).unwrap();
+            manager.finish().unwrap();
+        }
+
+        // --- Second index pass: updated content (simulates re-scrape) ---
+        {
+            let mut manager = IndexManager::open(temp_dir.path()).unwrap();
+            manager.begin_write().unwrap();
+            let events = vec![
+                Event::new(now, "test/abc".to_string(), "claude".to_string(), Role::User, "updated query after edit".to_string()),
+                Event::new(now, "test/abc".to_string(), "claude".to_string(), Role::Assistant, "updated answer".to_string()),
+            ];
+            let manifest = build_manifest_from_events(&events, "test/abc", "claude", None, None);
+            manager.index_session(&events, &manifest).unwrap();
+            manager.finish().unwrap();
+        }
+
+        // --- Verify: exactly one document for session test/abc ---
+        let index_path = temp_dir.path().join("index").join(INDEX_DIR_NAME);
+        let index = tantivy::Index::open_in_dir(&index_path).unwrap();
+        let fields = fields_from_schema(&index.schema());
+        let reader = index.reader().unwrap();
+        let searcher = reader.searcher();
+
+        let term = Term::from_field_text(fields.session_id, "test/abc");
+        let query = TermQuery::new(term, IndexRecordOption::Basic);
+        let count = searcher.search(&query, &Count).unwrap();
+
+        // Must be exactly 1 — delete_term + add ensures no duplicates
+        assert_eq!(count, 1, "re-indexing a session must produce exactly one document");
+    }
+
+    #[test]
+    fn test_incremental_update_content_is_updated() {
+        // After re-indexing, the stored content must reflect the new events.
+        use tantivy::collector::TopDocs;
+        use tantivy::query::TermQuery;
+        use tantivy::schema::IndexRecordOption;
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let now = Utc::now();
+
+        // First pass
+        {
+            let mut manager = IndexManager::open(temp_dir.path()).unwrap();
+            manager.begin_write().unwrap();
+            let events = vec![
+                Event::new(now, "test/xyz".to_string(), "claude".to_string(), Role::User, "old content here".to_string()),
+            ];
+            let manifest = build_manifest_from_events(&events, "test/xyz", "claude", None, None);
+            manager.index_session(&events, &manifest).unwrap();
+            manager.finish().unwrap();
+        }
+
+        // Second pass with new content
+        {
+            let mut manager = IndexManager::open(temp_dir.path()).unwrap();
+            manager.begin_write().unwrap();
+            let events = vec![
+                Event::new(now, "test/xyz".to_string(), "claude".to_string(), Role::User, "brand new content".to_string()),
+            ];
+            let manifest = build_manifest_from_events(&events, "test/xyz", "claude", None, None);
+            manager.index_session(&events, &manifest).unwrap();
+            manager.finish().unwrap();
+        }
+
+        let index_path = temp_dir.path().join("index").join(INDEX_DIR_NAME);
+        let index = tantivy::Index::open_in_dir(&index_path).unwrap();
+        let fields = fields_from_schema(&index.schema());
+        let reader = index.reader().unwrap();
+        let searcher = reader.searcher();
+
+        let term = Term::from_field_text(fields.session_id, "test/xyz");
+        let query = TermQuery::new(term, IndexRecordOption::Basic);
+        let top = searcher.search(&query, &TopDocs::with_limit(1)).unwrap();
+        assert_eq!(top.len(), 1);
+
+        let doc: tantivy::TantivyDocument = searcher.doc(top[0].1).unwrap();
+        let content = doc.get_first(fields.content).unwrap().as_str().unwrap();
+        assert!(content.contains("brand new content"), "stored content must reflect the updated events");
+        assert!(!content.contains("old content here"), "old content must not remain after re-index");
     }
 }
