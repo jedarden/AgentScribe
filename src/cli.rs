@@ -657,7 +657,7 @@ fn run_scrape(
         config::init(false)?;
     }
 
-    let mut scraper = Scraper::new(data_dir.clone())?;
+    let mut scraper = Scraper::new_with_lock_timeout(data_dir.clone(), config.scrape.lock_timeout_seconds)?;
     scraper.load_plugins()?;
 
     if let Some(file_path) = file {
@@ -691,6 +691,7 @@ fn run_scrape(
                 println!("  Would detect sessions and parse events...");
             } else {
                 let result = scraper.scrape_file(&file_path, &p)?;
+                scraper.state_manager().save()?;
                 println!("Scraped {} session(s)", result.sessions_scraped);
                 if result.sessions_indexed > 0 {
                     println!("Indexed {} session(s)", result.sessions_indexed);
@@ -721,6 +722,7 @@ fn run_scrape(
                 }
             } else {
                 let result = scraper.scrape_plugin(&p)?;
+                scraper.state_manager().save()?;
                 println!(
                     "Scraped {} session(s) from {} file(s)",
                     result.sessions_scraped,

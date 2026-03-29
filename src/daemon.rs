@@ -375,6 +375,7 @@ fn run_event_loop(log_file: &Path, pid_file: &Path, state_file: &Path, data_dir:
     let config_path = data_path.join("config.toml");
     let app_config = AppConfig::load(&config_path).unwrap_or_default();
     let debounce_secs = app_config.scrape.debounce_seconds;
+    let lock_timeout_secs = app_config.scrape.lock_timeout_seconds;
     let git_auto_commit = app_config.scrape.git_auto_commit;
     let mcp_enabled = app_config.daemon.mcp_enabled;
     let mcp_socket_path = app_config
@@ -396,6 +397,7 @@ fn run_event_loop(log_file: &Path, pid_file: &Path, state_file: &Path, data_dir:
         state_path,
         state,
         debounce_secs,
+        lock_timeout_secs,
         git_auto_commit,
         if mcp_enabled { Some(mcp_socket_path) } else { None },
     ));
@@ -588,12 +590,13 @@ async fn run_watch_loop(
     state_path: PathBuf,
     mut daemon_state: PersistedState,
     debounce_secs: u64,
+    lock_timeout_secs: u64,
     git_auto_commit: bool,
     mcp_socket_path: Option<PathBuf>,
 ) {
     // ── load plugins for path-pattern matching ────────────────────────
     let plugins: Vec<Plugin> = {
-        let mut scraper = match Scraper::new(data_dir.clone()) {
+        let mut scraper = match Scraper::new_with_lock_timeout(data_dir.clone(), lock_timeout_secs) {
             Ok(s) => s,
             Err(e) => {
                 tracing::error!("Failed to create scraper: {}", e);
@@ -694,7 +697,7 @@ async fn run_watch_loop(
         );
 
         // ── scrape one file at a time (I/O-bound, not CPU-bound) ──────
-        let mut scraper = match Scraper::new(data_dir.clone()) {
+        let mut scraper = match Scraper::new_with_lock_timeout(data_dir.clone(), lock_timeout_secs) {
             Ok(s) => s,
             Err(e) => {
                 tracing::error!("Failed to create scraper: {}", e);
