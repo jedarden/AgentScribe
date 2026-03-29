@@ -15,6 +15,7 @@ mod error;
 mod event;
 mod gc;
 mod index;
+mod mcp;
 mod parser;
 mod plugin;
 mod recurring;
