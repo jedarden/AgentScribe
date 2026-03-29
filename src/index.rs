@@ -1086,4 +1086,102 @@ mod tests {
         assert!(content.contains("brand new content"), "stored content must reflect the updated events");
         assert!(!content.contains("old content here"), "old content must not remain after re-index");
     }
+
+    #[test]
+    fn test_index_manager_optimize() {
+        use tempfile::TempDir;
+        let temp_dir = TempDir::new().unwrap();
+
+        let mut manager = IndexManager::open(temp_dir.path()).unwrap();
+        manager.begin_write().unwrap();
+
+        let now = Utc::now();
+        let events = vec![
+            Event::new(now, "test/1".to_string(), "claude".to_string(), Role::User, "test content".to_string()),
+        ];
+        let manifest = build_manifest_from_events(&events, "test/1", "claude", None, None);
+        manager.index_session(&events, &manifest).unwrap();
+        manager.finish().unwrap();
+
+        // optimize (GC) should complete without error
+        assert!(manager.optimize().is_ok());
+    }
+
+    #[test]
+    fn test_build_content_role_prefixes() {
+        // All five roles should appear with their canonical prefix
+        let events = vec![
+            Event::new(Utc::now(), "test/1".to_string(), "test".to_string(), Role::System, "Be helpful".to_string()),
+            Event::new(Utc::now(), "test/1".to_string(), "test".to_string(), Role::User, "Hello".to_string()),
+            Event::new(Utc::now(), "test/1".to_string(), "test".to_string(), Role::Assistant, "Hi".to_string()),
+            Event::new(Utc::now(), "test/1".to_string(), "test".to_string(), Role::ToolCall, "execute".to_string()),
+            Event::new(Utc::now(), "test/1".to_string(), "test".to_string(), Role::ToolResult, "done".to_string()),
+        ];
+        let content = build_content(&events);
+        assert!(content.contains("system: Be helpful"));
+        assert!(content.contains("user: Hello"));
+        assert!(content.contains("assistant: Hi"));
+        assert!(content.contains("tool_call: execute"));
+        assert!(content.contains("tool_result: done"));
+    }
+
+    #[test]
+    fn test_truncate_tool_result_at_boundary() {
+        // Exactly at boundary: not truncated
+        let at_limit = "x".repeat(TOOL_RESULT_MAX_CHARS);
+        assert_eq!(truncate_tool_result(&at_limit).len(), TOOL_RESULT_MAX_CHARS);
+
+        // One over boundary: truncated to ≤ limit
+        let over_limit = "x".repeat(TOOL_RESULT_MAX_CHARS + 1);
+        assert!(truncate_tool_result(&over_limit).len() <= TOOL_RESULT_MAX_CHARS);
+    }
+
+    #[test]
+    fn test_build_session_document_allows_adding_solution_summary() {
+        // solution_summary is not set by build_session_document; verify it can be
+        // appended externally (the pattern used by the enrichment pipeline).
+        let (_, fields) = build_schema();
+        let manifest = SessionManifest::new("test/1".to_string(), "claude".to_string());
+        let mut doc = build_session_document(&fields, &[], &manifest);
+
+        // Not set by default
+        assert!(doc.get_first(fields.solution_summary).is_none());
+
+        // Can be added externally
+        doc.add_text(fields.solution_summary, "Use async/await pattern to fix concurrency issue");
+        assert_eq!(
+            doc.get_first(fields.solution_summary).unwrap().as_str().unwrap(),
+            "Use async/await pattern to fix concurrency issue",
+        );
+    }
+
+    #[test]
+    fn test_build_manifest_from_events_ends_at_last_event() {
+        use chrono::Duration;
+        let t1 = Utc::now();
+        let t2 = t1 + Duration::seconds(30);
+        let t3 = t2 + Duration::minutes(2);
+        let events = vec![
+            Event::new(t1, "test/1".to_string(), "claude".to_string(), Role::User, "start".to_string()),
+            Event::new(t2, "test/1".to_string(), "claude".to_string(), Role::Assistant, "mid".to_string()),
+            Event::new(t3, "test/1".to_string(), "claude".to_string(), Role::User, "end".to_string()),
+        ];
+        let manifest = build_manifest_from_events(&events, "test/1", "claude", None, None);
+        assert_eq!(manifest.started.timestamp(), t1.timestamp());
+        assert_eq!(manifest.ended.map(|d| d.timestamp()), Some(t3.timestamp()));
+        assert_eq!(manifest.turns, 3);
+    }
+
+    #[test]
+    fn test_build_session_document_many_tags() {
+        // Verify document builds successfully with many tags from manifest
+        let (_, fields) = build_schema();
+        let mut manifest = SessionManifest::new("test/1".to_string(), "claude".to_string());
+        manifest.tags = vec![
+            "rust".to_string(), "async".to_string(), "tokio".to_string(), "docker".to_string(),
+        ];
+        let doc = build_session_document(&fields, &[], &manifest);
+        let doc_tags: Vec<&str> = doc.get_all(fields.tags).filter_map(|v| v.as_str()).collect();
+        assert_eq!(doc_tags.len(), 4);
+    }
 }

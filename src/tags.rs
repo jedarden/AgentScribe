@@ -460,4 +460,110 @@ mod tests {
     fn test_bundled_dictionary_has_terms() {
         assert!(KEYWORDS.len() >= 150);
     }
+
+    #[test]
+    fn test_bash_hash_prefix_command() {
+        // `# docker ps` style (hash comment prompt prefix)
+        let events = vec![make_tool_call_event("Bash", "# docker-compose up -d")];
+        let tags = extract_structural_tags(&events);
+        assert!(tags.contains(&"docker".to_string()));
+    }
+
+    #[test]
+    fn test_tsx_extension_maps_to_react() {
+        let events = vec![make_event(Role::ToolCall, "")
+            .with_tool(Some("Read".into()))
+            .with_file_paths(vec!["src/components/App.tsx".into()])];
+        let tags = extract_structural_tags(&events);
+        assert!(tags.contains(&"react".to_string()));
+    }
+
+    #[test]
+    fn test_yml_extension_maps_to_yaml() {
+        let events = vec![make_event(Role::ToolCall, "")
+            .with_tool(Some("Read".into()))
+            .with_file_paths(vec!["docker-compose.yml".into()])];
+        let tags = extract_structural_tags(&events);
+        assert!(tags.contains(&"yaml".to_string()));
+    }
+
+    #[test]
+    fn test_tool_call_without_tool_name_ignored() {
+        // ToolCall event with no tool name should not contribute explicit tags
+        let events = vec![make_event(Role::ToolCall, "some content with ```python code```")];
+        // Code fences still work even on a ToolCall with no tool name
+        let tags = extract_explicit_tags(&events);
+        assert!(tags.contains(&"python".to_string()));
+        // But no extra tags from missing tool name
+        assert!(!tags.contains(&"none".to_string()));
+    }
+
+    #[test]
+    fn test_extract_structural_tags_sorted() {
+        let events = vec![make_event(Role::ToolCall, "")
+            .with_tool(Some("Read".into()))
+            .with_file_paths(vec![
+                "app.py".into(),
+                "main.rs".into(),
+                "index.ts".into(),
+            ])];
+        let tags = extract_structural_tags(&events);
+        let mut sorted = tags.clone();
+        sorted.sort();
+        assert_eq!(tags, sorted);
+    }
+
+    #[test]
+    fn test_keyword_extract_uses_bundled_dictionary() {
+        // Test that extract_tags uses the bundled dictionary for tier 3
+        let events = vec![make_event(Role::User, "I'm using elasticsearch for full-text search")];
+        let tags = extract_tags(&events);
+        assert!(tags.contains(&"elasticsearch".to_string()));
+    }
+
+    #[test]
+    fn test_extract_tags_deduplication_across_tiers() {
+        // "rust" from tier 2 (file extension) AND tier 3 (keyword) → only one entry
+        let events = vec![
+            make_event(Role::ToolCall, "")
+                .with_tool(Some("Read".into()))
+                .with_file_paths(vec!["src/main.rs".into()]),
+            make_event(Role::User, "working on a rust project"),
+        ];
+        let tags = extract_tags(&events);
+        let rust_count = tags.iter().filter(|t| *t == "rust").count();
+        assert_eq!(rust_count, 1);
+    }
+
+    #[test]
+    fn test_pip3_maps_to_pip() {
+        let events = vec![make_tool_call_event("Bash", "pip3 install requests")];
+        let tags = extract_structural_tags(&events);
+        assert!(tags.contains(&"pip".to_string()));
+    }
+
+    #[test]
+    fn test_python3_maps_to_python() {
+        let events = vec![make_tool_call_event("Bash", "python3 script.py")];
+        let tags = extract_structural_tags(&events);
+        assert!(tags.contains(&"python".to_string()));
+    }
+
+    #[test]
+    fn test_exs_extension_maps_to_elixir() {
+        let events = vec![make_event(Role::ToolCall, "")
+            .with_tool(Some("Read".into()))
+            .with_file_paths(vec!["lib/app.exs".into()])];
+        let tags = extract_structural_tags(&events);
+        assert!(tags.contains(&"elixir".to_string()));
+    }
+
+    #[test]
+    fn test_go_mod_extension_maps_to_go() {
+        let events = vec![make_event(Role::ToolCall, "")
+            .with_tool(Some("Read".into()))
+            .with_file_paths(vec!["go.mod".into()])];
+        let tags = extract_structural_tags(&events);
+        assert!(tags.contains(&"go".to_string()));
+    }
 }
