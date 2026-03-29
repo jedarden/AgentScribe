@@ -1184,4 +1184,89 @@ mod tests {
         let doc_tags: Vec<&str> = doc.get_all(fields.tags).filter_map(|v| v.as_str()).collect();
         assert_eq!(doc_tags.len(), 4);
     }
+
+    #[test]
+    fn test_delete_session_removes_document() {
+        // delete_session must cause the document to be absent after commit.
+        use tantivy::collector::Count;
+        use tantivy::query::TermQuery;
+        use tantivy::schema::IndexRecordOption;
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let now = Utc::now();
+
+        // Phase 1: index the session
+        {
+            let mut manager = IndexManager::open(temp_dir.path()).unwrap();
+            manager.begin_write().unwrap();
+            let events = vec![
+                Event::new(now, "test/del".to_string(), "claude".to_string(), Role::User,
+                    "delete me later".to_string()),
+            ];
+            let manifest = build_manifest_from_events(&events, "test/del", "claude", None, None);
+            manager.index_session(&events, &manifest).unwrap();
+            manager.finish().unwrap();
+        }
+
+        // Phase 2: verify document exists
+        {
+            let index_path = temp_dir.path().join("index").join(INDEX_DIR_NAME);
+            let index = tantivy::Index::open_in_dir(&index_path).unwrap();
+            let fields = fields_from_schema(&index.schema());
+            let reader = index.reader().unwrap();
+            let searcher = reader.searcher();
+            let term = Term::from_field_text(fields.session_id, "test/del");
+            let query = TermQuery::new(term, IndexRecordOption::Basic);
+            assert_eq!(searcher.search(&query, &Count).unwrap(), 1, "session should exist after indexing");
+        }
+
+        // Phase 3: delete the session
+        {
+            let mut manager = IndexManager::open(temp_dir.path()).unwrap();
+            manager.begin_write().unwrap();
+            manager.delete_session("test/del").unwrap();
+            manager.finish().unwrap();
+        }
+
+        // Phase 4: verify document is gone
+        {
+            let index_path = temp_dir.path().join("index").join(INDEX_DIR_NAME);
+            let index = tantivy::Index::open_in_dir(&index_path).unwrap();
+            let fields = fields_from_schema(&index.schema());
+            let reader = index.reader().unwrap();
+            let searcher = reader.searcher();
+            let term = Term::from_field_text(fields.session_id, "test/del");
+            let query = TermQuery::new(term, IndexRecordOption::Basic);
+            assert_eq!(searcher.search(&query, &Count).unwrap(), 0, "session should be absent after deletion");
+        }
+    }
+
+    #[test]
+    fn test_build_session_document_with_git_commits() {
+        // git_commits field is not currently set by build_session_document — verify the field
+        // exists in the schema and can be added externally (consistent with manifest enrichment).
+        let (_, fields) = build_schema();
+        let manifest = SessionManifest::new("test/git".to_string(), "claude".to_string());
+        let mut doc = build_session_document(&fields, &[], &manifest);
+        // Externally add git commits (pattern used by enrichment pipeline)
+        doc.add_text(fields.git_commits, "abc1234");
+        doc.add_text(fields.git_commits, "def5678");
+        let commits: Vec<&str> = doc.get_all(fields.git_commits).filter_map(|v| v.as_str()).collect();
+        assert_eq!(commits.len(), 2);
+        assert!(commits.contains(&"abc1234"));
+    }
+
+    #[test]
+    fn test_build_session_document_turn_count_stored() {
+        // turn_count must equal manifest.turns.
+        let (_, fields) = build_schema();
+        let mut manifest = SessionManifest::new("test/turns".to_string(), "claude".to_string());
+        manifest.turns = 7;
+        let doc = build_session_document(&fields, &[], &manifest);
+        assert_eq!(
+            doc.get_first(fields.turn_count).unwrap().as_u64().unwrap(),
+            7
+        );
+    }
 }

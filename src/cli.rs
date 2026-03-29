@@ -846,6 +846,7 @@ fn run_search(
         outcome,
         doc_type_filter,
         model,
+        file_path: None,
         fuzzy,
         fuzzy_distance: edit_distance.unwrap_or(config.search.fuzzy_edit_distance),
         max_results,

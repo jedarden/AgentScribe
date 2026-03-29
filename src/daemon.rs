@@ -371,15 +371,21 @@ fn run_event_loop(log_file: &Path, pid_file: &Path, state_file: &Path, data_dir:
         std::process::exit(0);
     });
 
-    // Load config for debounce and git settings
+    // Load config for debounce, git, and MCP settings
     let config_path = data_path.join("config.toml");
     let app_config = AppConfig::load(&config_path).unwrap_or_default();
     let debounce_secs = app_config.scrape.debounce_seconds;
     let git_auto_commit = app_config.scrape.git_auto_commit;
+    let mcp_enabled = app_config.daemon.mcp_enabled;
+    let mcp_socket_path = app_config
+        .mcp_socket_path()
+        .unwrap_or_else(|_| data_path.join("mcp.sock"));
 
     tracing::info!(
         debounce_secs,
         git_auto_commit,
+        mcp_enabled,
+        mcp_socket = %mcp_socket_path.display(),
         rediscovery_interval_secs = REDISCOVERY_INTERVAL_SECS,
         "daemon configuration"
     );
@@ -391,7 +397,57 @@ fn run_event_loop(log_file: &Path, pid_file: &Path, state_file: &Path, data_dir:
         state,
         debounce_secs,
         git_auto_commit,
+        if mcp_enabled { Some(mcp_socket_path) } else { None },
     ));
+}
+
+// ── Debouncer ─────────────────────────────────────────────────────────
+
+/// Tracks pending file changes and implements debounce logic.
+///
+/// A file is considered "ready" once its debounce window (measured from the
+/// last recorded change) has elapsed without another change being recorded.
+struct Debouncer {
+    /// path → (plugin_name, time_of_last_change)
+    pending: HashMap<PathBuf, (String, Instant)>,
+}
+
+impl Debouncer {
+    fn new() -> Self {
+        Debouncer {
+            pending: HashMap::new(),
+        }
+    }
+
+    /// Record a change to `path` for `plugin_name`.
+    ///
+    /// Resets the debounce timer if the file was already pending, so a rapid
+    /// sequence of writes does not trigger a scrape until writes stop.
+    fn record(&mut self, path: PathBuf, plugin_name: String) {
+        self.pending.insert(path, (plugin_name, Instant::now()));
+    }
+
+    /// Return (and remove) all entries whose debounce window has elapsed.
+    fn drain_ready(&mut self, debounce: Duration) -> Vec<(PathBuf, String)> {
+        let ready: Vec<PathBuf> = self
+            .pending
+            .iter()
+            .filter(|(_, (_, t))| t.elapsed() >= debounce)
+            .map(|(p, _)| p.clone())
+            .collect();
+
+        ready
+            .into_iter()
+            .map(|path| {
+                let (plugin_name, _) = self.pending.remove(&path).unwrap();
+                (path, plugin_name)
+            })
+            .collect()
+    }
+
+    fn pending_count(&self) -> usize {
+        self.pending.len()
+    }
 }
 
 // ── Internal: file watcher helpers ────────────────────────────────────
@@ -444,8 +500,8 @@ struct WatchLoop {
     _watcher: RecommendedWatcher,
     /// Receives raw notify events from the background inotify thread.
     event_rx: tokio::sync::mpsc::UnboundedReceiver<notify::Event>,
-    /// Files with a pending scrape: path → (plugin_name, time_of_last_change).
-    pending: HashMap<PathBuf, (String, Instant)>,
+    /// Debounce tracker: holds pending files until their quiet window expires.
+    debouncer: Debouncer,
     /// All loaded plugin definitions (for pattern matching).
     plugins: Vec<Plugin>,
     /// Directories currently being watched.
@@ -510,39 +566,30 @@ impl WatchLoop {
                 if file_matches_plugin(&path, plugin) {
                     let name = plugin.plugin.name.clone();
                     tracing::debug!(path = %path.display(), plugin = %name, "file change queued");
-                    self.pending.insert(path.clone(), (name, Instant::now()));
+                    self.debouncer.record(path.clone(), name);
                     break;
                 }
             }
         }
     }
 
-    /// Drain all files whose last change time is at least `debounce` seconds ago.
+    /// Drain all files whose debounce window has elapsed.
     fn drain_ready(&mut self, debounce: Duration) -> Vec<(PathBuf, String)> {
-        let ready: Vec<PathBuf> = self
-            .pending
-            .iter()
-            .filter(|(_, (_, t))| t.elapsed() >= debounce)
-            .map(|(p, _)| p.clone())
-            .collect();
-
-        ready
-            .into_iter()
-            .map(|path| {
-                let (plugin_name, _) = self.pending.remove(&path).unwrap();
-                (path, plugin_name)
-            })
-            .collect()
+        self.debouncer.drain_ready(debounce)
     }
 }
 
 /// Async watch-and-scrape loop.  Runs until `shutdown_requested()` is set.
+///
+/// `mcp_socket_path`: when `Some`, the MCP server is started and listens on
+/// that Unix socket for the lifetime of the loop.
 async fn run_watch_loop(
     data_dir: PathBuf,
     state_path: PathBuf,
     mut daemon_state: PersistedState,
     debounce_secs: u64,
     git_auto_commit: bool,
+    mcp_socket_path: Option<PathBuf>,
 ) {
     // ── load plugins for path-pattern matching ────────────────────────
     let plugins: Vec<Plugin> = {
@@ -586,7 +633,7 @@ async fn run_watch_loop(
     let mut wl = WatchLoop {
         _watcher: watcher,
         event_rx: rx,
-        pending: HashMap::new(),
+        debouncer: Debouncer::new(),
         plugins,
         watched_dirs: HashSet::new(),
         // Trigger immediate discovery on first tick
@@ -597,6 +644,20 @@ async fn run_watch_loop(
 
     let debounce = Duration::from_secs(debounce_secs);
     let rediscovery = Duration::from_secs(REDISCOVERY_INTERVAL_SECS);
+
+    // ── optional MCP server ───────────────────────────────────────────
+    // Spawned as a sibling task; receives a oneshot signal when the watch
+    // loop exits so it can clean up its Unix socket before returning.
+    let mcp_shutdown_tx: Option<tokio::sync::oneshot::Sender<()>> =
+        if let Some(ref socket_path) = mcp_socket_path {
+            let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+            let data_dir_clone = data_dir.clone();
+            let socket_path_clone = socket_path.clone();
+            tokio::spawn(crate::mcp::run_mcp_server(data_dir_clone, socket_path_clone, rx));
+            Some(tx)
+        } else {
+            None
+        };
 
     // ── main loop ─────────────────────────────────────────────────────
     loop {
@@ -1001,5 +1062,235 @@ pub fn format_duration(secs: u64) -> String {
         format!("{}m {}s", secs / 60, secs % 60)
     } else {
         format!("{}s", secs)
+    }
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::plugin::{LogFormat, Parser, Plugin, PluginMeta, Source, SessionDetection};
+    use std::thread;
+
+    // ── helpers ───────────────────────────────────────────────────────
+
+    fn make_plugin(name: &str, paths: Vec<&str>) -> Plugin {
+        Plugin {
+            plugin: PluginMeta {
+                name: name.to_string(),
+                version: "1.0".to_string(),
+            },
+            source: Source {
+                paths: paths.iter().map(|s| s.to_string()).collect(),
+                exclude: vec![],
+                format: LogFormat::Jsonl,
+                session_detection: SessionDetection::default(),
+                tree: None,
+                truncation_limit: None,
+            },
+            parser: Parser::default(),
+            metadata: None,
+        }
+    }
+
+    // ── base_dir_from_glob_pattern ────────────────────────────────────
+
+    #[test]
+    fn test_base_dir_simple_wildcard() {
+        let dir = base_dir_from_glob_pattern("/home/user/.claude/projects/*/*.jsonl");
+        assert_eq!(
+            dir,
+            Some(PathBuf::from("/home/user/.claude/projects"))
+        );
+    }
+
+    #[test]
+    fn test_base_dir_no_wildcard() {
+        // Without a wildcard the parent dir of the file is returned.
+        let dir = base_dir_from_glob_pattern("/home/user/logs/session.jsonl");
+        assert_eq!(dir, Some(PathBuf::from("/home/user/logs")));
+    }
+
+    #[test]
+    fn test_base_dir_trailing_slash_before_wildcard() {
+        let dir = base_dir_from_glob_pattern("/data/logs/*/foo.jsonl");
+        assert_eq!(dir, Some(PathBuf::from("/data/logs")));
+    }
+
+    #[test]
+    fn test_base_dir_wildcard_at_root() {
+        // Wildcard directly under / — base dir should be /
+        let dir = base_dir_from_glob_pattern("/*.jsonl");
+        assert_eq!(dir, Some(PathBuf::from("/")));
+    }
+
+    #[test]
+    fn test_base_dir_question_mark_wildcard() {
+        let dir = base_dir_from_glob_pattern("/tmp/agent/session?.jsonl");
+        assert_eq!(dir, Some(PathBuf::from("/tmp/agent")));
+    }
+
+    #[test]
+    fn test_base_dir_bracket_wildcard() {
+        let dir = base_dir_from_glob_pattern("/tmp/[abc]/session.jsonl");
+        assert_eq!(dir, Some(PathBuf::from("/tmp")));
+    }
+
+    // ── file_matches_plugin ───────────────────────────────────────────
+
+    #[test]
+    fn test_file_matches_plugin_exact_glob() {
+        let plugin = make_plugin("claude", vec!["/tmp/test/*.jsonl"]);
+        assert!(file_matches_plugin(Path::new("/tmp/test/session.jsonl"), &plugin));
+    }
+
+    #[test]
+    fn test_file_matches_plugin_no_match() {
+        let plugin = make_plugin("claude", vec!["/tmp/test/*.jsonl"]);
+        assert!(!file_matches_plugin(Path::new("/tmp/other/session.jsonl"), &plugin));
+    }
+
+    #[test]
+    fn test_file_matches_plugin_multiple_paths() {
+        let plugin = make_plugin("multi", vec!["/tmp/a/*.jsonl", "/tmp/b/*.md"]);
+        assert!(file_matches_plugin(Path::new("/tmp/a/foo.jsonl"), &plugin));
+        assert!(file_matches_plugin(Path::new("/tmp/b/bar.md"), &plugin));
+        assert!(!file_matches_plugin(Path::new("/tmp/c/baz.jsonl"), &plugin));
+    }
+
+    #[test]
+    fn test_file_matches_plugin_double_star() {
+        let plugin = make_plugin("deep", vec!["/tmp/**/*.jsonl"]);
+        assert!(file_matches_plugin(Path::new("/tmp/a/b/c/session.jsonl"), &plugin));
+        assert!(!file_matches_plugin(Path::new("/tmp/a/b/c/session.md"), &plugin));
+    }
+
+    // ── Debouncer ─────────────────────────────────────────────────────
+
+    #[test]
+    fn test_debouncer_empty_initially() {
+        let mut d = Debouncer::new();
+        assert_eq!(d.pending_count(), 0);
+        assert!(d.drain_ready(Duration::from_millis(0)).is_empty());
+    }
+
+    #[test]
+    fn test_debouncer_no_ready_before_window_expires() {
+        let mut d = Debouncer::new();
+        d.record(PathBuf::from("/tmp/a.jsonl"), "plugin-a".to_string());
+        // With a 1 h debounce nothing should be ready immediately.
+        let ready = d.drain_ready(Duration::from_secs(3600));
+        assert!(ready.is_empty());
+        assert_eq!(d.pending_count(), 1);
+    }
+
+    #[test]
+    fn test_debouncer_ready_after_window_expires() {
+        let mut d = Debouncer::new();
+        d.record(PathBuf::from("/tmp/a.jsonl"), "plugin-a".to_string());
+        // Zero-duration debounce: every pending entry is immediately ready.
+        let ready = d.drain_ready(Duration::from_millis(0));
+        assert_eq!(ready.len(), 1);
+        assert_eq!(ready[0].0, PathBuf::from("/tmp/a.jsonl"));
+        assert_eq!(ready[0].1, "plugin-a");
+        assert_eq!(d.pending_count(), 0);
+    }
+
+    #[test]
+    fn test_debouncer_resets_timer_on_repeat_change() {
+        let mut d = Debouncer::new();
+        let path = PathBuf::from("/tmp/a.jsonl");
+
+        // Record a change that has effectively aged out.
+        d.pending.insert(
+            path.clone(),
+            ("plugin-a".to_string(), Instant::now() - Duration::from_secs(10)),
+        );
+        assert_eq!(d.drain_ready(Duration::from_secs(5)).len(), 1);
+
+        // Record the path again — timer resets and the file is no longer ready.
+        d.record(path.clone(), "plugin-a".to_string());
+        assert!(d.drain_ready(Duration::from_secs(3600)).is_empty());
+    }
+
+    #[test]
+    fn test_debouncer_multiple_files_independent() {
+        let mut d = Debouncer::new();
+        let path_a = PathBuf::from("/tmp/a.jsonl");
+        let path_b = PathBuf::from("/tmp/b.jsonl");
+
+        // path_a: artificially old (will be ready).
+        d.pending.insert(
+            path_a.clone(),
+            ("plugin-a".to_string(), Instant::now() - Duration::from_secs(10)),
+        );
+        // path_b: just recorded (not ready for a long debounce).
+        d.record(path_b.clone(), "plugin-b".to_string());
+
+        let ready = d.drain_ready(Duration::from_secs(5));
+        assert_eq!(ready.len(), 1);
+        assert_eq!(ready[0].0, path_a);
+        // path_b still pending.
+        assert_eq!(d.pending_count(), 1);
+        assert!(d.pending.contains_key(&path_b));
+    }
+
+    #[test]
+    fn test_debouncer_drain_removes_entries() {
+        let mut d = Debouncer::new();
+        d.record(PathBuf::from("/tmp/x.jsonl"), "px".to_string());
+        d.record(PathBuf::from("/tmp/y.jsonl"), "py".to_string());
+        assert_eq!(d.pending_count(), 2);
+
+        let ready = d.drain_ready(Duration::from_millis(0));
+        assert_eq!(ready.len(), 2);
+        assert_eq!(d.pending_count(), 0);
+    }
+
+    #[test]
+    fn test_debouncer_plugin_name_preserved() {
+        let mut d = Debouncer::new();
+        let path = PathBuf::from("/tmp/session.jsonl");
+        d.record(path.clone(), "claude-code".to_string());
+        let ready = d.drain_ready(Duration::from_millis(0));
+        assert_eq!(ready[0].1, "claude-code");
+    }
+
+    #[test]
+    fn test_debouncer_real_time_debounce() {
+        let mut d = Debouncer::new();
+        let path = PathBuf::from("/tmp/live.jsonl");
+        d.record(path.clone(), "agent".to_string());
+
+        // Not ready before the window.
+        assert!(d.drain_ready(Duration::from_millis(50)).is_empty());
+
+        // Sleep past the window and confirm it's ready.
+        thread::sleep(Duration::from_millis(60));
+        let ready = d.drain_ready(Duration::from_millis(50));
+        assert_eq!(ready.len(), 1);
+        assert_eq!(ready[0].0, path);
+    }
+
+    // ── format helpers ────────────────────────────────────────────────
+
+    #[test]
+    fn test_format_bytes() {
+        assert_eq!(format_bytes(0), "0 B");
+        assert_eq!(format_bytes(1023), "1023 B");
+        assert_eq!(format_bytes(1024), "1.0 KB");
+        assert_eq!(format_bytes(1024 * 1024), "1.0 MB");
+        assert_eq!(format_bytes(50 * 1024 * 1024), "50.0 MB");
+        assert_eq!(format_bytes(1024 * 1024 * 1024), "1.0 GB");
+    }
+
+    #[test]
+    fn test_format_duration() {
+        assert_eq!(format_duration(0), "0s");
+        assert_eq!(format_duration(59), "59s");
+        assert_eq!(format_duration(60), "1m 0s");
+        assert_eq!(format_duration(3661), "1h 1m");
+        assert_eq!(format_duration(86400 + 3600), "1d 1h");
     }
 }

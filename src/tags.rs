@@ -566,4 +566,85 @@ mod tests {
         let tags = extract_structural_tags(&events);
         assert!(tags.contains(&"go".to_string()));
     }
+
+    #[test]
+    fn test_jsx_extension_maps_to_react() {
+        let events = vec![make_event(Role::ToolCall, "")
+            .with_tool(Some("Edit".into()))
+            .with_file_paths(vec!["src/App.jsx".into()])];
+        let tags = extract_structural_tags(&events);
+        assert!(tags.contains(&"react".to_string()));
+    }
+
+    #[test]
+    fn test_code_fence_in_tool_result() {
+        // Code fences in ToolResult content should still be picked up by tier 1.
+        let events = vec![
+            make_event(Role::ToolResult, "```go\npackage main\n```"),
+        ];
+        let tags = extract_explicit_tags(&events);
+        assert!(tags.contains(&"go".to_string()));
+    }
+
+    #[test]
+    fn test_code_fence_in_user_message() {
+        // Code fences in User messages should contribute explicit tags.
+        let events = vec![
+            make_event(Role::User, "Can you look at this code?\n```rust\nfn main() {}\n```"),
+        ];
+        let tags = extract_explicit_tags(&events);
+        assert!(tags.contains(&"rust".to_string()));
+    }
+
+    #[test]
+    fn test_extract_tags_with_file_path_event_tags() {
+        // file_paths on events (not just ToolCall) contribute structural tags.
+        let events = vec![
+            make_event(Role::ToolResult, "file contents here")
+                .with_file_paths(vec!["config.yaml".into()]),
+        ];
+        let tags = extract_structural_tags(&events);
+        assert!(tags.contains(&"yaml".to_string()));
+    }
+
+    #[test]
+    fn test_scala_extension_maps_to_scala() {
+        let events = vec![make_event(Role::ToolCall, "")
+            .with_tool(Some("Read".into()))
+            .with_file_paths(vec!["src/Main.scala".into()])];
+        let tags = extract_structural_tags(&events);
+        assert!(tags.contains(&"scala".to_string()));
+    }
+
+    #[test]
+    fn test_hs_extension_maps_to_haskell() {
+        let events = vec![make_event(Role::ToolCall, "")
+            .with_tool(Some("Read".into()))
+            .with_file_paths(vec!["src/Main.hs".into()])];
+        let tags = extract_structural_tags(&events);
+        assert!(tags.contains(&"haskell".to_string()));
+    }
+
+    #[test]
+    fn test_yaml_cmd_not_extracted_from_non_bash_tool() {
+        // Only Bash tool content is parsed for commands — other tool names are ignored.
+        let events = vec![make_tool_call_event("Write", "cargo build --release")];
+        let tags = extract_structural_tags(&events);
+        assert!(!tags.contains(&"cargo".to_string()));
+    }
+
+    #[test]
+    fn test_multiple_error_fingerprints_across_events() {
+        let events = vec![
+            make_event(Role::ToolResult, "err1")
+                .with_error_fingerprints(vec!["IoError".into()]),
+            make_event(Role::ToolResult, "err2")
+                .with_error_fingerprints(vec!["ParseError".into(), "IoError".into()]),
+        ];
+        let tags = extract_structural_tags(&events);
+        // IoError appears twice but should be deduplicated
+        let io_count = tags.iter().filter(|t| *t == "ioerror").count();
+        assert_eq!(io_count, 1);
+        assert!(tags.contains(&"parseerror".to_string()));
+    }
 }
