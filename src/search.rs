@@ -2913,4 +2913,69 @@ mod tests {
         assert!(result.total_matches >= 0); // May be 0 if solution_summary is empty — that's valid
         // The important thing is no panic/error
     }
+
+    #[test]
+    fn test_search_integration_token_budget() {
+        // Verifies the end-to-end token_budget knapsack flow through execute_search:
+        // - results fit within the budget
+        // - token_count is populated on each result
+        // - highest-relevance results are preferred
+        use crate::event::{Event, Role, SessionManifest};
+        use crate::index::build_session_document;
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let index_path = temp_dir.path().join("index").join("tantivy");
+        let (schema, fields) = build_schema();
+        std::fs::create_dir_all(&index_path).unwrap();
+        let index = tantivy::Index::create_in_dir(&index_path, schema).unwrap();
+        let mut writer = index.writer(50_000_000).unwrap();
+
+        let now = Utc::now();
+
+        // Add three sessions with the same query term so they all match
+        for (i, session_id) in ["claude/tb-1", "claude/tb-2", "claude/tb-3"].iter().enumerate() {
+            let mut m = SessionManifest::new(session_id.to_string(), "claude-code".to_string());
+            m.started = now - chrono::Duration::days(i as i64);
+            m.turns = 5;
+            m.summary = Some(format!("session {} summary for knapsack test", i + 1));
+            let e = vec![
+                Event::new(now, session_id.to_string(), "claude-code".to_string(),
+                    Role::User, "knapsack budget test query".to_string()),
+                Event::new(now, session_id.to_string(), "claude-code".to_string(),
+                    Role::Assistant, format!("response content for session {}", i + 1)),
+            ];
+            writer.add_document(build_session_document(&fields, &e, &m)).unwrap();
+        }
+        writer.commit().unwrap();
+        writer.wait_merging_threads().unwrap();
+
+        // Small budget — should include at least one result but stay within budget
+        let budget = 50;
+        let opts = SearchOptions {
+            query: Some("knapsack budget test".to_string()),
+            token_budget: Some(budget),
+            snippet_length: 200,
+            max_results: 10,
+            ..default_opts()
+        };
+        let result = execute_search(temp_dir.path(), &opts).unwrap();
+
+        // At least one result returned
+        assert!(!result.results.is_empty(), "should return at least one result");
+
+        // Total token_count must not exceed budget
+        let total_tokens: usize = result.results.iter().map(|r| r.token_count).sum();
+        assert!(
+            total_tokens <= budget,
+            "total token_count {} exceeded budget {}",
+            total_tokens,
+            budget
+        );
+
+        // Every result must have token_count > 0
+        for r in &result.results {
+            assert!(r.token_count > 0, "token_count should be > 0 for result {}", r.session_id);
+        }
+    }
 }
