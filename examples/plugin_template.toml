@@ -1,0 +1,115 @@
+# AgentScribe Plugin Template
+#
+# Copy this file to ~/.agentscribe/plugins/<agent-name>.toml and fill in each
+# section.  See plugins/BUILDING_PLUGINS.md for a complete field reference.
+#
+# Validate your plugin:
+#   agentscribe plugins validate ~/.agentscribe/plugins/<agent-name>.toml
+#
+# Test a dry-run scrape:
+#   agentscribe scrape --plugin <agent-name> --dry-run
+
+# ── Identity ──────────────────────────────────────────────────────────────────
+
+[plugin]
+# Unique lowercase identifier used in session IDs, CLI filters, and the output
+# directory under ~/.agentscribe/sessions/.
+name = "my-agent"
+
+# Increment when you change field mappings or source paths so AgentScribe can
+# detect when re-scraping existing files is needed.
+version = "1.0"
+
+# ── Source ────────────────────────────────────────────────────────────────────
+
+[source]
+# Glob patterns pointing to the log files.  Supports ~ expansion, $ENV_VAR,
+# *, **, and ? wildcards.
+paths = [
+    "~/.my-agent/sessions/*.jsonl",
+]
+
+# Glob patterns to exclude after matching paths (optional).
+exclude = []
+
+# Log file format.  One of: jsonl | markdown | json-tree | sqlite
+format = "jsonl"
+
+# ── Session detection ─────────────────────────────────────────────────────────
+
+[source.session_detection]
+# How to split log files into sessions.  Options:
+#   one-file-per-session  — one file = one session (most common)
+#   timestamp-gap         — new session when gap between entries exceeds threshold
+#   delimiter             — regex pattern marks session boundaries
+method = "one-file-per-session"
+
+# For one-file-per-session: where to read the session ID from.
+# "filename" uses the file stem; "field:<dotpath>" reads from a JSON field.
+session_id_from = "filename"
+
+# For timestamp-gap (uncomment if using that method):
+# gap_threshold = "30m"
+
+# For delimiter (uncomment if using that method):
+# delimiter_pattern = "^---SESSION---"
+
+# ── Field mapping ─────────────────────────────────────────────────────────────
+
+[parser]
+# Dot-notation paths into each JSON event (for jsonl / json-tree formats).
+timestamp = "timestamp"      # ISO 8601 or Unix epoch (auto-detected)
+role      = "role"           # Must resolve to: user | assistant | system | tool_call | tool_result
+content   = "content"        # Message text
+
+# Optional fields:
+# tool_name  = "tool.name"
+# tokens_in  = "usage.input_tokens"
+# tokens_out = "usage.output_tokens"
+
+# ── Role translation (optional) ───────────────────────────────────────────────
+
+# If the agent uses non-standard role names, map them here.
+# [parser.role_map]
+# "human"    = "user"
+# "ai"       = "assistant"
+# "function" = "tool_call"
+
+# ── Event filtering (optional) ────────────────────────────────────────────────
+
+# Include only certain event types:
+# [parser.include_types]
+# field  = "type"
+# values = ["message", "tool_call"]
+
+# Or exclude specific types:
+# [parser.exclude_types]
+# field  = "type"
+# values = ["progress", "file-snapshot"]
+
+# ── Static metadata ───────────────────────────────────────────────────────────
+
+[parser.static]
+# Values applied to every event from this plugin.
+source_agent = "my-agent"
+# source_version = "1.0.0"   # Uncomment if the agent version is fixed
+
+# ── Project detection (optional) ──────────────────────────────────────────────
+
+# [parser.project]
+# method = "parent_dir"   # Use the log file's parent directory
+# OR
+# method = "field"
+# field  = "cwd"          # Read from a JSON field in each event
+
+# ── Model detection (optional) ────────────────────────────────────────────────
+
+# [parser.model]
+# source = "event"
+# field  = "model"
+
+# ── Supplementary metadata (optional) ────────────────────────────────────────
+
+# [metadata]
+# session_meta    = "~/.my-agent/meta/{session_id}.json"
+# session_summary = "~/.my-agent/summaries/{session_id}.md"

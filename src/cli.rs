@@ -3,9 +3,11 @@
 use crate::config::{self, Config};
 use crate::error::Result;
 use crate::plugin::validate_plugin_file;
-use crate::scraper::Scraper;
+use crate::scraper::{git_auto_commit, Scraper};
 use crate::search::{self, SearchOptions, SortOrder};
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
+use clap_complete::{generate, Shell};
+use std::io;
 use std::path::PathBuf;
 use tabled::{Table, Tabled};
 
@@ -244,6 +246,11 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
+    /// Generate shell completion script
+    Completions {
+        /// Shell to generate completions for
+        shell: Shell,
+    },
 }
 
 /// Config subcommands
@@ -379,6 +386,11 @@ pub fn run() -> Result<()> {
         Commands::Gc { older_than, dry_run, json } => run_gc(older_than, dry_run, json),
         Commands::ShellHook { shell } => run_shell_hook(&shell),
         Commands::Digest { since, output, json } => run_digest(since, output, json),
+        Commands::Completions { shell } => {
+            let mut cmd = Args::command();
+            generate(shell, &mut cmd, "agentscribe", &mut io::stdout());
+            Ok(())
+        }
     }
 }
 
@@ -473,6 +485,7 @@ fn run_config(action: ConfigAction) -> Result<()> {
             println!("\nScraping:");
             println!("  Debounce: {}s", config.scrape.debounce_seconds);
             println!("  Max session age: {} days", config.scrape.max_session_age_days);
+            println!("  Git auto-commit: {}", config.scrape.git_auto_commit);
             println!("\nSearch:");
             println!("  Default max results: {}", config.search.default_max_results);
             println!("  Default snippet length: {}", config.search.default_snippet_length);
@@ -488,6 +501,9 @@ fn run_config(action: ConfigAction) -> Result<()> {
                 }
                 ["scrape", "max_session_age_days"] => {
                     config.scrape.max_session_age_days = value.parse().unwrap_or(0);
+                }
+                ["scrape", "git_auto_commit"] => {
+                    config.scrape.git_auto_commit = matches!(value.to_lowercase().as_str(), "true" | "1" | "yes");
                 }
                 _ => {
                     eprintln!("Unknown configuration key: {}", key);
@@ -508,6 +524,7 @@ fn run_config(action: ConfigAction) -> Result<()> {
                 ["general", "log_level"] => config.general.log_level.clone(),
                 ["scrape", "debounce_seconds"] => config.scrape.debounce_seconds.to_string(),
                 ["scrape", "max_session_age_days"] => config.scrape.max_session_age_days.to_string(),
+                ["scrape", "git_auto_commit"] => config.scrape.git_auto_commit.to_string(),
                 _ => {
                     eprintln!("Unknown configuration key: {}", key);
                     return Ok(());
@@ -627,7 +644,7 @@ fn run_scrape(
         config::init(false)?;
     }
 
-    let mut scraper = Scraper::new(data_dir)?;
+    let mut scraper = Scraper::new(data_dir.clone())?;
     scraper.load_plugins()?;
 
     if let Some(file_path) = file {
@@ -668,6 +685,11 @@ fn run_scrape(
                 if !result.errors.is_empty() {
                     eprintln!("Errors: {}", result.errors.len());
                 }
+                if config.scrape.git_auto_commit {
+                    if git_auto_commit(&data_dir, &result)? {
+                        println!("Git: committed {} session(s)", result.sessions_scraped);
+                    }
+                }
             }
         } else {
             eprintln!("Plugin '{}' not found", plugin_name);
@@ -706,6 +728,11 @@ fn run_scrape(
                         eprintln!("  ... and {} more", result.errors.len() - 5);
                     }
                 }
+                if config.scrape.git_auto_commit {
+                    if git_auto_commit(&data_dir, &result)? {
+                        println!("Git: committed {} session(s)", result.sessions_scraped);
+                    }
+                }
             }
         } else {
             eprintln!("Plugin '{}' not found", plugin_name);
@@ -730,6 +757,11 @@ fn run_scrape(
             }
             if !result.errors.is_empty() {
                 eprintln!("Errors: {}", result.errors.len());
+            }
+            if config.scrape.git_auto_commit {
+                if git_auto_commit(&data_dir, &result)? {
+                    println!("Git: committed {} session(s) ({})", result.sessions_scraped, result.agent_types.join(", "));
+                }
             }
         }
     }
@@ -802,7 +834,7 @@ fn run_search(
         doc_type_filter,
         model,
         fuzzy,
-        fuzzy_distance: edit_distance.unwrap_or(1),
+        fuzzy_distance: edit_distance.unwrap_or(config.search.fuzzy_edit_distance),
         max_results,
         snippet_length,
         token_budget,

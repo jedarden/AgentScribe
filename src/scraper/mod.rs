@@ -32,6 +32,8 @@ pub struct ScrapeResult {
     pub errors: Vec<ScrapeError>,
     pub files_processed: usize,
     pub files_skipped: usize,
+    /// Agent types (plugin names) that contributed at least one session.
+    pub agent_types: Vec<String>,
 }
 
 /// Error that occurred during scraping (non-fatal)
@@ -203,6 +205,7 @@ impl Scraper {
             errors: Vec::new(),
             files_processed: 0,
             files_skipped: 0,
+            agent_types: Vec::new(),
         };
 
         let plugin_names: Vec<String> = self.plugin_manager.names()
@@ -221,6 +224,11 @@ impl Scraper {
                 total_result.errors.extend(result.errors);
                 total_result.files_processed += result.files_processed;
                 total_result.files_skipped += result.files_skipped;
+                for agent in result.agent_types {
+                    if !total_result.agent_types.contains(&agent) {
+                        total_result.agent_types.push(agent);
+                    }
+                }
             }
         }
 
@@ -251,6 +259,7 @@ impl Scraper {
             errors: Vec::new(),
             files_processed: 0,
             files_skipped: 0,
+            agent_types: Vec::new(),
         };
 
         for file_path in files {
@@ -307,6 +316,11 @@ impl Scraper {
             }
         }
 
+        // Populate agent type if any sessions were scraped for this plugin
+        if result.sessions_scraped > 0 {
+            result.agent_types.push(plugin.plugin.name.clone());
+        }
+
         self.end_index_write();
 
         Ok(result)
@@ -338,6 +352,7 @@ impl Scraper {
             errors: Vec::new(),
             files_processed: 1,
             files_skipped: 0,
+            agent_types: Vec::new(),
         };
 
         // Parse all events once.  For multi-session files (e.g. Cursor/Windsurf
@@ -648,6 +663,78 @@ impl Scraper {
 
         Ok(all)
     }
+}
+
+/// Attempt to git-commit newly scraped sessions.
+///
+/// Called from the CLI after a successful scrape when `[scrape] git_auto_commit = true`.
+/// Silently skips if the data directory is not inside a git repository or nothing new was
+/// scraped. Returns `Ok(true)` when a commit was created, `Ok(false)` when skipped.
+pub fn git_auto_commit(data_dir: &Path, result: &ScrapeResult) -> Result<bool> {
+    if result.sessions_scraped == 0 {
+        return Ok(false);
+    }
+
+    // Resolve git root — skip silently if data_dir is not tracked by git.
+    let git_top = Command::new("git")
+        .args(["rev-parse", "--show-toplevel"])
+        .current_dir(data_dir)
+        .output();
+
+    let git_root = match git_top {
+        Ok(out) if out.status.success() => {
+            PathBuf::from(String::from_utf8_lossy(&out.stdout).trim().to_string())
+        }
+        _ => {
+            debug!("git_auto_commit: data_dir is not inside a git repo, skipping");
+            return Ok(false);
+        }
+    };
+
+    let sessions_dir = data_dir.join("sessions");
+
+    // Stage the sessions directory (use absolute path so it works regardless of cwd).
+    let add_out = Command::new("git")
+        .args(["add", sessions_dir.to_str().unwrap_or("sessions")])
+        .current_dir(&git_root)
+        .output()?;
+
+    if !add_out.status.success() {
+        warn!(
+            stderr = %String::from_utf8_lossy(&add_out.stderr),
+            "git_auto_commit: git add failed"
+        );
+        return Ok(false);
+    }
+
+    // Build a descriptive commit message.
+    let agents = if result.agent_types.is_empty() {
+        "unknown".to_string()
+    } else {
+        result.agent_types.join(", ")
+    };
+    let msg = format!(
+        "agentscribe: scraped {} session(s) ({})",
+        result.sessions_scraped, agents
+    );
+
+    let commit_out = Command::new("git")
+        .args(["commit", "-m", &msg])
+        .current_dir(&git_root)
+        .output()?;
+
+    if commit_out.status.success() {
+        info!(message = %msg, "git auto-commit created");
+        return Ok(true);
+    }
+
+    let stderr = String::from_utf8_lossy(&commit_out.stderr);
+    if stderr.contains("nothing to commit") || stderr.contains("nothing added to commit") {
+        debug!("git_auto_commit: nothing new to commit");
+    } else {
+        warn!(stderr = %stderr, "git_auto_commit: git commit failed");
+    }
+    Ok(false)
 }
 
 #[cfg(test)]

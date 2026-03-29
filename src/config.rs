@@ -85,6 +85,10 @@ pub struct GeneralConfig {
 pub struct ScrapeConfig {
     pub debounce_seconds: u64,
     pub max_session_age_days: u32,
+    /// Commit newly scraped sessions to git after each successful scrape (default: false).
+    /// The data directory must be inside a git repository for this to take effect.
+    #[serde(default)]
+    pub git_auto_commit: bool,
 }
 
 /// Index configuration
@@ -117,6 +121,7 @@ impl Default for Config {
             scrape: ScrapeConfig {
                 debounce_seconds: 5,
                 max_session_age_days: 0,
+                git_auto_commit: false,
             },
             index: IndexConfig {
                 tantivy_heap_size_mb: 50,

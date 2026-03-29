@@ -1,0 +1,76 @@
+# Continue.dev plugin for AgentScribe
+#
+# Continue (https://www.continue.dev) is an open-source AI coding assistant for
+# VS Code and JetBrains. It stores conversation history as JSONL files in
+# ~/.continue/sessions/, with one file per session.
+#
+# Each JSONL line represents a conversation turn with this structure:
+# {"sessionId":"abc-123","role":"user","content":"...","timestamp":"2026-03-16T12:00:00.000Z","model":"claude-3-5-sonnet"}
+#
+# Install:
+#   cp examples/continue-dev.toml ~/.agentscribe/plugins/continue-dev.toml
+#   agentscribe plugins validate ~/.agentscribe/plugins/continue-dev.toml
+#   agentscribe scrape --plugin continue-dev --dry-run
+#
+# Session files are typically at:
+#   ~/.continue/sessions/<session-id>.jsonl
+#
+# If Continue is configured with a custom config directory, set:
+#   paths = ["$CONTINUE_HOME/sessions/*.jsonl"]
+
+[plugin]
+name = "continue-dev"
+version = "1.0"
+
+[source]
+paths = [
+    "~/.continue/sessions/*.jsonl",
+    # JetBrains plugin stores sessions alongside VS Code by default; add if needed:
+    # "~/.continue/jetbrains/sessions/*.jsonl",
+]
+exclude = []
+format = "jsonl"
+
+[source.session_detection]
+# Continue creates one file per session named after the session UUID.
+method = "one-file-per-session"
+session_id_from = "filename"
+
+[parser]
+# Continue.dev JSONL fields.
+timestamp  = "timestamp"
+role       = "role"
+content    = "content"
+
+# Token usage (available when using models that report it):
+# tokens_in  = "usage.promptTokens"
+# tokens_out = "usage.completionTokens"
+
+[parser.role_map]
+# Continue uses standard role names but may also emit "thinking" for CoT output.
+"user"      = "user"
+"assistant" = "assistant"
+"system"    = "system"
+"thinking"  = "assistant"   # Chain-of-thought turns, treat as assistant
+
+[parser.exclude_types]
+# Skip non-conversational events that Continue may write to the session file.
+field  = "type"
+values = ["context-item", "file-context", "index-progress"]
+
+[parser.static]
+source_agent = "continue-dev"
+
+[parser.project]
+# Continue records the active workspace in each event.  If the "workspace" field
+# is present, use it; otherwise fall back to the parent directory.
+method = "parent_dir"
+
+[parser.model]
+# Continue records the model name in each turn.
+source = "event"
+field  = "model"
+
+[parser.file_paths]
+# Extract referenced file paths from the content of each message.
+content_regex = true

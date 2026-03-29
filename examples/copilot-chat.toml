@@ -1,0 +1,79 @@
+# GitHub Copilot Chat plugin for AgentScribe
+#
+# GitHub Copilot Chat (VS Code extension ≥ 1.156 / Copilot Chat ≥ 0.20) stores
+# conversation history as JSONL files under the VS Code globalStorage directory.
+# Each file corresponds to one chat session.
+#
+# Install:
+#   cp examples/copilot-chat.toml ~/.agentscribe/plugins/copilot-chat.toml
+#   agentscribe plugins validate ~/.agentscribe/plugins/copilot-chat.toml
+#   agentscribe scrape --plugin copilot-chat --dry-run
+#
+# Troubleshooting:
+#   If no files are found, locate your VS Code storage root:
+#     Linux:   ~/.config/Code/User/globalStorage/
+#     macOS:   ~/Library/Application Support/Code/User/globalStorage/
+#     Windows: %APPDATA%\Code\User\globalStorage\
+#   Then look for a directory whose name starts with "github.copilot-chat".
+#   Update the paths below to match your system.
+
+[plugin]
+name = "copilot-chat"
+version = "1.0"
+
+[source]
+paths = [
+    # Linux / WSL
+    "~/.config/Code/User/globalStorage/github.copilot-chat/conversations/*.jsonl",
+    # macOS
+    "~/Library/Application Support/Code/User/globalStorage/github.copilot-chat/conversations/*.jsonl",
+    # VS Code Insiders (Linux)
+    "~/.config/Code - Insiders/User/globalStorage/github.copilot-chat/conversations/*.jsonl",
+    # VS Code Insiders (macOS)
+    "~/Library/Application Support/Code - Insiders/User/globalStorage/github.copilot-chat/conversations/*.jsonl",
+]
+exclude = []
+format = "jsonl"
+
+[source.session_detection]
+# Each file is one Copilot Chat conversation (session).
+method = "one-file-per-session"
+session_id_from = "filename"
+
+[parser]
+# Copilot Chat JSONL line format (representative; field names may vary by version):
+# {"timestamp":"2026-03-16T12:00:00.000Z","role":"user","content":"Fix the login bug","requestId":"req_abc"}
+timestamp = "timestamp"
+role      = "role"
+content   = "content"
+
+# Token usage (present in newer versions):
+# tokens_in  = "usage.promptTokens"
+# tokens_out = "usage.completionTokens"
+
+[parser.role_map]
+# Copilot Chat uses standard OpenAI-style role names but may also emit "system".
+"user"      = "user"
+"assistant" = "assistant"
+"system"    = "system"
+# Some versions use "copilot" for the assistant role:
+"copilot"   = "assistant"
+
+[parser.exclude_types]
+# Skip internal Copilot events that are not conversational turns.
+field  = "type"
+values = ["context", "file-context", "progress", "telemetry"]
+
+[parser.static]
+source_agent = "copilot-chat"
+
+[parser.project]
+# Copilot Chat sessions are often associated with the active VS Code workspace.
+# If the JSONL contains a "workspaceFolder" field, use that; otherwise fall back
+# to the parent directory of the log file.
+method = "parent_dir"
+
+[parser.model]
+# Copilot Chat exposes the model in newer conversation logs.
+source = "event"
+field  = "model"

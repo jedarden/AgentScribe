@@ -554,3 +554,45 @@ agentscribe plugins list
 | Timestamps not parsing | Non-standard format | AgentScribe auto-detects ISO 8601 and Unix epoch (seconds and milliseconds). For other formats, file an issue. |
 | Missing content | Wrong field path | Check dot-notation in `[parser]`. Use `--dry-run --output-events` to see what's being extracted. |
 | SQLite locked | Agent is actively writing | AgentScribe opens SQLite in read-only mode (`?mode=ro`). If still locked, the agent may have an exclusive lock — scrape when the agent is idle. |
+
+---
+
+## Community Contribution Workflow
+
+If you write a plugin for an agent that AgentScribe doesn't cover yet, you can share it with the community by submitting it to the `examples/` directory. This is separate from the bundled plugins (which require deeper integration testing); contributed examples are lower-friction and easier to accept.
+
+### Where to put it
+
+Community plugins live in `examples/` at the repository root (not in `plugins/`, which is reserved for bundled plugins). See `examples/README.md` for the current list of contributed plugins.
+
+### Contribution checklist
+
+Before opening a pull request, confirm:
+
+- [ ] Plugin validates cleanly: `agentscribe plugins validate examples/<agent-name>.toml`
+- [ ] Dry-run shows correct session and event counts against real log files
+- [ ] `name` is lowercase, alphanumeric + hyphens (e.g., `my-agent`)
+- [ ] `version` is `"1.0"` for a new plugin
+- [ ] `paths` covers all common platform locations (Linux, macOS, Windows if applicable)
+- [ ] Non-obvious field choices or version dependencies are explained in comments
+- [ ] No hardcoded absolute paths specific to your machine
+- [ ] A row has been added to the table in `examples/README.md`
+
+### Versioning your plugin
+
+Increment `version` in the `[plugin]` section whenever you change field mappings or source paths. AgentScribe uses this value to detect when previously-scraped files need to be re-processed.
+
+```toml
+[plugin]
+name    = "my-agent"
+version = "1.1"   # bumped: added token_in / token_out mappings
+```
+
+### Submitting
+
+1. Fork the repository.
+2. Add your plugin as `examples/<agent-name>.toml`.
+3. Add a row to `examples/README.md`.
+4. Open a pull request with a brief description of the agent, how you tested the plugin, and which platform(s) you verified path expansion on.
+
+Maintainers will review field mapping quality, path coverage across platforms, and session detection accuracy before merging.
