@@ -59,6 +59,25 @@ impl Default for ShellHookConfig {
     }
 }
 
+/// Daemon configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DaemonConfig {
+    /// Enable the MCP server when the daemon starts (default: false)
+    #[serde(default)]
+    pub mcp_enabled: bool,
+    /// Unix socket path for the MCP server (default: ~/.agentscribe/mcp.sock)
+    pub mcp_socket_path: Option<String>,
+}
+
+impl Default for DaemonConfig {
+    fn default() -> Self {
+        DaemonConfig {
+            mcp_enabled: false,
+            mcp_socket_path: None,
+        }
+    }
+}
+
 /// Global configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
@@ -71,6 +90,8 @@ pub struct Config {
     pub cost: CostConfig,
     #[serde(default)]
     pub shell_hook: ShellHookConfig,
+    #[serde(default)]
+    pub daemon: DaemonConfig,
 }
 
 /// General configuration
@@ -134,11 +155,22 @@ impl Default for Config {
             outcome: OutcomeConfig::default(),
             cost: CostConfig::default(),
             shell_hook: ShellHookConfig::default(),
+            daemon: DaemonConfig::default(),
         }
     }
 }
 
 impl Config {
+    /// Get the MCP socket path (defaults to <data_dir>/mcp.sock)
+    pub fn mcp_socket_path(&self) -> Result<PathBuf> {
+        if let Some(ref path) = self.daemon.mcp_socket_path {
+            let expanded = shellexpand::tilde(path);
+            Ok(PathBuf::from(expanded.as_ref()))
+        } else {
+            Ok(self.data_dir()?.join("mcp.sock"))
+        }
+    }
+
     /// Get the data directory path
     pub fn data_dir(&self) -> Result<PathBuf> {
         if let Some(ref dir) = self.general.data_dir {

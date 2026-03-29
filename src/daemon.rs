@@ -1,22 +1,30 @@
 //! Daemon lifecycle management
 //!
 //! Provides start/stop/status/run/logs commands for the AgentScribe daemon.
-//! The daemon runs a Tokio event loop, writes a PID file for lifecycle tracking,
-//! and logs to a file at ~/.agentscribe/daemon.log.
+//! The daemon runs a Tokio event loop, uses inotify (via the `notify` crate) to
+//! watch all plugin source paths for changes, debounces rapid writes, and triggers
+//! incremental scraping automatically.
 
+use crate::config::Config as AppConfig;
 use crate::error::{AgentScribeError, Result};
+use crate::plugin::Plugin;
+use crate::scraper::{git_auto_commit as scraper_git_commit, Scraper};
 use chrono::{DateTime, Utc};
+use glob::Pattern as GlobPattern;
+use notify::{Config as NotifyConfig, RecommendedWatcher, RecursiveMode, Watcher};
 use serde::{Deserialize, Serialize};
+use shellexpand;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::Write;
 use std::os::fd::AsRawFd;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-/// Default poll interval for the daemon idle loop (seconds)
-const POLL_INTERVAL_SECS: u64 = 30;
+/// How often to re-discover new files and watch newly created directories (seconds).
+const REDISCOVERY_INTERVAL_SECS: u64 = 60;
 
 /// PID file name
 const PID_FILE: &str = "agentscribe.pid";
@@ -132,7 +140,7 @@ pub fn start(data_dir: &Path) -> Result<()> {
     }
 
     // Now in the daemon grandchild — run the event loop
-    run_event_loop(&log_file, &pid_file, &state_file);
+    run_event_loop(&log_file, &pid_file, &state_file, data_dir);
 
     // Unreachable in normal flow
     std::process::exit(0)
@@ -170,7 +178,7 @@ pub fn run(data_dir: &Path) -> Result<()> {
         std::process::exit(0);
     });
 
-    run_event_loop(&log_file, &pid_file, &state_file);
+    run_event_loop(&log_file, &pid_file, &state_file, data_dir);
 
     Ok(())
 }
@@ -329,7 +337,7 @@ pub fn logs(data_dir: &Path, follow: bool, lines: usize) -> Result<()> {
 // ── Internal: event loop ──────────────────────────────────────────────
 
 /// The main daemon event loop. Runs a Tokio runtime and idles on a timer.
-fn run_event_loop(log_file: &Path, pid_file: &Path, state_file: &Path) {
+fn run_event_loop(log_file: &Path, pid_file: &Path, state_file: &Path, data_dir: &Path) {
     // Use current_thread runtime — safe after fork (no thread pool)
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -339,6 +347,7 @@ fn run_event_loop(log_file: &Path, pid_file: &Path, state_file: &Path) {
     let log_path = log_file.to_path_buf();
     let pid_path = pid_file.to_path_buf();
     let state_path = state_file.to_path_buf();
+    let data_path = data_dir.to_path_buf();
 
     let _guard = rt.enter();
 
@@ -353,9 +362,6 @@ fn run_event_loop(log_file: &Path, pid_file: &Path, state_file: &Path) {
     let _ = save_state(&state_path, &state);
 
     tracing::info!("AgentScribe daemon started (PID {})", std::process::id());
-    tracing::info!("Poll interval: {}s", POLL_INTERVAL_SECS);
-
-    let start = Instant::now();
 
     // Register signal handlers for clean shutdown
     let pid_path_clone = pid_path.clone();
@@ -365,19 +371,350 @@ fn run_event_loop(log_file: &Path, pid_file: &Path, state_file: &Path) {
         std::process::exit(0);
     });
 
-    // Block on the async event loop
-    rt.block_on(async move {
-        let mut interval = tokio::time::interval(Duration::from_secs(POLL_INTERVAL_SECS));
-        loop {
-            interval.tick().await;
-            if shutdown_requested() {
-                tracing::info!("Shutdown requested, exiting event loop");
-                break;
+    // Load config for debounce and git settings
+    let config_path = data_path.join("config.toml");
+    let app_config = AppConfig::load(&config_path).unwrap_or_default();
+    let debounce_secs = app_config.scrape.debounce_seconds;
+    let git_auto_commit = app_config.scrape.git_auto_commit;
+
+    tracing::info!(
+        debounce_secs,
+        git_auto_commit,
+        rediscovery_interval_secs = REDISCOVERY_INTERVAL_SECS,
+        "daemon configuration"
+    );
+
+    // Block on the async file-watch loop
+    rt.block_on(run_watch_loop(
+        data_path,
+        state_path,
+        state,
+        debounce_secs,
+        git_auto_commit,
+    ));
+}
+
+// ── Internal: file watcher helpers ────────────────────────────────────
+
+/// Extract the deepest directory that contains no glob wildcards from a source
+/// path pattern, e.g. `~/.claude/projects/*/*.jsonl` → `~/.claude/projects`.
+fn base_dir_from_glob_pattern(pattern: &str) -> Option<PathBuf> {
+    let expanded = shellexpand::tilde(pattern).into_owned();
+    let wildcard_pos = expanded
+        .find(|c: char| c == '*' || c == '?' || c == '[')
+        .unwrap_or(expanded.len());
+    let non_glob = &expanded[..wildcard_pos];
+    let base = Path::new(non_glob);
+    let dir = if non_glob.ends_with('/') || non_glob.ends_with('\\') {
+        base.to_path_buf()
+    } else {
+        base.parent()?.to_path_buf()
+    };
+    if dir.as_os_str().is_empty() {
+        None
+    } else {
+        Some(dir)
+    }
+}
+
+/// Return true if `path` matches any of `plugin`'s source glob patterns.
+fn file_matches_plugin(path: &Path, plugin: &Plugin) -> bool {
+    let path_str = match path.to_str() {
+        Some(s) => s,
+        None => return false,
+    };
+    for pat_str in &plugin.source.paths {
+        let expanded = shellexpand::full(pat_str)
+            .map(|c| c.into_owned())
+            .unwrap_or_else(|_| pat_str.clone());
+        if let Ok(pattern) = GlobPattern::new(&expanded) {
+            if pattern.matches(path_str) {
+                return true;
             }
-            let _elapsed = start.elapsed();
-            tracing::debug!("daemon heartbeat (elapsed: {:?})", _elapsed);
         }
-    });
+    }
+    false
+}
+
+// ── Internal: watch loop ───────────────────────────────────────────────
+
+/// State maintained across iterations of the file-watch loop.
+struct WatchLoop {
+    /// The notify watcher (kept alive for its entire lifetime).
+    _watcher: RecommendedWatcher,
+    /// Receives raw notify events from the background inotify thread.
+    event_rx: tokio::sync::mpsc::UnboundedReceiver<notify::Event>,
+    /// Files with a pending scrape: path → (plugin_name, time_of_last_change).
+    pending: HashMap<PathBuf, (String, Instant)>,
+    /// All loaded plugin definitions (for pattern matching).
+    plugins: Vec<Plugin>,
+    /// Directories currently being watched.
+    watched_dirs: HashSet<PathBuf>,
+    /// When we last refreshed watched directories.
+    last_discovery: Instant,
+}
+
+impl WatchLoop {
+    /// Try to add `dir` to the inotify watch set, log on failure.
+    fn try_watch(&mut self, dir: &Path) {
+        if self.watched_dirs.contains(dir) || !dir.exists() {
+            return;
+        }
+        match self._watcher.watch(dir, RecursiveMode::Recursive) {
+            Ok(()) => {
+                tracing::info!(path = %dir.display(), "watching directory");
+                self.watched_dirs.insert(dir.to_path_buf());
+            }
+            Err(e) => {
+                tracing::warn!(path = %dir.display(), error = %e, "cannot watch directory");
+            }
+        }
+    }
+
+    /// Refresh watches for all base directories derived from plugin source paths.
+    fn refresh_watches(&mut self) {
+        let base_dirs: Vec<PathBuf> = self
+            .plugins
+            .iter()
+            .flat_map(|p| p.source.paths.iter())
+            .filter_map(|pat| base_dir_from_glob_pattern(pat))
+            .collect();
+
+        for dir in base_dirs {
+            self.try_watch(&dir);
+        }
+
+        self.last_discovery = Instant::now();
+        tracing::debug!(watched = self.watched_dirs.len(), "watch refresh complete");
+    }
+
+    /// Process a raw notify event, queueing files that match a plugin pattern.
+    fn handle_event(&mut self, event: notify::Event) {
+        use notify::EventKind;
+
+        let relevant = matches!(
+            event.kind,
+            EventKind::Create(_)
+                | EventKind::Modify(notify::event::ModifyKind::Data(_))
+                | EventKind::Modify(notify::event::ModifyKind::Any)
+        );
+        if !relevant {
+            return;
+        }
+
+        for path in event.paths {
+            if !path.is_file() {
+                continue;
+            }
+            for plugin in &self.plugins {
+                if file_matches_plugin(&path, plugin) {
+                    let name = plugin.plugin.name.clone();
+                    tracing::debug!(path = %path.display(), plugin = %name, "file change queued");
+                    self.pending.insert(path.clone(), (name, Instant::now()));
+                    break;
+                }
+            }
+        }
+    }
+
+    /// Drain all files whose last change time is at least `debounce` seconds ago.
+    fn drain_ready(&mut self, debounce: Duration) -> Vec<(PathBuf, String)> {
+        let ready: Vec<PathBuf> = self
+            .pending
+            .iter()
+            .filter(|(_, (_, t))| t.elapsed() >= debounce)
+            .map(|(p, _)| p.clone())
+            .collect();
+
+        ready
+            .into_iter()
+            .map(|path| {
+                let (plugin_name, _) = self.pending.remove(&path).unwrap();
+                (path, plugin_name)
+            })
+            .collect()
+    }
+}
+
+/// Async watch-and-scrape loop.  Runs until `shutdown_requested()` is set.
+async fn run_watch_loop(
+    data_dir: PathBuf,
+    state_path: PathBuf,
+    mut daemon_state: PersistedState,
+    debounce_secs: u64,
+    git_auto_commit: bool,
+) {
+    // ── load plugins for path-pattern matching ────────────────────────
+    let plugins: Vec<Plugin> = {
+        let mut scraper = match Scraper::new(data_dir.clone()) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::error!("Failed to create scraper: {}", e);
+                return;
+            }
+        };
+        if let Err(e) = scraper.load_plugins() {
+            tracing::warn!("Failed to load plugins: {}", e);
+        }
+        scraper.plugin_manager().all().values().cloned().collect()
+    };
+
+    if plugins.is_empty() {
+        tracing::warn!("No plugins loaded — daemon idling without file watching");
+    } else {
+        tracing::info!(count = plugins.len(), "plugins loaded for file watching");
+    }
+
+    // ── set up notify channel ─────────────────────────────────────────
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<notify::Event>();
+
+    let watcher = match RecommendedWatcher::new(
+        move |res: notify::Result<notify::Event>| {
+            if let Ok(event) = res {
+                let _ = tx.send(event);
+            }
+        },
+        NotifyConfig::default(),
+    ) {
+        Ok(w) => w,
+        Err(e) => {
+            tracing::error!("Failed to create file watcher: {}", e);
+            return;
+        }
+    };
+
+    let mut wl = WatchLoop {
+        _watcher: watcher,
+        event_rx: rx,
+        pending: HashMap::new(),
+        plugins,
+        watched_dirs: HashSet::new(),
+        // Trigger immediate discovery on first tick
+        last_discovery: Instant::now()
+            .checked_sub(Duration::from_secs(REDISCOVERY_INTERVAL_SECS + 1))
+            .unwrap_or_else(Instant::now),
+    };
+
+    let debounce = Duration::from_secs(debounce_secs);
+    let rediscovery = Duration::from_secs(REDISCOVERY_INTERVAL_SECS);
+
+    // ── main loop ─────────────────────────────────────────────────────
+    loop {
+        if shutdown_requested() {
+            tracing::info!("Shutdown requested, exiting watch loop");
+            break;
+        }
+
+        // Refresh watched dirs periodically (picks up newly created directories)
+        if wl.last_discovery.elapsed() >= rediscovery {
+            wl.refresh_watches();
+        }
+
+        // Wait up to 1 s for an inotify event or let the debounce timer tick
+        tokio::select! {
+            Some(event) = wl.event_rx.recv() => {
+                wl.handle_event(event);
+            }
+            _ = tokio::time::sleep(Duration::from_secs(1)) => {
+                // Debounce check on each tick
+            }
+        }
+
+        // Collect files whose debounce window has expired
+        let ready = wl.drain_ready(debounce);
+        if ready.is_empty() {
+            continue;
+        }
+
+        tracing::info!(
+            files = ready.len(),
+            debounce_secs,
+            "debounce expired, scraping changed files"
+        );
+
+        // ── scrape one file at a time (I/O-bound, not CPU-bound) ──────
+        let mut scraper = match Scraper::new(data_dir.clone()) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::error!("Failed to create scraper: {}", e);
+                continue;
+            }
+        };
+        if let Err(e) = scraper.load_plugins() {
+            tracing::warn!("Failed to load plugins for scrape: {}", e);
+        }
+
+        let mut combined = crate::scraper::ScrapeResult {
+            sessions_scraped: 0,
+            sessions_indexed: 0,
+            events_written: 0,
+            errors: Vec::new(),
+            files_processed: 0,
+            files_skipped: 0,
+            agent_types: Vec::new(),
+        };
+
+        for (file_path, plugin_name) in &ready {
+            // Re-fetch the plugin from the freshly loaded scraper
+            if let Some(plugin) = scraper.plugin_manager().get(plugin_name).cloned() {
+                tracing::info!(file = %file_path.display(), plugin = %plugin_name, "scraping file");
+                match scraper.scrape_file(file_path, &plugin) {
+                    Ok(result) => {
+                        tracing::info!(
+                            file = %file_path.display(),
+                            sessions = result.sessions_scraped,
+                            indexed = result.sessions_indexed,
+                            "scrape complete"
+                        );
+                        combined.sessions_scraped += result.sessions_scraped;
+                        combined.sessions_indexed += result.sessions_indexed;
+                        combined.events_written += result.events_written;
+                        combined.files_processed += result.files_processed;
+                        combined.errors.extend(result.errors);
+                        for agent in result.agent_types {
+                            if !combined.agent_types.contains(&agent) {
+                                combined.agent_types.push(agent);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(file = %file_path.display(), error = %e, "scrape error");
+                    }
+                }
+            } else {
+                tracing::warn!(plugin = %plugin_name, "plugin not found in scraper");
+            }
+        }
+
+        // Persist incremental scrape state
+        if let Err(e) = scraper.state_manager().save() {
+            tracing::warn!(error = %e, "failed to save scrape state");
+        }
+
+        // Optionally commit newly scraped sessions to git
+        if git_auto_commit && combined.sessions_scraped > 0 {
+            match scraper_git_commit(&data_dir, &combined) {
+                Ok(true) => tracing::info!(sessions = combined.sessions_scraped, "git auto-committed"),
+                Ok(false) => {}
+                Err(e) => tracing::warn!(error = %e, "git auto-commit failed"),
+            }
+        }
+
+        // Drop the scraper to free Tantivy heap memory between scrapes
+        drop(scraper);
+
+        // Update persisted daemon state
+        daemon_state.sessions_indexed += combined.sessions_scraped as u64;
+        daemon_state.last_scrape = Some(Utc::now());
+        if let Err(e) = save_state(&state_path, &daemon_state) {
+            tracing::warn!(error = %e, "failed to save daemon state");
+        }
+
+        tracing::info!(
+            total_sessions_indexed = daemon_state.sessions_indexed,
+            "daemon state updated"
+        );
+    }
 }
 
 /// Set up a file-based tracing subscriber that writes to the given path.

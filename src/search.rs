@@ -53,6 +53,9 @@ pub struct SearchOutput {
     pub search_time_ms: u64,
     pub sessions_searched: u64,
     pub results: Vec<SearchResult>,
+    /// True when exact search returned 0 results and fuzzy fallback was used automatically.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub fuzzy_fallback: bool,
 }
 
 /// Search options
@@ -139,9 +142,49 @@ pub fn execute_search(data_dir: &Path, opts: &SearchOptions) -> Result<SearchOut
     };
 
     // Execute search
-    let top_docs: Vec<(f32, DocAddress)> = searcher
+    let mut top_docs: Vec<(f32, DocAddress)> = searcher
         .search(&query, &TopDocs::with_limit(fetch_limit))
         .map_err(|e| AgentScribeError::DataDir(format!("Search failed: {}", e)))?;
+
+    // Automatic fuzzy fallback: if a plain text query returned nothing, retry with fuzzy.
+    // Only triggers for plain queries (not error/code/like searches) and when --fuzzy was
+    // not already set (to avoid double-fuzzing an explicit fuzzy request).
+    let mut used_fuzzy_fallback = false;
+    if top_docs.is_empty() && opts.query.is_some() && !opts.fuzzy
+        && opts.error_pattern.is_none() && opts.code_query.is_none() && opts.like_session.is_none()
+    {
+        let fuzzy_opts = SearchOptions {
+            fuzzy: true,
+            fuzzy_distance: opts.fuzzy_distance,
+            query: opts.query.clone(),
+            error_pattern: opts.error_pattern.clone(),
+            code_query: opts.code_query.clone(),
+            code_lang: opts.code_lang.clone(),
+            solution_only: opts.solution_only,
+            like_session: opts.like_session.clone(),
+            session_id: opts.session_id.clone(),
+            agent: opts.agent.clone(),
+            project: opts.project.clone(),
+            since: opts.since,
+            before: opts.before,
+            tag: opts.tag.clone(),
+            outcome: opts.outcome.clone(),
+            doc_type_filter: opts.doc_type_filter.clone(),
+            model: opts.model.clone(),
+            max_results: opts.max_results,
+            snippet_length: opts.snippet_length,
+            token_budget: opts.token_budget,
+            offset: opts.offset,
+            sort: opts.sort,
+        };
+        let fallback_query = build_query(&searcher, &fields, &fuzzy_opts, &schema)?;
+        top_docs = searcher
+            .search(&fallback_query, &TopDocs::with_limit(fetch_limit))
+            .map_err(|e| AgentScribeError::DataDir(format!("Fuzzy fallback search failed: {}", e)))?;
+        if !top_docs.is_empty() {
+            used_fuzzy_fallback = true;
+        }
+    }
 
     // Apply offset
     let top_docs: Vec<_> = top_docs.into_iter().skip(opts.offset).collect();
@@ -189,6 +232,7 @@ pub fn execute_search(data_dir: &Path, opts: &SearchOptions) -> Result<SearchOut
         search_time_ms: elapsed.as_millis() as u64,
         sessions_searched: total_docs,
         results,
+        fuzzy_fallback: used_fuzzy_fallback,
     })
 }
 
@@ -802,6 +846,7 @@ fn lookup_session(
         search_time_ms: elapsed.as_millis() as u64,
         sessions_searched: total_docs,
         results,
+        fuzzy_fallback: false,
     })
 }
 
@@ -910,10 +955,12 @@ fn knapsack_pack(results: Vec<SearchResult>, token_budget: usize) -> Vec<SearchR
 pub fn format_human(output: &SearchOutput, _snippet_length: usize) -> String {
     let mut lines = Vec::new();
 
+    let fuzzy_note = if output.fuzzy_fallback { " [fuzzy fallback]" } else { "" };
     lines.push(format!(
-        "{} result(s) for \"{}\" (searched {} sessions in {}ms)",
+        "{} result(s) for \"{}\"{} (searched {} sessions in {}ms)",
         output.total_matches,
         output.query,
+        fuzzy_note,
         output.sessions_searched,
         output.search_time_ms
     ));
@@ -1195,6 +1242,7 @@ mod tests {
             search_time_ms: 1,
             sessions_searched: 100,
             results: vec![],
+            fuzzy_fallback: false,
         };
         let formatted = format_human(&output, 200);
         assert!(formatted.contains("0 result(s)"));
@@ -1222,6 +1270,7 @@ mod tests {
                 model: Some("claude-sonnet".to_string()),
                 token_count: 12, // ceil((31 snippet + 14 summary) / 4) = ceil(45/4) = 12
             }],
+            fuzzy_fallback: false,
         };
         let formatted = format_human(&output, 200);
         assert!(formatted.contains("[1] claude/abc123"));
@@ -2093,6 +2142,7 @@ mod tests {
                 model: Some("claude-sonnet".to_string()),
                 token_count: 12,
             }],
+            fuzzy_fallback: false,
         };
         let json = serde_json::to_string(&output).unwrap();
         assert!(json.contains("\"query\":\"test query\""));
