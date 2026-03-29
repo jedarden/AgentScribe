@@ -546,6 +546,97 @@ fn save_state(path: &Path, state: &PersistedState) -> std::io::Result<()> {
     fs::write(path, json)
 }
 
+// ── systemd service install/uninstall ─────────────────────────────────
+
+/// Name of the systemd user service unit file.
+const SERVICE_NAME: &str = "agentscribe.service";
+
+/// Install a systemd user service unit for the daemon.
+///
+/// Creates `~/.config/systemd/user/agentscribe.service` pointing to the
+/// current executable with `daemon run`, then prints instructions to
+/// enable and start it.
+pub fn install_service() -> Result<()> {
+    let exe = std::env::current_exe()
+        .map_err(|e| AgentScribeError::Config(format!("Cannot determine executable path: {}", e)))?;
+    let exe_str = exe.to_string_lossy();
+
+    let service_dir = service_unit_dir()?;
+    fs::create_dir_all(&service_dir)?;
+
+    let unit_path = service_dir.join(SERVICE_NAME);
+
+    let unit_content = format!(
+        "[Unit]\n\
+         Description=AgentScribe daemon\n\
+         After=default.target\n\
+         \n\
+         [Service]\n\
+         ExecStart={exe} daemon run\n\
+         Restart=on-failure\n\
+         RestartSec=5\n\
+         \n\
+         [Install]\n\
+         WantedBy=default.target\n",
+        exe = exe_str,
+    );
+
+    if unit_path.exists() {
+        eprintln!(
+            "Warning: {} already exists — overwriting.",
+            unit_path.display()
+        );
+    }
+
+    fs::write(&unit_path, &unit_content)?;
+    println!("Installed: {}", unit_path.display());
+    println!();
+    println!("To enable and start the service:");
+    println!("  systemctl --user daemon-reload");
+    println!("  systemctl --user enable --now agentscribe");
+    println!();
+    println!("To check status:");
+    println!("  systemctl --user status agentscribe");
+
+    Ok(())
+}
+
+/// Remove the systemd user service unit for the daemon.
+///
+/// Deletes `~/.config/systemd/user/agentscribe.service`.
+pub fn uninstall_service() -> Result<()> {
+    let unit_path = service_unit_dir()?.join(SERVICE_NAME);
+
+    if !unit_path.exists() {
+        return Err(AgentScribeError::Config(format!(
+            "Service unit not found: {}",
+            unit_path.display()
+        )));
+    }
+
+    fs::remove_file(&unit_path)?;
+    println!("Removed: {}", unit_path.display());
+    println!();
+    println!("If the service was enabled, run:");
+    println!("  systemctl --user disable agentscribe");
+    println!("  systemctl --user daemon-reload");
+
+    Ok(())
+}
+
+/// Return the directory where the user systemd unit file should live.
+fn service_unit_dir() -> Result<std::path::PathBuf> {
+    // Respect $XDG_CONFIG_HOME if set, otherwise fall back to ~/.config
+    let config_home = std::env::var_os("XDG_CONFIG_HOME")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| {
+            directories::BaseDirs::new()
+                .map(|d| d.home_dir().join(".config"))
+                .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
+        });
+    Ok(config_home.join("systemd").join("user"))
+}
+
 /// Format bytes as human-readable.
 pub fn format_bytes(bytes: u64) -> String {
     const KB: u64 = 1024;

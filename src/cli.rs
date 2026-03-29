@@ -324,6 +324,10 @@ enum DaemonAction {
         #[arg(short = 'n', long, default_value = "20")]
         lines: usize,
     },
+    /// Install systemd user service unit (~/.config/systemd/user/agentscribe.service)
+    Install,
+    /// Remove systemd user service unit
+    Uninstall,
 }
 
 /// Table row for plugin list output
@@ -396,10 +400,17 @@ pub fn run() -> Result<()> {
 
 /// Run daemon commands
 fn run_daemon(action: DaemonAction) -> Result<()> {
+    // install/uninstall don't need the data directory to exist
+    match action {
+        DaemonAction::Install => return crate::daemon::install_service(),
+        DaemonAction::Uninstall => return crate::daemon::uninstall_service(),
+        _ => {}
+    }
+
     let config = load_config()?;
     let data_dir = config.data_dir()?;
 
-    // Ensure data directory exists for all daemon commands
+    // Ensure data directory exists for all other daemon commands
     if !data_dir.exists() {
         eprintln!("AgentScribe not initialized. Run 'agentscribe config init' to set up.");
         std::process::exit(1);
@@ -428,6 +439,8 @@ fn run_daemon(action: DaemonAction) -> Result<()> {
         DaemonAction::Logs { follow, lines } => {
             crate::daemon::logs(&data_dir, follow, lines)
         }
+        // Already handled above
+        DaemonAction::Install | DaemonAction::Uninstall => unreachable!(),
     }
 }
 
