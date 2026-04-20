@@ -67,6 +67,28 @@ content   = "content"        # Message text
 # tokens_in  = "usage.input_tokens"
 # tokens_out = "usage.output_tokens"
 
+# ── SQLite format example (alternative to jsonl) ────────────────────────────────
+#
+# If format = "sqlite", replace the [parser] section above with:
+#
+# [parser]
+# # SQL query to extract conversation data. AgentScribe opens databases read-only.
+# query = "SELECT key, value FROM conversations ORDER BY rowid ASC"
+#
+# # For key-value stores: only process rows whose key matches this pattern.
+# key_filter = "^conversation:"
+#
+# # Extract session ID from key using regex (capture group 1 becomes session_id).
+# key_session_id_regex = "^conversation:([^:]+):"
+#
+# # JSONPath into the value blob to reach the message array.
+# content_path = "messages"
+#
+# # Field paths within each message object.
+# role      = "role"
+# content   = "text"
+# timestamp = "createdAt"
+
 # ── Role translation (optional) ───────────────────────────────────────────────
 
 # If the agent uses non-standard role names, map them here.

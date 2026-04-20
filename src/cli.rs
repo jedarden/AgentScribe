@@ -945,10 +945,10 @@ fn run_status(json: bool, plugin_filter: Option<String>) -> Result<()> {
         }
         total_events += plugin_events;
 
-        // Get source paths from plugin config
-        let source_paths = scraper.plugin_manager()
+        // Get source paths and truncation_limit from plugin config
+        let (source_paths, truncation_limit) = scraper.plugin_manager()
             .get(plugin_name)
-            .map(|p| p.source.paths.clone())
+            .map(|p| (p.source.paths.clone(), p.source.truncation_limit))
             .unwrap_or_default();
 
         // Find last scraped time and byte totals from scrape state for this plugin
@@ -975,6 +975,7 @@ fn run_status(json: bool, plugin_filter: Option<String>) -> Result<()> {
             source_paths,
             source_files: plugin_files.len(),
             bytes: plugin_bytes,
+            truncation_limit,
         });
     }
 
@@ -1060,6 +1061,17 @@ fn run_status(json: bool, plugin_filter: Option<String>) -> Result<()> {
             );
         }
 
+        // Windsurf truncation warning
+        for ps in &plugin_statuses {
+            if ps.name == "windsurf" && ps.truncation_limit.is_some() {
+                println!("\n  WARNING: Windsurf retains at most {} conversations.",
+                         ps.truncation_limit.unwrap());
+                println!("  Old conversations are silently overwritten. Run 'agentscribe scrape'");
+                println!("  frequently (e.g., via 'agentscribe daemon start') to avoid data loss.");
+                break;
+            }
+        }
+
         // Index
         if index_stats.exists {
             println!(
@@ -1091,6 +1103,7 @@ struct PluginStatus {
     source_paths: Vec<String>,
     source_files: usize,
     bytes: u64,
+    truncation_limit: Option<u32>,
 }
 
 /// Daemon status info

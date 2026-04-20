@@ -270,6 +270,8 @@ impl Config {
             ("aider", include_str!("../plugins/aider.toml")),
             ("codex", include_str!("../plugins/codex.toml")),
             ("opencode", include_str!("../plugins/opencode.toml")),
+            ("cursor", include_str!("../plugins/cursor.toml")),
+            ("windsurf", include_str!("../plugins/windsurf.toml")),
         ]
     }
 }

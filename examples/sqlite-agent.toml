@@ -1,0 +1,96 @@
+# SQLite-based Agent Plugin Example
+#
+# This example demonstrates how to create a plugin for agents that store
+# conversation history in SQLite databases (similar to Cursor/Windsurf state.vscdb).
+#
+# Install:
+#   cp examples/sqlite-agent.toml ~/.agentscribe/plugins/sqlite-agent.toml
+#   agentscribe plugins validate ~/.agentscribe/plugins/sqlite-agent.toml
+#   agentscribe scrape --plugin sqlite-agent --dry-run
+#
+# SQLite Format Notes:
+#   - AgentScribe opens databases in read-only mode (never modifies source)
+#   - Sets 8MB page cache limit to handle large databases (25GB+)
+#   - Streams rows one at a time (memory efficient)
+#   - Supports key-value stores with regex filtering and session ID extraction
+#
+# Common SQLite Patterns:
+#   1. Direct table: SELECT role, content, timestamp FROM messages
+#   2. Key-value store: SELECT key, value FROM kv_table (with key_filter)
+#   3. Nested JSON: use content_path to navigate to message array
+
+[plugin]
+name = "sqlite-agent"
+version = "1.0"
+
+[source]
+paths = [
+    "~/.my-agent/conversations.db",
+    "~/Library/Application Support/MyAgent/data.db",
+]
+exclude = []
+format = "sqlite"
+
+[source.session_detection]
+method = "one-file-per-session"
+session_id_from = "filename"
+
+[parser]
+# SQL query to extract conversation data.
+# For key-value stores (like Cursor/Windsurf), use SELECT key, value.
+# For direct table queries, select specific columns.
+query = "SELECT key, value FROM conversation_kv ORDER BY rowid ASC"
+
+# For key-value stores: only process rows whose key matches this regex pattern.
+# This filters out unrelated keys (settings, cache, etc.).
+key_filter = "^conv:"
+
+# Extract session ID from the key column using regex.
+# Capture group 1 becomes the AgentScribe session_id.
+# Example key: "conv:abc123:meta" → session_id = "abc123"
+key_session_id_regex = "^conv:([^:]+):"
+
+# JSONPath into the value blob to reach the message array.
+# Use "messages" for {"messages": [...]} structure.
+# Omit if the value is already a message array.
+content_path = "messages"
+
+# Field paths within each message object (dot notation supported).
+role      = "role"
+content   = "text"
+timestamp = "createdAt"
+
+# Optional: token counts
+# tokens_in  = "usage.inputTokens"
+# tokens_out = "usage.completionTokens"
+
+[parser.role_map]
+# Map agent-specific role names to canonical roles.
+"1"       = "user"
+"2"       = "assistant"
+"human"   = "user"
+"ai"      = "assistant"
+"Human"   = "user"
+"AI"      = "assistant"
+
+[parser.static]
+source_agent = "sqlite-agent"
+
+[parser.project]
+method = "parent_dir"
+
+[parser.model]
+source = "event"
+field  = "model"
+
+# ── Rolling-Window Truncation Warning ───────────────────────────────────────────
+#
+# Some agents (like Windsurf) retain a fixed number of conversations and
+# silently overwrite old ones. If this agent has that behavior, uncomment:
+#
+# [source]
+# truncation_limit = 20  # Max conversations before old ones are overwritten
+#
+# This tells AgentScribe to always do a full rescan rather than incremental,
+# so overwritten conversations don't leave stale session files. Scrape frequently
+# (e.g., via `agentscribe daemon`) to avoid losing data.

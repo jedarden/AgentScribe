@@ -9,6 +9,7 @@ This directory contains community-contributed and example plugins for coding age
 | `plugin_template.toml` | — | JSONL | Blank template with every field documented |
 | `copilot-chat.toml` | GitHub Copilot Chat | JSONL | VS Code extension (≥ 0.20) |
 | `continue-dev.toml` | Continue.dev | JSONL | Open-source AI code assistant |
+| `sqlite-agent.toml` | — | SQLite | Example plugin for SQLite-based agents (Cursor/Windsurf pattern) |
 
 The bundled plugins (Claude Code, Aider, OpenCode, Codex, Cursor, Windsurf) live in `plugins/` and are installed automatically by `agentscribe config init`.
 
