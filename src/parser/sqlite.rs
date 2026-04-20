@@ -579,4 +579,140 @@ mod tests {
 
         assert_eq!(mtime_before, mtime_after, "parser must not modify source DB");
     }
+
+    #[test]
+    fn test_key_session_id_regex_extracts_session_id() {
+        let tmp = NamedTempFile::new().unwrap();
+        let conn = Connection::open(tmp.path()).unwrap();
+        conn.execute_batch("CREATE TABLE cursorDiskKV (key TEXT, value TEXT);").unwrap();
+
+        // Insert multiple sessions using bubbleId pattern (like Cursor/Windsurf)
+        conn.execute(
+            "INSERT INTO cursorDiskKV VALUES (?1, ?2)",
+            rusqlite::params![
+                "bubbleId:composer-abc:001",
+                r#"[{"role":"user","text":"hello from abc"}]"#
+            ],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO cursorDiskKV VALUES (?1, ?2)",
+            rusqlite::params![
+                "bubbleId:composer-def:002",
+                r#"[{"role":"user","text":"hello from def"}]"#
+            ],
+        )
+        .unwrap();
+
+        let mut plugin = make_plugin("SELECT key, value FROM cursorDiskKV", None);
+        plugin.parser.key_filter = Some(r"^bubbleId:".to_string());
+        plugin.parser.key_session_id_regex = Some(r"^bubbleId:([^:]+):".to_string());
+
+        let parser = SqliteParser;
+        let sessions = parser.detect_sessions(tmp.path(), &plugin).unwrap();
+
+        assert_eq!(sessions.len(), 2);
+        assert_eq!(sessions[0].session_id, "composer-abc");
+        assert_eq!(sessions[1].session_id, "composer-def");
+    }
+
+    #[test]
+    fn test_key_session_id_regex_filters_non_matching_keys() {
+        let tmp = NamedTempFile::new().unwrap();
+        let conn = Connection::open(tmp.path()).unwrap();
+        conn.execute_batch("CREATE TABLE cursorDiskKV (key TEXT, value TEXT);").unwrap();
+
+        // Mix of bubbleId keys (should match) and other keys (should be filtered)
+        conn.execute(
+            "INSERT INTO cursorDiskKV VALUES (?1, ?2)",
+            rusqlite::params![
+                "bubbleId:session-1:001",
+                r#"[{"role":"user","text":"keep this"}]"#
+            ],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO cursorDiskKV VALUES (?1, ?2)",
+            rusqlite::params![
+                "composerData:session-1",
+                r#"{"title":"Session Metadata"}"#
+            ],
+        )
+        .unwrap();
+
+        let mut plugin = make_plugin("SELECT key, value FROM cursorDiskKV", None);
+        plugin.parser.key_filter = Some(r"^bubbleId:".to_string());
+        plugin.parser.key_session_id_regex = Some(r"^bubbleId:([^:]+):".to_string());
+
+        let parser = SqliteParser;
+        let sessions = parser.detect_sessions(tmp.path(), &plugin).unwrap();
+
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].session_id, "session-1");
+    }
+
+    #[test]
+    fn test_parse_cursor_disk_kv_pattern() {
+        let tmp = NamedTempFile::new().unwrap();
+        let conn = Connection::open(tmp.path()).unwrap();
+        conn.execute_batch("CREATE TABLE cursorDiskKV (key TEXT, value TEXT);").unwrap();
+
+        // Simulate Cursor/Windsurf bubbleId pattern
+        conn.execute(
+            "INSERT INTO cursorDiskKV VALUES (?1, ?2)",
+            rusqlite::params![
+                "bubbleId:cmp-123:bbl-1",
+                r#"[{"type":"1","text":"user message"},{"type":"2","text":"assistant message"}]"#
+            ],
+        )
+        .unwrap();
+
+        let mut plugin = make_plugin("SELECT key, value FROM cursorDiskKV", None);
+        plugin.parser.key_filter = Some(r"^bubbleId:".to_string());
+        plugin.parser.key_session_id_regex = Some(r"^bubbleId:([^:]+):".to_string());
+        plugin.parser.role = Some("type".to_string());
+        plugin.parser.content = Some("text".to_string());
+        // Add role mappings for integer type codes (like Cursor/Windsurf)
+        plugin.parser.role_map.insert("1".to_string(), "user".to_string());
+        plugin.parser.role_map.insert("2".to_string(), "assistant".to_string());
+
+        let parser = SqliteParser;
+        let events = parser.parse(tmp.path(), &plugin).unwrap();
+
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].session_id, "cmp-123");
+        assert_eq!(events[0].role, Role::User);
+        assert_eq!(events[0].content, "user message");
+        assert_eq!(events[1].role, Role::Assistant);
+    }
+
+    #[test]
+    fn test_detect_sessions_with_no_matching_keys_returns_placeholder() {
+        let tmp = NamedTempFile::new().unwrap();
+        let conn = Connection::open(tmp.path()).unwrap();
+        conn.execute_batch("CREATE TABLE cursorDiskKV (key TEXT, value TEXT);").unwrap();
+
+        // Insert keys that don't match the filter
+        conn.execute(
+            "INSERT INTO cursorDiskKV VALUES (?1, ?2)",
+            rusqlite::params![
+                "otherKey:data",
+                r#"[]"#
+            ],
+        )
+        .unwrap();
+
+        let mut plugin = make_plugin("SELECT key, value FROM cursorDiskKV", None);
+        plugin.parser.key_filter = Some(r"^bubbleId:".to_string());
+        plugin.parser.key_session_id_regex = Some(r"^bubbleId:([^:]+):".to_string());
+
+        let parser = SqliteParser;
+        let sessions = parser.detect_sessions(tmp.path(), &plugin).unwrap();
+
+        // Should return one placeholder session so the file is marked as processed
+        assert_eq!(sessions.len(), 1);
+        // The session_id comes from the filename stem (tmpXXXX), which varies
+        // Just verify it's not empty and not "unknown" (which would mean no file stem was found)
+        assert!(!sessions[0].session_id.is_empty());
+    }
 }

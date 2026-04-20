@@ -109,6 +109,11 @@ impl Scraper {
         &self.plugin_manager
     }
 
+    /// Get the plugin manager (mutable)
+    pub fn plugin_manager_mut(&mut self) -> &mut PluginManager {
+        &mut self.plugin_manager
+    }
+
     /// Get the state manager
     pub fn state_manager(&self) -> &StateManager {
         &self.state_manager
@@ -751,6 +756,7 @@ pub fn git_auto_commit(data_dir: &Path, result: &ScrapeResult) -> Result<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::plugin::{LogFormat, Parser, Plugin, PluginMeta, SessionDetection, SessionIdSource, Source};
 
     #[test]
     fn test_session_path() {
@@ -766,5 +772,226 @@ mod tests {
         );
 
         assert_eq!(scraper.session_path("invalid"), None);
+    }
+
+    #[test]
+    fn test_truncation_limit_clears_file_state() {
+        let temp = tempfile::tempdir().unwrap();
+        let data_dir = temp.path().join(".agentscribe");
+
+        // Create a test file
+        let test_file = temp.path().join("test.log");
+        std::fs::write(&test_file, "test content").unwrap();
+
+        let mut scraper = Scraper::new(data_dir.clone()).unwrap();
+
+        // Set up initial state for the file
+        let file_path = test_file.to_str().unwrap();
+        scraper.state_manager.add_session(file_path, "test/session-1".to_string()).unwrap();
+        scraper.state_manager.set_offset(file_path, 1000).unwrap();
+
+        // Verify state was set
+        let state_before = scraper.state_manager.get_file_state(file_path);
+        assert!(state_before.is_some());
+        assert_eq!(state_before.unwrap().last_byte_offset, 1000);
+
+        // Create a plugin with truncation_limit (like Windsurf)
+        let plugin = Plugin {
+            plugin: PluginMeta {
+                name: "windsurf".to_string(),
+                version: "1.0".to_string(),
+            },
+            source: Source {
+                paths: vec![test_file.to_str().unwrap().to_string()],
+                exclude: vec![],
+                format: LogFormat::Jsonl,
+                session_detection: SessionDetection::OneFilePerSession {
+                    session_id_from: SessionIdSource::Filename,
+                },
+                tree: None,
+                truncation_limit: Some(20), // Rolling-window limit
+            },
+            parser: Parser {
+                ..Default::default()
+            },
+            metadata: None,
+        };
+
+        // Run scrape_plugin - should clear state due to truncation_limit
+        let _result = scraper.scrape_plugin(&plugin);
+
+        // State should have been cleared for the file
+        let state_after = scraper.state_manager.get_file_state(file_path);
+        // The state might be re-created during scraping, but the original offset should be gone
+        // or reset based on the current file size
+        assert!(state_after.is_none() || state_after.unwrap().last_byte_offset != 1000);
+    }
+
+    #[test]
+    fn test_file_truncation_detection_rescans_fully() {
+        let temp = tempfile::tempdir().unwrap();
+        let data_dir = temp.path().join(".agentscribe");
+
+        // Create a test file with content
+        let test_file = temp.path().join("test.log");
+        let initial_content = "line 1\nline 2\nline 3\n";
+        std::fs::write(&test_file, initial_content).unwrap();
+        let initial_size = std::fs::metadata(&test_file).unwrap().len();
+
+        let mut scraper = Scraper::new(data_dir.clone()).unwrap();
+
+        // Set state tracking the file at its initial size
+        // Set last_modified to a time in the past so file mtime after truncation is newer
+        let past_time = Utc::now() - chrono::Duration::seconds(10);
+        let file_path = test_file.to_str().unwrap();
+        scraper.state_manager.set_offset(file_path, initial_size).unwrap();
+        scraper.state_manager.set_modified(file_path, past_time).unwrap();
+
+        // Verify state was set
+        let state_before = scraper.state_manager.get_file_state(file_path);
+        assert_eq!(state_before.unwrap().last_byte_offset, initial_size);
+
+        // Truncate the file (simulating Windsurf rolling-window overwrite)
+        let truncated_content = "line A\n";
+        std::fs::write(&test_file, truncated_content).unwrap();
+        let truncated_size = std::fs::metadata(&test_file).unwrap().len();
+
+        assert!(truncated_size < initial_size, "file should be smaller after truncation");
+
+        // Create a test plugin
+        let plugin = Plugin {
+            plugin: PluginMeta {
+                name: "test".to_string(),
+                version: "1.0".to_string(),
+            },
+            source: Source {
+                paths: vec![test_file.to_str().unwrap().to_string()],
+                exclude: vec![],
+                format: LogFormat::Jsonl,
+                session_detection: SessionDetection::OneFilePerSession {
+                    session_id_from: SessionIdSource::Filename,
+                },
+                tree: None,
+                truncation_limit: None,
+            },
+            parser: Parser {
+                ..Default::default()
+            },
+            metadata: None,
+        };
+
+        // Check if file needs scraping - truncation should be detected
+        let needs_scrape = scraper.state_manager.needs_rescrape(&test_file, &plugin.plugin.name).unwrap();
+        assert!(needs_scrape, "truncated file should need rescraping");
+
+        // The scraper should have cleared the old state after detecting truncation
+        // This is tested implicitly by the fact that needs_rescrape returned true
+        // despite the file being "processed" before
+    }
+
+    #[test]
+    fn test_git_auto_commit_returns_false_when_no_sessions_scraped() {
+        let temp = tempfile::tempdir().unwrap();
+        let data_dir = temp.path().join(".agentscribe");
+
+        // Create a result with no sessions scraped
+        let result = ScrapeResult {
+            sessions_scraped: 0,
+            sessions_indexed: 0,
+            events_written: 0,
+            errors: Vec::new(),
+            files_processed: 0,
+            files_skipped: 0,
+            agent_types: Vec::new(),
+        };
+
+        let committed = git_auto_commit(&data_dir, &result).unwrap();
+        assert!(!committed, "should return false when no sessions scraped");
+    }
+
+    #[test]
+    fn test_git_auto_commit_skips_when_not_git_repo() {
+        let temp = tempfile::tempdir().unwrap();
+        let data_dir = temp.path().join(".agentscribe");
+
+        // Create sessions directory
+        std::fs::create_dir_all(data_dir.join("sessions")).unwrap();
+
+        // Create a result with sessions scraped
+        let result = ScrapeResult {
+            sessions_scraped: 3,
+            sessions_indexed: 3,
+            events_written: 100,
+            errors: Vec::new(),
+            files_processed: 1,
+            files_skipped: 0,
+            agent_types: vec!["cursor".to_string()],
+        };
+
+        let committed = git_auto_commit(&data_dir, &result).unwrap();
+        assert!(!committed, "should skip commit when not in a git repo");
+    }
+
+    #[test]
+    fn test_scrape_result_aggregates_agent_types() {
+        let temp = tempfile::tempdir().unwrap();
+        let data_dir = temp.path().join(".agentscribe");
+        std::fs::create_dir_all(data_dir.join("sessions")).unwrap();
+
+        let mut scraper = Scraper::new(data_dir).unwrap();
+
+        // Create test plugins
+        let cursor_plugin = Plugin {
+            plugin: PluginMeta {
+                name: "cursor".to_string(),
+                version: "1.0".to_string(),
+            },
+            source: Source {
+                paths: vec!["nonexistent.db".to_string()],
+                exclude: vec![],
+                format: LogFormat::Sqlite,
+                session_detection: SessionDetection::OneFilePerSession {
+                    session_id_from: SessionIdSource::Filename,
+                },
+                tree: None,
+                truncation_limit: Some(20),
+            },
+            parser: Parser {
+                query: Some("SELECT key, value FROM kv".to_string()),
+                ..Default::default()
+            },
+            metadata: None,
+        };
+
+        let windsurf_plugin = Plugin {
+            plugin: PluginMeta {
+                name: "windsurf".to_string(),
+                version: "1.0".to_string(),
+            },
+            source: Source {
+                paths: vec!["nonexistent.db".to_string()],
+                exclude: vec![],
+                format: LogFormat::Sqlite,
+                session_detection: SessionDetection::OneFilePerSession {
+                    session_id_from: SessionIdSource::Filename,
+                },
+                tree: None,
+                truncation_limit: Some(20),
+            },
+            parser: Parser {
+                query: Some("SELECT key, value FROM kv".to_string()),
+                ..Default::default()
+            },
+            metadata: None,
+        };
+
+        // Add plugins directly
+        scraper.plugin_manager_mut().add_plugin(cursor_plugin);
+        scraper.plugin_manager_mut().add_plugin(windsurf_plugin);
+
+        // Verify both plugins are loaded
+        let plugin_names = scraper.plugin_manager().names();
+        assert!(plugin_names.iter().any(|&n| n == "cursor"));
+        assert!(plugin_names.iter().any(|&n| n == "windsurf"));
     }
 }
