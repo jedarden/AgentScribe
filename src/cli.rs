@@ -262,6 +262,20 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
+    /// Generate a quarterly Pulse Report (State of AI Coding)
+    PulseReport {
+        /// Quarter to report on: YYYY-Q1 through YYYY-Q4, or "current" (default: current)
+        #[arg(long, default_value = "current")]
+        quarter: String,
+
+        /// Write output to file instead of stdout
+        #[arg(short, long)]
+        output: Option<String>,
+
+        /// Output format: markdown (default), html, or json
+        #[arg(long, default_value = "markdown")]
+        format: String,
+    },
     /// Generate shell completion script
     Completions {
         /// Shell to generate completions for
@@ -469,6 +483,11 @@ pub fn run() -> Result<()> {
             output,
             json,
         } => run_digest(since, output, json),
+        Commands::PulseReport {
+            quarter,
+            output,
+            format,
+        } => run_pulse_report(quarter, output, format),
         Commands::Completions { shell } => {
             let mut cmd = Args::command();
             generate(shell, &mut cmd, "agentscribe", &mut io::stdout());
@@ -1767,6 +1786,50 @@ fn run_file_knowledge(file_path: &str, json: bool) -> Result<()> {
         println!("{}", serde_json::to_string_pretty(&knowledge).unwrap());
     } else {
         print!("{}", crate::file_knowledge::format_human(&knowledge));
+    }
+
+    Ok(())
+}
+
+/// Run pulse-report command
+fn run_pulse_report(quarter: String, output: Option<String>, format: String) -> Result<()> {
+    let config = load_config()?;
+    let data_dir = config.data_dir()?;
+
+    if !data_dir.exists() {
+        eprintln!("AgentScribe not initialized. Run 'agentscribe config init' to set up.");
+        std::process::exit(1);
+    }
+
+    let fmt = match crate::pulse_report::ReportFormat::parse(&format) {
+        Some(f) => f,
+        None => {
+            eprintln!("Unknown format '{}'. Use markdown, html, or json.", format);
+            std::process::exit(1);
+        }
+    };
+
+    let opts = crate::pulse_report::PulseReportOptions {
+        quarter: quarter.clone(),
+        output: output.clone(),
+        format: fmt,
+    };
+
+    let report = crate::pulse_report::generate_pulse_report(&data_dir, &opts, &config)?;
+
+    let content = match fmt {
+        crate::pulse_report::ReportFormat::Markdown => {
+            crate::pulse_report::format_markdown(&report)
+        }
+        crate::pulse_report::ReportFormat::Html => crate::pulse_report::format_html(&report),
+        crate::pulse_report::ReportFormat::Json => crate::pulse_report::format_json(&report),
+    };
+
+    if let Some(ref path) = output {
+        std::fs::write(path, &content)?;
+        eprintln!("Pulse Report ({}) written to {}", report.quarter, path);
+    } else {
+        print!("{}", content);
     }
 
     Ok(())
