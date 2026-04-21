@@ -13,7 +13,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 
-use agentscribe::analytics::{self, AnalyticsOptions, AgentMetrics};
+use agentscribe::analytics::{self, AgentMetrics, AnalyticsOptions};
 use agentscribe::config::Config;
 use agentscribe::digest::{self, DigestOptions};
 use agentscribe::enrichment::antipatterns;
@@ -65,12 +65,7 @@ content = "content"
     .unwrap();
 }
 
-fn make_event(
-    ts: chrono::DateTime<Utc>,
-    session_id: &str,
-    role: Role,
-    content: &str,
-) -> Event {
+fn make_event(ts: chrono::DateTime<Utc>, session_id: &str, role: Role, content: &str) -> Event {
     Event::new(
         ts,
         session_id.to_string(),
@@ -116,10 +111,7 @@ fn make_test_session(
 }
 
 /// Build a Tantivy index with the given sessions in the data directory.
-fn build_index(
-    data_dir: &std::path::Path,
-    sessions: Vec<(SessionManifest, Vec<Event>)>,
-) {
+fn build_index(data_dir: &std::path::Path, sessions: Vec<(SessionManifest, Vec<Event>)>) {
     let mut manager = IndexManager::open(data_dir).unwrap();
     manager.begin_write().unwrap();
     for (manifest, events) in &sessions {
@@ -136,18 +128,13 @@ fn build_empty_index(data_dir: &std::path::Path) {
 }
 
 /// Write session files to disk so the scraper can find them.
-fn write_session_files(
-    data_dir: &std::path::Path,
-    sessions: &[(SessionManifest, Vec<Event>)],
-) {
+fn write_session_files(data_dir: &std::path::Path, sessions: &[(SessionManifest, Vec<Event>)]) {
     for (manifest, events) in sessions {
         let parts: Vec<&str> = manifest.session_id.splitn(2, '/').collect();
         if parts.len() != 2 {
             continue;
         }
-        let dir = data_dir
-            .join("sessions")
-            .join(parts[0]);
+        let dir = data_dir.join("sessions").join(parts[0]);
         fs::create_dir_all(&dir).unwrap();
         let path = dir.join(format!("{}.jsonl", parts[1]));
         let content: Vec<String> = events.iter().map(|e| e.to_jsonl().unwrap()).collect();
@@ -196,10 +183,7 @@ fn test_recurring_surfaces_frequent_problems() {
         "ConnectionError:connection refused"
     );
     assert!(output.problems[0].session_count >= 3);
-    assert!(output
-        .problems[0]
-        .projects
-        .contains(&"/proj".to_string()));
+    assert!(output.problems[0].projects.contains(&"/proj".to_string()));
 }
 
 /// Recurring detection respects the threshold parameter.
@@ -235,7 +219,10 @@ fn test_recurring_threshold_filters_correctly() {
     };
 
     let output = recurring::detect_recurring(data_dir.path(), &opts).unwrap();
-    assert!(output.problems.is_empty(), "should not report below threshold");
+    assert!(
+        output.problems.is_empty(),
+        "should not report below threshold"
+    );
 }
 
 /// Recurring detection identifies which agents fixed the problem.
@@ -532,7 +519,11 @@ fn test_analytics_problem_type_classification() {
 
     // Should have at least debug, feature, and documentation types
     assert!(output.problem_types.len() >= 3);
-    let type_names: Vec<&str> = output.problem_types.iter().map(|p| p.problem_type.as_str()).collect();
+    let type_names: Vec<&str> = output
+        .problem_types
+        .iter()
+        .map(|p| p.problem_type.as_str())
+        .collect();
     assert!(type_names.contains(&"debug"));
     assert!(type_names.contains(&"feature"));
     assert!(type_names.contains(&"documentation"));
@@ -558,15 +549,35 @@ fn test_rules_generates_claude_md() {
     for i in 0..5 {
         let session_id = format!("test-agent/s{}", i);
         let events = [
-            Event::new(now, session_id.clone(), "test-agent".into(), Role::User, "fix this".into())
-                .with_project(Some(project_path.clone())),
-            Event::new(now, session_id.clone(), "test-agent".into(), Role::ToolCall, "cargo build".into())
-                .with_tool(Some("Bash".into()))
-                .with_project(Some(project_path.clone())),
-            Event::new(now, session_id.clone(), "test-agent".into(), Role::User, "don't use npm, use pnpm instead".into())
-                .with_project(Some(project_path.clone())),
+            Event::new(
+                now,
+                session_id.clone(),
+                "test-agent".into(),
+                Role::User,
+                "fix this".into(),
+            )
+            .with_project(Some(project_path.clone())),
+            Event::new(
+                now,
+                session_id.clone(),
+                "test-agent".into(),
+                Role::ToolCall,
+                "cargo build".into(),
+            )
+            .with_tool(Some("Bash".into()))
+            .with_project(Some(project_path.clone())),
+            Event::new(
+                now,
+                session_id.clone(),
+                "test-agent".into(),
+                Role::User,
+                "don't use npm, use pnpm instead".into(),
+            )
+            .with_project(Some(project_path.clone())),
         ];
-        let path = data_dir.join("sessions/test-agent").join(format!("s{}.jsonl", i));
+        let path = data_dir
+            .join("sessions/test-agent")
+            .join(format!("s{}.jsonl", i));
         let content: Vec<String> = events.iter().map(|e| e.to_jsonl().unwrap()).collect();
         fs::write(path, content.join("\n")).unwrap();
     }
@@ -704,7 +715,10 @@ fn test_shell_hook_unsupported_shell() {
     let config = agentscribe::config::ShellHookConfig::default();
     let result = shell_hook::generate_hook("powershell", &config);
     assert!(result.is_err());
-    assert!(result.unwrap_err().to_string().contains("unsupported shell"));
+    assert!(result
+        .unwrap_err()
+        .to_string()
+        .contains("unsupported shell"));
 }
 
 /// Shell hook in blocking mode does not use background subprocess.
@@ -732,22 +746,33 @@ fn test_gc_dry_run_no_deletion() {
     // Write a session file that is "old"
     let old_session_id = "test-agent/old-session";
     let old_ts = now - Duration::days(100);
-    let events = vec![
-        make_event(old_ts, old_session_id, Role::User, "old content"),
-    ];
-    let session_path = data_dir.path()
+    let events = [make_event(
+        old_ts,
+        old_session_id,
+        Role::User,
+        "old content",
+    )];
+    let session_path = data_dir
+        .path()
         .join("sessions/test-agent/old-session.jsonl");
     let content: Vec<String> = events.iter().map(|e| e.to_jsonl().unwrap()).collect();
     fs::write(&session_path, content.join("\n")).unwrap();
 
     // Write a recent session that should NOT be deleted
     let recent_session_id = "test-agent/recent-session";
-    let recent_events = vec![
-        make_event(now, recent_session_id, Role::User, "recent content"),
-    ];
-    let recent_path = data_dir.path()
+    let recent_events = [make_event(
+        now,
+        recent_session_id,
+        Role::User,
+        "recent content",
+    )];
+    let recent_path = data_dir
+        .path()
         .join("sessions/test-agent/recent-session.jsonl");
-    let recent_content: Vec<String> = recent_events.iter().map(|e| e.to_jsonl().unwrap()).collect();
+    let recent_content: Vec<String> = recent_events
+        .iter()
+        .map(|e| e.to_jsonl().unwrap())
+        .collect();
     fs::write(&recent_path, recent_content.join("\n")).unwrap();
 
     // Write a plugin file for the scraper
@@ -773,13 +798,23 @@ content = "content"
     let result = gc::run_gc(data_dir.path(), Duration::days(90), true).unwrap();
 
     assert!(result.dry_run);
-    assert!(result.candidate_sessions.contains(&old_session_id.to_string()));
-    assert!(!result.candidate_sessions.contains(&recent_session_id.to_string()));
+    assert!(result
+        .candidate_sessions
+        .contains(&old_session_id.to_string()));
+    assert!(!result
+        .candidate_sessions
+        .contains(&recent_session_id.to_string()));
     assert_eq!(result.sessions_deleted, 0);
 
     // Files should still exist after dry-run
-    assert!(session_path.exists(), "old session file should still exist after dry-run");
-    assert!(recent_path.exists(), "recent session file should still exist");
+    assert!(
+        session_path.exists(),
+        "old session file should still exist after dry-run"
+    );
+    assert!(
+        recent_path.exists(),
+        "recent session file should still exist"
+    );
 }
 
 /// GC with act=true actually deletes old sessions.
@@ -791,11 +826,13 @@ fn test_gc_actually_deletes_old_sessions() {
     // Write an old session
     let old_session_id = "test-agent/very-old";
     let old_ts = now - Duration::days(200);
-    let events = vec![
-        make_event(old_ts, old_session_id, Role::User, "ancient content"),
-    ];
-    let session_path = data_dir.path()
-        .join("sessions/test-agent/very-old.jsonl");
+    let events = [make_event(
+        old_ts,
+        old_session_id,
+        Role::User,
+        "ancient content",
+    )];
+    let session_path = data_dir.path().join("sessions/test-agent/very-old.jsonl");
     let content: Vec<String> = events.iter().map(|e| e.to_jsonl().unwrap()).collect();
     fs::write(&session_path, content.join("\n")).unwrap();
 
@@ -957,7 +994,8 @@ fn test_digest_json_output() {
     let json_str = digest::format_json(&output);
 
     // Should be valid JSON
-    let parsed: serde_json::Value = serde_json::from_str(&json_str).expect("digest JSON should be valid");
+    let parsed: serde_json::Value =
+        serde_json::from_str(&json_str).expect("digest JSON should be valid");
     assert!(parsed.get("total_sessions").is_some());
     assert!(parsed.get("analytics").is_some());
 }
@@ -970,20 +1008,18 @@ fn test_file_knowledge_with_gotchas() {
     let data_dir = make_data_dir();
     let now = Utc::now();
 
-    let sessions = vec![
-        make_test_session(
-            "claude-code/s1",
-            "claude-code",
-            "/proj",
-            "failure",
-            5,
-            "fix the db error",
-            vec!["DBError:pool exhausted"],
-            vec!["src/db.rs"],
-            None,
-            now,
-        ),
-    ];
+    let sessions = vec![make_test_session(
+        "claude-code/s1",
+        "claude-code",
+        "/proj",
+        "failure",
+        5,
+        "fix the db error",
+        vec!["DBError:pool exhausted"],
+        vec!["src/db.rs"],
+        None,
+        now,
+    )];
 
     build_index(data_dir.path(), sessions.clone());
     write_session_files(data_dir.path(), &sessions);
@@ -1024,9 +1060,12 @@ fn test_file_knowledge_unknown_file() {
     build_empty_index(data_dir.path());
     let config = Config::default();
 
-    let knowledge =
-        agentscribe::file_knowledge::build_file_knowledge(data_dir.path(), "nonexistent.rs", &config)
-            .unwrap();
+    let knowledge = agentscribe::file_knowledge::build_file_knowledge(
+        data_dir.path(),
+        "nonexistent.rs",
+        &config,
+    )
+    .unwrap();
 
     assert_eq!(knowledge.session_count, 0);
     assert!(knowledge.gotchas.is_empty());
@@ -1136,7 +1175,10 @@ fn test_pipeline_index_to_recurring() {
     let output = recurring::detect_recurring(data_dir.path(), &opts).unwrap();
 
     assert!(
-        output.problems.iter().any(|p| p.fingerprint == "ConnectionError:timeout"),
+        output
+            .problems
+            .iter()
+            .any(|p| p.fingerprint == "ConnectionError:timeout"),
         "should detect ConnectionError:timeout as recurring"
     );
 }
@@ -1184,7 +1226,9 @@ fn test_human_readable_formatting() {
         problems: vec![],
     };
     let formatted = recurring::format_human(&recurring_output);
-    assert!(formatted.contains("No recurring problems") || formatted.contains("Recurring problems"));
+    assert!(
+        formatted.contains("No recurring problems") || formatted.contains("Recurring problems")
+    );
 
     // GC
     let gc_result = gc::GcResult {
