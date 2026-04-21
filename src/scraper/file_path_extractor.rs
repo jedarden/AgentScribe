@@ -157,7 +157,7 @@ impl FilePathExtractor {
         if s.starts_with("~/")
             || s.starts_with("./")
             || s.starts_with("../")
-            || (s.starts_with('/') && s.len() > 1 && s.chars().nth(1).map_or(false, |c| c.is_alphanumeric()))
+            || (s.starts_with('/') && s.len() > 1 && s.chars().nth(1).is_some_and(|c| c.is_alphanumeric()))
         {
             return true;
         }

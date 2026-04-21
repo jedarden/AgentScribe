@@ -65,7 +65,7 @@ impl LogFormat {
         }
     }
 
-    #[allow(dead_code)]
+    #[allow(dead_code, clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Option<Self> {
         match s {
             "jsonl" => Some(LogFormat::Jsonl),
