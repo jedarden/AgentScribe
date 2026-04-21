@@ -2,10 +2,10 @@
 //!
 //! Parses JSONL files where each line is a JSON object.
 
+use crate::error::{AgentScribeError, Result};
 use crate::event::{Event, Role, TokenCounts};
 use crate::parser::{extract_string, parse_timestamp, ParseContext, SessionInfo};
 use crate::plugin::{Plugin, SessionDetection, SessionIdSource};
-use crate::error::{AgentScribeError, Result};
 use chrono::Utc;
 use serde_json::Value;
 use std::io::{BufRead, BufReader};
@@ -22,12 +22,13 @@ impl JsonlParser {
         context: &ParseContext,
         plugin: &Plugin,
     ) -> Result<Vec<Event>> {
-        let json: Value = serde_json::from_str(line)
-            .map_err(|e| AgentScribeError::parse_error_with_line(
+        let json: Value = serde_json::from_str(line).map_err(|e| {
+            AgentScribeError::parse_error_with_line(
                 &context.source_file,
                 line_number,
                 format!("Invalid JSON: {}", e),
-            ))?;
+            )
+        })?;
 
         // Check type filter
         if let Some(ref filter) = plugin.parser.include_types {
@@ -127,12 +128,16 @@ impl JsonlParser {
         }
 
         // Extract tokens
-        let tokens_in = plugin.parser.tokens_in.as_ref().and_then(|f| {
-            extract_string(&json, f).and_then(|s| s.parse::<u32>().ok())
-        });
-        let tokens_out = plugin.parser.tokens_out.as_ref().and_then(|f| {
-            extract_string(&json, f).and_then(|s| s.parse::<u32>().ok())
-        });
+        let tokens_in = plugin
+            .parser
+            .tokens_in
+            .as_ref()
+            .and_then(|f| extract_string(&json, f).and_then(|s| s.parse::<u32>().ok()));
+        let tokens_out = plugin
+            .parser
+            .tokens_out
+            .as_ref()
+            .and_then(|f| extract_string(&json, f).and_then(|s| s.parse::<u32>().ok()));
 
         if tokens_in.is_some() || tokens_out.is_some() {
             event.tokens = Some(TokenCounts {
@@ -180,13 +185,11 @@ impl super::FormatParser for JsonlParser {
         let session_id = match &plugin.source.session_detection {
             SessionDetection::OneFilePerSession { session_id_from } => {
                 match session_id_from {
-                    SessionIdSource::Filename => {
-                        source_path
-                            .file_stem()
-                            .and_then(|s| s.to_str())
-                            .unwrap_or("unknown")
-                            .to_string()
-                    }
+                    SessionIdSource::Filename => source_path
+                        .file_stem()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("unknown")
+                        .to_string(),
                     SessionIdSource::Field(_) => {
                         // Need to read first line to get session ID
                         "unknown".to_string() // Will be updated during parsing
@@ -241,13 +244,11 @@ impl super::FormatParser for JsonlParser {
         match &plugin.source.session_detection {
             SessionDetection::OneFilePerSession { session_id_from } => {
                 let session_id = match session_id_from {
-                    SessionIdSource::Filename => {
-                        source_path
-                            .file_stem()
-                            .and_then(|s| s.to_str())
-                            .unwrap_or("unknown")
-                            .to_string()
-                    }
+                    SessionIdSource::Filename => source_path
+                        .file_stem()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("unknown")
+                        .to_string(),
                     SessionIdSource::Field(field) => {
                         // Read first line to extract session ID
                         if let Ok(first_line) = std::fs::read_to_string(source_path) {
@@ -288,7 +289,9 @@ impl super::FormatParser for JsonlParser {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::plugin::{LogFormat, Plugin, PluginMeta, Parser, SessionDetection, SessionIdSource, Source};
+    use crate::plugin::{
+        LogFormat, Parser, Plugin, PluginMeta, SessionDetection, SessionIdSource, Source,
+    };
 
     fn create_test_plugin() -> Plugin {
         Plugin {
@@ -319,7 +322,11 @@ mod tests {
     #[test]
     fn test_parse_line_simple() {
         let plugin = create_test_plugin();
-        let context = ParseContext::new("test-session".to_string(), "test".to_string(), "/tmp/test.jsonl".to_string());
+        let context = ParseContext::new(
+            "test-session".to_string(),
+            "test".to_string(),
+            "/tmp/test.jsonl".to_string(),
+        );
 
         let line = r#"{"ts": "2026-03-16T12:00:00Z", "role": "user", "content": "Hello"}"#;
         let events = JsonlParser::parse_line(line, 1, &context, &plugin).unwrap();

@@ -65,6 +65,7 @@ impl LogFormat {
         }
     }
 
+    #[allow(dead_code)]
     pub fn from_str(s: &str) -> Option<Self> {
         match s {
             "jsonl" => Some(LogFormat::Jsonl),
@@ -209,6 +210,7 @@ pub enum ProjectDetection {
     GitRoot,
 }
 
+#[allow(clippy::derivable_impls)]
 impl Default for ProjectDetection {
     fn default() -> Self {
         ProjectDetection::ParentDir
@@ -299,8 +301,9 @@ impl PluginManager {
     /// Load a single plugin from a TOML file
     pub fn load_plugin(&mut self, path: &Path) -> Result<String> {
         let content = std::fs::read_to_string(path)?;
-        let plugin: Plugin = toml::from_str(&content)
-            .map_err(|e| AgentScribeError::plugin_error(path.display().to_string(), e.to_string()))?;
+        let plugin: Plugin = toml::from_str(&content).map_err(|e| {
+            AgentScribeError::plugin_error(path.display().to_string(), e.to_string())
+        })?;
 
         let name = plugin.plugin.name.clone();
         self.validate_plugin(&plugin)?;
@@ -372,7 +375,7 @@ impl PluginManager {
         }
 
         // Validate role_map target values
-        for (_from, to) in &plugin.parser.role_map {
+        for to in plugin.parser.role_map.values() {
             if !matches!(
                 to.as_str(),
                 "user" | "assistant" | "system" | "tool_call" | "tool_result"

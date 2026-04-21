@@ -2,18 +2,18 @@
 //!
 //! Each format has a dedicated parser that normalizes events to the canonical schema.
 
+mod json_tree;
 mod jsonl;
 mod markdown;
-mod json_tree;
 mod sqlite;
 
+pub use json_tree::JsonTreeParser;
 pub use jsonl::JsonlParser;
 pub use markdown::MarkdownParser;
-pub use json_tree::JsonTreeParser;
 pub use sqlite::SqliteParser;
 
-use crate::event::Event;
 use crate::error::{AgentScribeError, Result};
+use crate::event::Event;
 use crate::plugin::Plugin;
 use chrono::{DateTime, Utc};
 use serde_json::Value;
@@ -21,6 +21,7 @@ use std::path::Path;
 
 /// Context for parsing - contains info about the source file and session
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct ParseContext {
     pub session_id: String,
     pub source_agent: String,
@@ -31,11 +32,7 @@ pub struct ParseContext {
 }
 
 impl ParseContext {
-    pub fn new(
-        session_id: String,
-        source_agent: String,
-        source_file: String,
-    ) -> Self {
+    pub fn new(session_id: String, source_agent: String, source_file: String) -> Self {
         ParseContext {
             session_id,
             source_agent,
@@ -46,16 +43,19 @@ impl ParseContext {
         }
     }
 
+    #[allow(dead_code)]
     pub fn with_project(mut self, project: Option<String>) -> Self {
         self.project = project;
         self
     }
 
+    #[allow(dead_code)]
     pub fn with_model(mut self, model: Option<String>) -> Self {
         self.model = model;
         self
     }
 
+    #[allow(dead_code)]
     pub fn increment_line(&mut self) {
         self.line_number += 1;
     }
@@ -139,6 +139,7 @@ pub trait FormatParser {
 
 /// Information about a detected session
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct SessionInfo {
     pub session_id: String,
     pub start_offset: u64,

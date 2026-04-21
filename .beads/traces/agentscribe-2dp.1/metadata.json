@@ -1,0 +1,16 @@
+{
+  "bead_id": "agentscribe-2dp.1",
+  "agent": "claude-anthropic-sonnet",
+  "provider": "anthropic",
+  "model": "claude-sonnet-4-6",
+  "exit_code": 1,
+  "outcome": "failure",
+  "duration_ms": 269359,
+  "input_tokens": null,
+  "output_tokens": null,
+  "cost_usd": null,
+  "captured_at": "2026-04-21T18:43:20.864993847Z",
+  "trace_format": "claude_json",
+  "pruned": false,
+  "template_version": null
+}

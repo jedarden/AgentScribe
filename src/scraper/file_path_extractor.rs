@@ -11,28 +11,72 @@ use std::path::{Path, PathBuf};
 
 /// Known file extensions that suggest a file path
 static FILE_EXTENSIONS: &[&str] = &[
-    "rs", "py", "js", "ts", "tsx", "jsx", "go", "java", "c", "cpp", "h", "hpp",
-    "cs", "php", "rb", "swift", "kt", "scala", "sh", "bash", "zsh", "fish",
-    "toml", "yaml", "yml", "json", "xml", "html", "css", "scss", "sass",
-    "md", "txt", "rst", "adoc", "sql", "db", "sqlite", "db3",
-    "lock", "sum", "mod", "gitignore", "dockerignore", "env",
-    "dockerfile", "makefile", "cmakelists", "gradle", "pom",
+    "rs",
+    "py",
+    "js",
+    "ts",
+    "tsx",
+    "jsx",
+    "go",
+    "java",
+    "c",
+    "cpp",
+    "h",
+    "hpp",
+    "cs",
+    "php",
+    "rb",
+    "swift",
+    "kt",
+    "scala",
+    "sh",
+    "bash",
+    "zsh",
+    "fish",
+    "toml",
+    "yaml",
+    "yml",
+    "json",
+    "xml",
+    "html",
+    "css",
+    "scss",
+    "sass",
+    "md",
+    "txt",
+    "rst",
+    "adoc",
+    "sql",
+    "db",
+    "sqlite",
+    "db3",
+    "lock",
+    "sum",
+    "mod",
+    "gitignore",
+    "dockerignore",
+    "env",
+    "dockerfile",
+    "makefile",
+    "cmakelists",
+    "gradle",
+    "pom",
 ];
 
 /// Patterns that suggest a path component
 static PATH_PATTERNS: &[&str] = &[
-    r"^~/",                  // Home directory
-    r"^/\w",                 // Absolute path
-    r"^\./",                 // Relative current dir
-    r"^\.\./",               // Relative parent dir
-    r"\.(?:[a-z]{1,6})$",    // File extension
+    r"^~/",               // Home directory
+    r"^/\w",              // Absolute path
+    r"^\./",              // Relative current dir
+    r"^\.\./",            // Relative parent dir
+    r"\.(?:[a-z]{1,6})$", // File extension
 ];
 
 /// Patterns that are NOT file paths (false positives)
 static EXCLUSION_PATTERNS: &[&str] = &[
-    r"https?://",            // URLs
-    r"ftp://",               // FTP URLs
-    r"\x1b\[[0-9;]*m",       // ANSI escape sequences
+    r"https?://",      // URLs
+    r"ftp://",         // FTP URLs
+    r"\x1b\[[0-9;]*m", // ANSI escape sequences
 ];
 
 /// File path extractor
@@ -117,6 +161,7 @@ impl FilePathExtractor {
     }
 
     /// Extract file paths from structured tool_call JSON
+    #[allow(dead_code)]
     pub fn extract_from_tool_call(tool_call: &Value, field_path: &str) -> Vec<String> {
         let mut paths = Vec::new();
 
@@ -166,6 +211,7 @@ impl FilePathExtractor {
     }
 
     /// Resolve a relative path against a project directory
+    #[allow(dead_code)]
     pub fn resolve_path(path: &str, project_dir: Option<&str>) -> String {
         let path_buf = PathBuf::from(path);
 
@@ -176,8 +222,10 @@ impl FilePathExtractor {
         // Expand ~
         if path.starts_with("~/") {
             if let Some(home) = directories::BaseDirs::new().map(|d| d.home_dir().to_path_buf()) {
-                return home.join(path.strip_prefix("~/").unwrap_or(path))
-                    .to_string_lossy().to_string();
+                return home
+                    .join(path.strip_prefix("~/").unwrap_or(path))
+                    .to_string_lossy()
+                    .to_string();
             }
         }
 
@@ -211,11 +259,17 @@ Use ./scripts/setup.sh to run."#;
     #[test]
     fn test_looks_like_file_path() {
         assert!(FilePathExtractor::looks_like_file_path("src/main.rs"));
-        assert!(FilePathExtractor::looks_like_file_path("/home/user/file.py"));
-        assert!(FilePathExtractor::looks_like_file_path("~/project/config.toml"));
+        assert!(FilePathExtractor::looks_like_file_path(
+            "/home/user/file.py"
+        ));
+        assert!(FilePathExtractor::looks_like_file_path(
+            "~/project/config.toml"
+        ));
         assert!(FilePathExtractor::looks_like_file_path("./script.sh"));
 
-        assert!(!FilePathExtractor::looks_like_file_path("https://example.com"));
+        assert!(!FilePathExtractor::looks_like_file_path(
+            "https://example.com"
+        ));
         assert!(!FilePathExtractor::looks_like_file_path("not a path"));
     }
 

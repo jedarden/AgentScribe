@@ -3,20 +3,21 @@
 //! Parses JSON files organized in a directory tree structure.
 //! Used by agents like OpenCode.
 
+use crate::error::{AgentScribeError, Result};
 use crate::event::{Event, Role};
 use crate::parser::{extract_string, SessionInfo};
 use crate::plugin::{Plugin, TreeConfig};
-use crate::error::{AgentScribeError, Result};
 use chrono::{DateTime, Utc};
-use serde_json::Value;
-use std::path::Path;
-use std::collections::HashMap;
 use glob::Pattern;
+use serde_json::Value;
+use std::collections::HashMap;
+use std::path::Path;
 
 /// JSON tree parser implementation
 pub struct JsonTreeParser;
 
 /// A session in the tree
+#[allow(dead_code)]
 pub struct TreeSession {
     id: String,
     project_id: Option<String>,
@@ -25,6 +26,7 @@ pub struct TreeSession {
 }
 
 /// A message in the tree
+#[allow(dead_code)]
 pub struct TreeMessage {
     id: String,
     session_id: String,
@@ -35,6 +37,7 @@ pub struct TreeMessage {
 }
 
 /// A part in the tree (actual content)
+#[allow(dead_code)]
 pub struct TreePart {
     id: String,
     message_id: String,
@@ -46,12 +49,20 @@ pub struct TreePart {
 
 impl JsonTreeParser {
     /// Load all sessions from the tree structure
-    pub fn load_tree(base_path: &Path, config: &TreeConfig) -> Result<HashMap<String, TreeSession>> {
+    pub fn load_tree(
+        base_path: &Path,
+        config: &TreeConfig,
+    ) -> Result<HashMap<String, TreeSession>> {
         let mut sessions = HashMap::new();
 
         // Find all session files
-        let session_pattern = Pattern::new(&config.session_glob.replace("{projectId}", "*").replace("{sessionId}", "*"))
-            .map_err(|e| AgentScribeError::InvalidPlugin(format!("Invalid session glob: {}", e)))?;
+        let session_pattern = Pattern::new(
+            &config
+                .session_glob
+                .replace("{projectId}", "*")
+                .replace("{sessionId}", "*"),
+        )
+        .map_err(|e| AgentScribeError::InvalidPlugin(format!("Invalid session glob: {}", e)))?;
 
         // Walk the directory tree
         for entry in walkdir::WalkDir::new(base_path)
@@ -72,7 +83,10 @@ impl JsonTreeParser {
             }
 
             // Extract session ID from path
-            let filename = path.file_stem().and_then(|s| s.to_str()).unwrap_or("unknown");
+            let filename = path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("unknown");
             let session_id = filename.to_string();
 
             // Load session metadata
@@ -107,11 +121,19 @@ impl JsonTreeParser {
     }
 
     /// Load all messages from the tree
-    pub fn load_messages(base_path: &Path, config: &TreeConfig) -> Result<HashMap<String, TreeMessage>> {
+    pub fn load_messages(
+        base_path: &Path,
+        config: &TreeConfig,
+    ) -> Result<HashMap<String, TreeMessage>> {
         let mut messages = HashMap::new();
 
-        let message_pattern = Pattern::new(&config.message_glob.replace("{sessionId}", "*").replace("{messageId}", "*"))
-            .map_err(|e| AgentScribeError::InvalidPlugin(format!("Invalid message glob: {}", e)))?;
+        let message_pattern = Pattern::new(
+            &config
+                .message_glob
+                .replace("{sessionId}", "*")
+                .replace("{messageId}", "*"),
+        )
+        .map_err(|e| AgentScribeError::InvalidPlugin(format!("Invalid message glob: {}", e)))?;
 
         for entry in walkdir::WalkDir::new(base_path)
             .follow_links(false)
@@ -130,12 +152,16 @@ impl JsonTreeParser {
                 continue;
             }
 
-            let filename = path.file_stem().and_then(|s| s.to_str()).unwrap_or("unknown");
+            let filename = path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("unknown");
             let message_id = filename.to_string();
 
             // Extract session ID from path using the pattern
-            let session_id = Self::extract_id_from_path(path_str, &config.message_glob, "{sessionId}")
-                .unwrap_or_else(|| "unknown".to_string());
+            let session_id =
+                Self::extract_id_from_path(path_str, &config.message_glob, "{sessionId}")
+                    .unwrap_or_else(|| "unknown".to_string());
 
             let content: Value = std::fs::read(path)
                 .ok()
@@ -180,8 +206,13 @@ impl JsonTreeParser {
     pub fn load_parts(base_path: &Path, config: &TreeConfig) -> Result<HashMap<String, TreePart>> {
         let mut parts = HashMap::new();
 
-        let part_pattern = Pattern::new(&config.part_glob.replace("{messageId}", "*").replace("{partId}", "*"))
-            .map_err(|e| AgentScribeError::InvalidPlugin(format!("Invalid part glob: {}", e)))?;
+        let part_pattern = Pattern::new(
+            &config
+                .part_glob
+                .replace("{messageId}", "*")
+                .replace("{partId}", "*"),
+        )
+        .map_err(|e| AgentScribeError::InvalidPlugin(format!("Invalid part glob: {}", e)))?;
 
         for entry in walkdir::WalkDir::new(base_path)
             .follow_links(false)
@@ -200,7 +231,10 @@ impl JsonTreeParser {
                 continue;
             }
 
-            let filename = path.file_stem().and_then(|s| s.to_str()).unwrap_or("unknown");
+            let filename = path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("unknown");
             let part_id = filename.to_string();
 
             let message_id = Self::extract_id_from_path(path_str, &config.part_glob, "{messageId}")

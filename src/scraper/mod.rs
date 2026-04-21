@@ -5,21 +5,20 @@
 mod file_path_extractor;
 mod state;
 
-pub use state::StateManager;
 pub use file_path_extractor::FilePathExtractor;
+pub use state::StateManager;
 
+use crate::error::{AgentScribeError, Result};
 use crate::event::Event;
 use crate::index::{build_manifest_from_events, IndexManager};
-use crate::parser::{FormatParser, JsonlParser, MarkdownParser, JsonTreeParser, SqliteParser};
-use crate::plugin::{LogFormat, Plugin, PluginManager, ProjectDetection, ModelDetection};
-use crate::error::{AgentScribeError, Result};
+use crate::parser::{FormatParser, JsonTreeParser, JsonlParser, MarkdownParser, SqliteParser};
+use crate::plugin::{LogFormat, ModelDetection, Plugin, PluginManager, ProjectDetection};
 use chrono::Utc;
 use glob::glob;
 use serde_json::Value;
-use shellexpand;
-use std::path::{Path, PathBuf};
 use std::fs::File;
 use std::io::{BufWriter, Write};
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 use tracing::{debug, info, warn};
@@ -41,6 +40,7 @@ pub struct ScrapeResult {
 #[derive(Debug, Clone)]
 pub struct ScrapeError {
     pub file: String,
+    #[allow(dead_code)]
     pub line: Option<usize>,
     pub message: String,
 }
@@ -48,6 +48,7 @@ pub struct ScrapeError {
 /// Scraper - main orchestration
 pub struct Scraper {
     plugin_manager: PluginManager,
+    #[allow(dead_code)]
     data_dir: PathBuf,
     sessions_dir: PathBuf,
     state_manager: StateManager,
@@ -84,7 +85,10 @@ impl Scraper {
         let index_manager = match IndexManager::open(&data_dir) {
             Ok(mgr) => Some(mgr),
             Err(e) => {
-                eprintln!("Warning: Index not available: {}. Scraping without indexing.", e);
+                eprintln!(
+                    "Warning: Index not available: {}. Scraping without indexing.",
+                    e
+                );
                 None
             }
         };
@@ -110,6 +114,7 @@ impl Scraper {
     }
 
     /// Get the plugin manager (mutable)
+    #[allow(dead_code)]
     pub fn plugin_manager_mut(&mut self) -> &mut PluginManager {
         &mut self.plugin_manager
     }
@@ -159,7 +164,8 @@ impl Scraper {
         model: Option<&str>,
     ) -> bool {
         if let Some(ref mut mgr) = self.index_manager {
-            let manifest = build_manifest_from_events(events, session_id, source_agent, project, model);
+            let manifest =
+                build_manifest_from_events(events, session_id, source_agent, project, model);
             match mgr.index_session(events, &manifest) {
                 Ok(()) => true,
                 Err(e) => {
@@ -192,7 +198,8 @@ impl Scraper {
                 let mut excluded = false;
                 for exclude_pattern in &plugin.source.exclude {
                     let exclude_expanded = shellexpand::full(exclude_pattern)
-                        .unwrap_or_default().into_owned();
+                        .unwrap_or_default()
+                        .into_owned();
                     if let Ok(exclude_glob) = glob(&exclude_expanded) {
                         if exclude_glob.filter_map(|e| e.ok()).any(|p| p == path) {
                             excluded = true;
@@ -224,7 +231,9 @@ impl Scraper {
             agent_types: Vec::new(),
         };
 
-        let plugin_names: Vec<String> = self.plugin_manager.names()
+        let plugin_names: Vec<String> = self
+            .plugin_manager
+            .names()
             .into_iter()
             .map(String::from)
             .collect();
@@ -290,7 +299,10 @@ impl Scraper {
             }
 
             // Check if file needs scraping
-            match self.state_manager.needs_rescrape(&file_path, &plugin.plugin.name) {
+            match self
+                .state_manager
+                .needs_rescrape(&file_path, &plugin.plugin.name)
+            {
                 Ok(true) => {
                     // Check if truncated (physical file shrink)
                     let file_state = self.state_manager.get_file_state(path_str);
@@ -436,7 +448,8 @@ impl Scraper {
             }
 
             // Write session to file
-            let session_path = self.sessions_dir
+            let session_path = self
+                .sessions_dir
                 .join(&plugin.plugin.name)
                 .join(format!("{}.jsonl", session_info.session_id));
 
@@ -449,7 +462,8 @@ impl Scraper {
                     result.events_written += events.len();
 
                     // Track session in state
-                    self.state_manager.add_session(path_str, prefixed_session_id.clone())?;
+                    self.state_manager
+                        .add_session(path_str, prefixed_session_id.clone())?;
 
                     if self.index_session_events(
                         &events,
@@ -492,7 +506,10 @@ impl Scraper {
 
     /// Detect project path for a file
     fn detect_project(&self, file_path: &Path, plugin: &Plugin) -> Result<Option<String>> {
-        let detection = plugin.parser.project.as_ref()
+        let detection = plugin
+            .parser
+            .project
+            .as_ref()
             .unwrap_or(&crate::plugin::ProjectDetection::ParentDir);
 
         match detection {
@@ -532,14 +549,20 @@ impl Scraper {
     }
 
     /// Detect model for a session
-    fn detect_model(&self, _file_path: &Path, session_info: &crate::parser::SessionInfo, plugin: &Plugin) -> Result<Option<String>> {
-        let detection = plugin.parser.model.as_ref()
+    fn detect_model(
+        &self,
+        _file_path: &Path,
+        session_info: &crate::parser::SessionInfo,
+        plugin: &Plugin,
+    ) -> Result<Option<String>> {
+        let detection = plugin
+            .parser
+            .model
+            .as_ref()
             .unwrap_or(&crate::plugin::ModelDetection::None);
 
         match detection {
-            ModelDetection::Static { value } => {
-                Ok(Some(value.clone()))
-            }
+            ModelDetection::Static { value } => Ok(Some(value.clone())),
             ModelDetection::None => Ok(None),
             ModelDetection::Metadata { field } | ModelDetection::Event { field } => {
                 // Try to extract from session metadata
@@ -555,19 +578,24 @@ impl Scraper {
                 if let ModelDetection::Metadata { .. } = detection {
                     if let Some(ref metadata_config) = plugin.metadata {
                         let session_id = &session_info.session_id;
-                        let meta_path_str = metadata_config.session_meta.as_ref()
+                        let meta_path_str = metadata_config
+                            .session_meta
+                            .as_ref()
                             .map(|p| p.replace("{session_id}", session_id))
-                            .unwrap_or_else(|| String::new());
+                            .unwrap_or_default();
 
                         if !meta_path_str.is_empty() {
                             let expanded = shellexpand::full(&meta_path_str)
-                                .unwrap_or_default().into_owned();
+                                .unwrap_or_default()
+                                .into_owned();
                             let meta_path = PathBuf::from(expanded.as_str());
 
                             if meta_path.exists() {
                                 if let Ok(content) = std::fs::read_to_string(&meta_path) {
                                     if let Ok(json) = serde_json::from_str::<Value>(&content) {
-                                        if let Some(value) = self.extract_field_recursive(&json, field) {
+                                        if let Some(value) =
+                                            self.extract_field_recursive(&json, field)
+                                        {
                                             if let Some(s) = value.as_str() {
                                                 return Ok(Some(s.to_string()));
                                             }
@@ -599,7 +627,8 @@ impl Scraper {
         let mut writer = BufWriter::new(file);
 
         for event in events {
-            let jsonl = event.to_jsonl()
+            let jsonl = event
+                .to_jsonl()
                 .map_err(|e| AgentScribeError::State(format!("JSON error: {}", e)))?;
             writeln!(writer, "{}", jsonl)?;
         }
@@ -623,7 +652,8 @@ impl Scraper {
 
     /// Read a session from disk
     pub fn read_session(&self, session_id: &str) -> Result<Vec<Event>> {
-        let path = self.session_path(session_id)
+        let path = self
+            .session_path(session_id)
             .ok_or_else(|| AgentScribeError::FileNotFound(PathBuf::from(session_id)))?;
 
         let content = std::fs::read_to_string(&path)?;
@@ -756,7 +786,9 @@ pub fn git_auto_commit(data_dir: &Path, result: &ScrapeResult) -> Result<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::plugin::{LogFormat, Parser, Plugin, PluginMeta, SessionDetection, SessionIdSource, Source};
+    use crate::plugin::{
+        LogFormat, Parser, Plugin, PluginMeta, SessionDetection, SessionIdSource, Source,
+    };
 
     #[test]
     fn test_session_path() {
@@ -787,7 +819,10 @@ mod tests {
 
         // Set up initial state for the file
         let file_path = test_file.to_str().unwrap();
-        scraper.state_manager.add_session(file_path, "test/session-1".to_string()).unwrap();
+        scraper
+            .state_manager
+            .add_session(file_path, "test/session-1".to_string())
+            .unwrap();
         scraper.state_manager.set_offset(file_path, 1000).unwrap();
 
         // Verify state was set
@@ -838,14 +873,20 @@ mod tests {
         std::fs::write(&test_file, initial_content).unwrap();
         let initial_size = std::fs::metadata(&test_file).unwrap().len();
 
-        let mut scraper = Scraper::new(data_dir.clone()).unwrap();
+        let scraper = Scraper::new(data_dir.clone()).unwrap();
 
         // Set state tracking the file at its initial size
         // Set last_modified to a time in the past so file mtime after truncation is newer
         let past_time = Utc::now() - chrono::Duration::seconds(10);
         let file_path = test_file.to_str().unwrap();
-        scraper.state_manager.set_offset(file_path, initial_size).unwrap();
-        scraper.state_manager.set_modified(file_path, past_time).unwrap();
+        scraper
+            .state_manager
+            .set_offset(file_path, initial_size)
+            .unwrap();
+        scraper
+            .state_manager
+            .set_modified(file_path, past_time)
+            .unwrap();
 
         // Verify state was set
         let state_before = scraper.state_manager.get_file_state(file_path);
@@ -856,7 +897,10 @@ mod tests {
         std::fs::write(&test_file, truncated_content).unwrap();
         let truncated_size = std::fs::metadata(&test_file).unwrap().len();
 
-        assert!(truncated_size < initial_size, "file should be smaller after truncation");
+        assert!(
+            truncated_size < initial_size,
+            "file should be smaller after truncation"
+        );
 
         // Create a test plugin
         let plugin = Plugin {
@@ -881,7 +925,10 @@ mod tests {
         };
 
         // Check if file needs scraping - truncation should be detected
-        let needs_scrape = scraper.state_manager.needs_rescrape(&test_file, &plugin.plugin.name).unwrap();
+        let needs_scrape = scraper
+            .state_manager
+            .needs_rescrape(&test_file, &plugin.plugin.name)
+            .unwrap();
         assert!(needs_scrape, "truncated file should need rescraping");
 
         // The scraper should have cleared the old state after detecting truncation
@@ -991,7 +1038,7 @@ mod tests {
 
         // Verify both plugins are loaded
         let plugin_names = scraper.plugin_manager().names();
-        assert!(plugin_names.iter().any(|&n| n == "cursor"));
-        assert!(plugin_names.iter().any(|&n| n == "windsurf"));
+        assert!(plugin_names.contains(&"cursor"));
+        assert!(plugin_names.contains(&"windsurf"));
     }
 }

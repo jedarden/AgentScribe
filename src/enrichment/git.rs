@@ -11,6 +11,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 /// A git commit correlated with a session.
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GitCommit {
     pub hash: String,
@@ -24,6 +25,7 @@ pub struct GitCommit {
 /// Correlate git commits with a session's time window.
 ///
 /// Runs `git log` within the session's start/end times in the project directory.
+#[allow(dead_code)]
 pub fn correlate_commits(
     project: &str,
     started: DateTime<Utc>,
@@ -34,10 +36,10 @@ pub fn correlate_commits(
         return Vec::new();
     }
 
-    let after = started.format("%Y-%m-%dT%H:%M:%S").to_string();
+    let after = started.format("%Y-%m-%dT%H:%M:%S+00:00").to_string();
     let before = ended
         .unwrap_or_else(|| started + chrono::Duration::hours(2))
-        .format("%Y-%m-%dT%H:%M:%S")
+        .format("%Y-%m-%dT%H:%M:%S+00:00")
         .to_string();
 
     let output = Command::new("git")
@@ -83,7 +85,10 @@ pub fn correlate_commits(
 /// Build a reverse index: commit_hash -> session_id.
 ///
 /// Takes all sessions with git commits and builds a lookup map.
-pub fn build_commit_index(commits_by_session: &HashMap<String, Vec<GitCommit>>) -> HashMap<String, String> {
+#[allow(dead_code)]
+pub fn build_commit_index(
+    commits_by_session: &HashMap<String, Vec<GitCommit>>,
+) -> HashMap<String, String> {
     let mut index = HashMap::new();
 
     for (session_id, commits) in commits_by_session {
@@ -101,6 +106,7 @@ pub fn build_commit_index(commits_by_session: &HashMap<String, Vec<GitCommit>>) 
 ///
 /// Uses `git blame` to find the commit hash for the given line,
 /// then looks up the session via the commit index.
+#[allow(dead_code)]
 pub fn blame_file_line(
     project: &str,
     file: &str,
@@ -148,6 +154,7 @@ pub fn blame_file_line(
 }
 
 /// Result of a blame lookup.
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BlameResult {
     pub commit_hash: String,
@@ -157,6 +164,7 @@ pub struct BlameResult {
 }
 
 /// Get git log for a file, returning commits that touched it.
+#[allow(dead_code)]
 pub fn file_git_log(project: &str, file: &str, limit: usize) -> Vec<GitCommit> {
     let project_path = Path::new(project);
     if !project_path.exists() || !project_path.join(".git").exists() {
@@ -216,22 +224,14 @@ mod tests {
 
     #[test]
     fn test_correlate_commits_nonexistent_project() {
-        let commits = correlate_commits(
-            "/nonexistent/project",
-            Utc::now(),
-            None,
-        );
+        let commits = correlate_commits("/nonexistent/project", Utc::now(), None);
         assert!(commits.is_empty());
     }
 
     #[test]
     fn test_correlate_commits_no_git() {
         let temp = tempfile::tempdir().unwrap();
-        let commits = correlate_commits(
-            temp.path().to_str().unwrap(),
-            Utc::now(),
-            None,
-        );
+        let commits = correlate_commits(temp.path().to_str().unwrap(), Utc::now(), None);
         assert!(commits.is_empty());
     }
 

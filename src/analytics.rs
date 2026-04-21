@@ -8,7 +8,7 @@ use crate::config::Config;
 use crate::error::{AgentScribeError, Result};
 use crate::index::build_schema;
 use crate::search::open_index;
-use chrono::{DateTime, Datelike, Duration, Utc};
+use chrono::{DateTime, Duration, Utc};
 use regex::Regex;
 use serde::Serialize;
 use std::collections::HashMap;
@@ -46,6 +46,7 @@ impl ProblemType {
         }
     }
 
+    #[allow(dead_code)]
     pub fn all() -> &'static [ProblemType] {
         &[
             ProblemType::Debug,
@@ -59,34 +60,43 @@ impl ProblemType {
 }
 
 // Classification regex patterns
-static DEBUG_PATTERN: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?i)\b(fix|bug|error|crash|debug|broken|fault|regression)\b").unwrap());
+static DEBUG_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)\b(fix|bug|error|crash|debug|broken|fault|regression)\b").unwrap()
+});
 
-static FEATURE_PATTERN: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?i)\b(add|implement|create|build|new|support|integrate|enable)\b").unwrap());
+static FEATURE_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)\b(add|implement|create|build|new|support|integrate|enable)\b").unwrap()
+});
 
-static REFACTOR_PATTERN: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?i)\b(refactor|rename|move|extract|clean\s*up|restructure|simplify|reorganize)\b").unwrap());
+static REFACTOR_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)\b(refactor|rename|move|extract|clean\s*up|restructure|simplify|reorganize)\b")
+        .unwrap()
+});
 
-static INVESTIGATION_PATTERN: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?i)\b(explain|how does|what is|why|understand|investigate|explore|look into|figure out)\b").unwrap());
+static INVESTIGATION_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)\b(explain|how does|what is|why|understand|investigate|explore|look into|figure out)\b").unwrap()
+});
 
-static DOCUMENTATION_PATTERN: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?i)\b(document|readme|changelog|docstring|comment|docs)\b").unwrap());
+static DOCUMENTATION_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)\b(document|readme|changelog|docstring|comment|docs)\b").unwrap()
+});
 
 /// Config file extensions for configuration problem type (without leading dot)
-const CONFIG_EXTENSIONS: &[&str] = &[
-    "toml", "yaml", "yml", "json", "ini", "cfg", "conf",
-];
+const CONFIG_EXTENSIONS: &[&str] = &["toml", "yaml", "yml", "json", "ini", "cfg", "conf"];
 
 const CONFIG_FILENAMES: &[&str] = &[
-    "Dockerfile", "Makefile", "docker-compose.yml", "docker-compose.yaml", ".env",
+    "Dockerfile",
+    "Makefile",
+    "docker-compose.yml",
+    "docker-compose.yaml",
+    ".env",
 ];
 
 /// Doc file extensions for documentation problem type (without leading dot)
 const DOC_EXTENSIONS: &[&str] = &["md", "rst", "txt", "adoc"];
 
 /// Data extracted from a single indexed session for analytics
+#[allow(dead_code)]
 pub(crate) struct SessionData {
     pub(crate) session_id: String,
     pub(crate) source_agent: String,
@@ -217,17 +227,26 @@ fn classify_problem_type(
     let mut ranked: Vec<(ProblemType, i32)> = scores.into_iter().collect();
     ranked.sort_by(|a, b| b.1.cmp(&a.1));
 
-    let primary = ranked.first().map(|(t, _)| *t).unwrap_or(ProblemType::Feature);
+    let primary = ranked
+        .first()
+        .map(|(t, _)| *t)
+        .unwrap_or(ProblemType::Feature);
     let secondary = ranked.get(1).filter(|(_, s)| *s > 0).map(|(t, _)| *t);
 
     (primary, secondary)
 }
 
 fn is_config_file(path: &str) -> bool {
-    if CONFIG_FILENAMES.iter().any(|n| path.ends_with(n) || path.contains(n)) {
+    if CONFIG_FILENAMES
+        .iter()
+        .any(|n| path.ends_with(n) || path.contains(n))
+    {
         return true;
     }
-    if let Some(ext) = std::path::Path::new(path).extension().and_then(|e| e.to_str()) {
+    if let Some(ext) = std::path::Path::new(path)
+        .extension()
+        .and_then(|e| e.to_str())
+    {
         CONFIG_EXTENSIONS.contains(&ext)
     } else {
         false
@@ -235,7 +254,10 @@ fn is_config_file(path: &str) -> bool {
 }
 
 fn is_doc_file(path: &str) -> bool {
-    if let Some(ext) = std::path::Path::new(path).extension().and_then(|e| e.to_str()) {
+    if let Some(ext) = std::path::Path::new(path)
+        .extension()
+        .and_then(|e| e.to_str())
+    {
         DOC_EXTENSIONS.contains(&ext)
     } else {
         false
@@ -279,11 +301,12 @@ pub(crate) fn extract_session_data(
     let timestamp = doc
         .get_first(fields.timestamp)
         .and_then(|v| v.as_datetime())
-        .map(|dt| {
-            DateTime::from_timestamp(dt.into_timestamp_secs(), 0).unwrap_or_default()
-        })?;
+        .map(|dt| DateTime::from_timestamp(dt.into_timestamp_secs(), 0).unwrap_or_default())?;
 
-    let turns = doc.get_first(fields.turn_count).and_then(|v| v.as_u64()).unwrap_or(0);
+    let turns = doc
+        .get_first(fields.turn_count)
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
 
     let outcome = doc
         .get_first(fields.outcome)
@@ -382,9 +405,9 @@ pub fn compute_analytics(
     config: &Config,
 ) -> Result<AnalyticsOutput> {
     let index = open_index(data_dir)?;
-    let reader = index.reader().map_err(|e| {
-        AgentScribeError::DataDir(format!("Failed to create index reader: {}", e))
-    })?;
+    let reader = index
+        .reader()
+        .map_err(|e| AgentScribeError::DataDir(format!("Failed to create index reader: {}", e)))?;
     let searcher = reader.searcher();
     let total_docs = searcher.num_docs();
 
@@ -669,7 +692,11 @@ fn compute_weekly_trends(sessions: &[SessionData]) -> Vec<TrendPoint> {
     // Get the weekday (Mon=1, Tue=2, ..., Sun=7) using format
     let weekday_str = earliest.format("%u").to_string();
     let weekday: u32 = weekday_str.parse().unwrap_or(1);
-    let days_from_monday = if weekday >= 1 { (weekday - 1) as i64 } else { 0 };
+    let days_from_monday = if weekday >= 1 {
+        (weekday - 1) as i64
+    } else {
+        0
+    };
     let mut current_monday = earliest - Duration::days(days_from_monday);
     // Set to midnight using naive date
     let naive_monday = current_monday.date_naive().and_hms_opt(0, 0, 0).unwrap();
@@ -691,8 +718,8 @@ fn compute_weekly_trends(sessions: &[SessionData]) -> Vec<TrendPoint> {
                 .iter()
                 .filter(|s| s.outcome.as_deref() == Some("success"))
                 .count();
-            let week_avg_turns = week_sessions.iter().map(|s| s.turns).sum::<u64>() as f64
-                / week_total as f64;
+            let week_avg_turns =
+                week_sessions.iter().map(|s| s.turns).sum::<u64>() as f64 / week_total as f64;
             let week_success_rate = week_successes as f64 / week_total as f64 * 100.0;
 
             trends.push(TrendPoint {
@@ -773,9 +800,7 @@ pub fn format_human(output: &AnalyticsOutput) -> String {
             } else {
                 lines.push(format!(
                     "  {:<16} failures: {:>3}  abandoned: {:>3}",
-                    "",
-                    agent.failure_count,
-                    agent.abandoned_count,
+                    "", agent.failure_count, agent.abandoned_count,
                 ));
             }
             // Top specialization
@@ -853,8 +878,14 @@ mod tests {
         manifest.model = model.map(|s| s.to_string());
         manifest.files_touched = file_paths.iter().map(|s| s.to_string()).collect();
 
-        let events = vec![Event::new(now, session_id.to_string(), agent.to_string(), Role::User, content.to_string())
-            .with_error_fingerprints(error_fps.iter().map(|s| s.to_string()).collect())];
+        let events = vec![Event::new(
+            now,
+            session_id.to_string(),
+            agent.to_string(),
+            Role::User,
+            content.to_string(),
+        )
+        .with_error_fingerprints(error_fps.iter().map(|s| s.to_string()).collect())];
 
         (manifest, events)
     }
@@ -883,7 +914,7 @@ mod tests {
 
     #[test]
     fn test_classify_debug() {
-        let (primary, secondary) = classify_problem_type(
+        let (primary, _secondary) = classify_problem_type(
             "fix the bug error crash",
             &["ErrorType:connection refused".to_string()],
             &[],
@@ -913,11 +944,8 @@ mod tests {
 
     #[test]
     fn test_classify_investigation() {
-        let (primary, _) = classify_problem_type(
-            "explain how does the authentication work",
-            &[],
-            &[],
-        );
+        let (primary, _) =
+            classify_problem_type("explain how does the authentication work", &[], &[]);
         assert_eq!(primary, ProblemType::Investigation);
     }
 
@@ -933,11 +961,8 @@ mod tests {
 
     #[test]
     fn test_classify_documentation() {
-        let (primary, _) = classify_problem_type(
-            "update the readme",
-            &[],
-            &["docs/README.md".to_string()],
-        );
+        let (primary, _) =
+            classify_problem_type("update the readme", &[], &["docs/README.md".to_string()]);
         assert_eq!(primary, ProblemType::Documentation);
     }
 
@@ -951,7 +976,10 @@ mod tests {
         // Debug has error fingerprints (weight 3) + pattern match
         // Configuration has config file (weight 3)
         // Debug may win due to both error fps and pattern match
-        assert!(matches!(primary, ProblemType::Debug | ProblemType::Configuration));
+        assert!(matches!(
+            primary,
+            ProblemType::Debug | ProblemType::Configuration
+        ));
         assert!(secondary.is_some());
     }
 
@@ -996,9 +1024,39 @@ mod tests {
     #[test]
     fn test_analytics_single_agent() {
         let sessions = vec![
-            make_test_session("claude/1", "claude-code", "/proj", "success", 10, "fix the bug", vec!["Err:X"], vec!["src/main.rs"], Some("claude-sonnet-4")),
-            make_test_session("claude/2", "claude-code", "/proj", "failure", 5, "tried to fix", vec!["Err:Y"], vec!["src/main.rs"], Some("claude-sonnet-4")),
-            make_test_session("claude/3", "claude-code", "/proj", "success", 8, "added feature", vec![], vec!["src/new.rs"], Some("claude-sonnet-4")),
+            make_test_session(
+                "claude/1",
+                "claude-code",
+                "/proj",
+                "success",
+                10,
+                "fix the bug",
+                vec!["Err:X"],
+                vec!["src/main.rs"],
+                Some("claude-sonnet-4"),
+            ),
+            make_test_session(
+                "claude/2",
+                "claude-code",
+                "/proj",
+                "failure",
+                5,
+                "tried to fix",
+                vec!["Err:Y"],
+                vec!["src/main.rs"],
+                Some("claude-sonnet-4"),
+            ),
+            make_test_session(
+                "claude/3",
+                "claude-code",
+                "/proj",
+                "success",
+                8,
+                "added feature",
+                vec![],
+                vec!["src/new.rs"],
+                Some("claude-sonnet-4"),
+            ),
         ];
 
         let (temp_dir, _) = build_test_index(sessions);
@@ -1022,9 +1080,39 @@ mod tests {
     #[test]
     fn test_analytics_multi_agent() {
         let sessions = vec![
-            make_test_session("claude/1", "claude-code", "/proj", "success", 10, "fixed bug", vec!["Err:X"], vec![], None),
-            make_test_session("aider/1", "aider", "/proj", "success", 5, "added feature", vec![], vec![], None),
-            make_test_session("aider/2", "aider", "/proj", "failure", 20, "failed to fix", vec!["Err:Y"], vec![], None),
+            make_test_session(
+                "claude/1",
+                "claude-code",
+                "/proj",
+                "success",
+                10,
+                "fixed bug",
+                vec!["Err:X"],
+                vec![],
+                None,
+            ),
+            make_test_session(
+                "aider/1",
+                "aider",
+                "/proj",
+                "success",
+                5,
+                "added feature",
+                vec![],
+                vec![],
+                None,
+            ),
+            make_test_session(
+                "aider/2",
+                "aider",
+                "/proj",
+                "failure",
+                20,
+                "failed to fix",
+                vec!["Err:Y"],
+                vec![],
+                None,
+            ),
         ];
 
         let (temp_dir, _) = build_test_index(sessions);
@@ -1043,8 +1131,28 @@ mod tests {
     #[test]
     fn test_analytics_agent_filter() {
         let sessions = vec![
-            make_test_session("claude/1", "claude-code", "/proj", "success", 10, "fixed", vec![], vec![], None),
-            make_test_session("aider/1", "aider", "/proj", "success", 5, "added", vec![], vec![], None),
+            make_test_session(
+                "claude/1",
+                "claude-code",
+                "/proj",
+                "success",
+                10,
+                "fixed",
+                vec![],
+                vec![],
+                None,
+            ),
+            make_test_session(
+                "aider/1",
+                "aider",
+                "/proj",
+                "success",
+                5,
+                "added",
+                vec![],
+                vec![],
+                None,
+            ),
         ];
 
         let (temp_dir, _) = build_test_index(sessions);
@@ -1063,10 +1171,50 @@ mod tests {
     #[test]
     fn test_analytics_problem_types() {
         let sessions = vec![
-            make_test_session("s/1", "test", "/p", "success", 5, "fix the bug", vec!["Err:A"], vec![], None),
-            make_test_session("s/2", "test", "/p", "success", 5, "fix the bug", vec!["Err:B"], vec![], None),
-            make_test_session("s/3", "test", "/p", "success", 5, "implement new feature", vec![], vec![], None),
-            make_test_session("s/4", "test", "/p", "success", 5, "update the readme", vec![], vec!["README.md"], None),
+            make_test_session(
+                "s/1",
+                "test",
+                "/p",
+                "success",
+                5,
+                "fix the bug",
+                vec!["Err:A"],
+                vec![],
+                None,
+            ),
+            make_test_session(
+                "s/2",
+                "test",
+                "/p",
+                "success",
+                5,
+                "fix the bug",
+                vec!["Err:B"],
+                vec![],
+                None,
+            ),
+            make_test_session(
+                "s/3",
+                "test",
+                "/p",
+                "success",
+                5,
+                "implement new feature",
+                vec![],
+                vec![],
+                None,
+            ),
+            make_test_session(
+                "s/4",
+                "test",
+                "/p",
+                "success",
+                5,
+                "update the readme",
+                vec![],
+                vec!["README.md"],
+                None,
+            ),
         ];
 
         let (temp_dir, _) = build_test_index(sessions);
@@ -1081,16 +1229,27 @@ mod tests {
         assert_eq!(output.problem_types.len(), 3);
 
         // Debug should have count 2
-        let debug_entry = output.problem_types.iter().find(|p| p.problem_type == "debug");
+        let debug_entry = output
+            .problem_types
+            .iter()
+            .find(|p| p.problem_type == "debug");
         assert!(debug_entry.is_some());
         assert_eq!(debug_entry.unwrap().count, 2);
     }
 
     #[test]
     fn test_analytics_cost_with_pricing() {
-        let sessions = vec![
-            make_test_session("s/1", "test", "/p", "success", 5, &"x".repeat(4000), vec![], vec![], Some("claude-sonnet-4")),
-        ];
+        let sessions = vec![make_test_session(
+            "s/1",
+            "test",
+            "/p",
+            "success",
+            5,
+            &"x".repeat(4000),
+            vec![],
+            vec![],
+            Some("claude-sonnet-4"),
+        )];
 
         let (temp_dir, _) = build_test_index(sessions);
 
@@ -1118,9 +1277,17 @@ mod tests {
 
     #[test]
     fn test_analytics_cost_null_model_excluded() {
-        let sessions = vec![
-            make_test_session("s/1", "test", "/p", "success", 5, "content", vec![], vec![], None),
-        ];
+        let sessions = vec![make_test_session(
+            "s/1",
+            "test",
+            "/p",
+            "success",
+            5,
+            "content",
+            vec![],
+            vec![],
+            None,
+        )];
 
         let (temp_dir, _) = build_test_index(sessions);
 

@@ -197,7 +197,11 @@ pub fn extract_tags(events: &[Event]) -> Vec<String> {
     }
 
     // Tier 3: keyword tags (match against all event content)
-    let content: String = events.iter().map(|e| e.content.as_str()).collect::<Vec<_>>().join(" ");
+    let content: String = events
+        .iter()
+        .map(|e| e.content.as_str())
+        .collect::<Vec<_>>()
+        .join(" ");
     for tag in extract_keyword_tags(&content, &KEYWORDS) {
         all_tags.insert(tag);
     }
@@ -243,8 +247,10 @@ mod tests {
 
     #[test]
     fn test_code_fence_python() {
-        let events =
-            vec![make_event(Role::Assistant, "Here is code:\n```python\nprint('hi')\n```")];
+        let events = vec![make_event(
+            Role::Assistant,
+            "Here is code:\n```python\nprint('hi')\n```",
+        )];
         let tags = extract_explicit_tags(&events);
         assert!(tags.contains(&"python".to_string()));
     }
@@ -490,7 +496,10 @@ mod tests {
     #[test]
     fn test_tool_call_without_tool_name_ignored() {
         // ToolCall event with no tool name should not contribute explicit tags
-        let events = vec![make_event(Role::ToolCall, "some content with ```python code```")];
+        let events = vec![make_event(
+            Role::ToolCall,
+            "some content with ```python code```",
+        )];
         // Code fences still work even on a ToolCall with no tool name
         let tags = extract_explicit_tags(&events);
         assert!(tags.contains(&"python".to_string()));
@@ -502,11 +511,7 @@ mod tests {
     fn test_extract_structural_tags_sorted() {
         let events = vec![make_event(Role::ToolCall, "")
             .with_tool(Some("Read".into()))
-            .with_file_paths(vec![
-                "app.py".into(),
-                "main.rs".into(),
-                "index.ts".into(),
-            ])];
+            .with_file_paths(vec!["app.py".into(), "main.rs".into(), "index.ts".into()])];
         let tags = extract_structural_tags(&events);
         let mut sorted = tags.clone();
         sorted.sort();
@@ -516,7 +521,10 @@ mod tests {
     #[test]
     fn test_keyword_extract_uses_bundled_dictionary() {
         // Test that extract_tags uses the bundled dictionary for tier 3
-        let events = vec![make_event(Role::User, "I'm using elasticsearch for full-text search")];
+        let events = vec![make_event(
+            Role::User,
+            "I'm using elasticsearch for full-text search",
+        )];
         let tags = extract_tags(&events);
         assert!(tags.contains(&"elasticsearch".to_string()));
     }
@@ -579,9 +587,7 @@ mod tests {
     #[test]
     fn test_code_fence_in_tool_result() {
         // Code fences in ToolResult content should still be picked up by tier 1.
-        let events = vec![
-            make_event(Role::ToolResult, "```go\npackage main\n```"),
-        ];
+        let events = vec![make_event(Role::ToolResult, "```go\npackage main\n```")];
         let tags = extract_explicit_tags(&events);
         assert!(tags.contains(&"go".to_string()));
     }
@@ -589,9 +595,10 @@ mod tests {
     #[test]
     fn test_code_fence_in_user_message() {
         // Code fences in User messages should contribute explicit tags.
-        let events = vec![
-            make_event(Role::User, "Can you look at this code?\n```rust\nfn main() {}\n```"),
-        ];
+        let events = vec![make_event(
+            Role::User,
+            "Can you look at this code?\n```rust\nfn main() {}\n```",
+        )];
         let tags = extract_explicit_tags(&events);
         assert!(tags.contains(&"rust".to_string()));
     }
@@ -599,10 +606,8 @@ mod tests {
     #[test]
     fn test_extract_tags_with_file_path_event_tags() {
         // file_paths on events (not just ToolCall) contribute structural tags.
-        let events = vec![
-            make_event(Role::ToolResult, "file contents here")
-                .with_file_paths(vec!["config.yaml".into()]),
-        ];
+        let events = vec![make_event(Role::ToolResult, "file contents here")
+            .with_file_paths(vec!["config.yaml".into()])];
         let tags = extract_structural_tags(&events);
         assert!(tags.contains(&"yaml".to_string()));
     }
@@ -636,8 +641,7 @@ mod tests {
     #[test]
     fn test_multiple_error_fingerprints_across_events() {
         let events = vec![
-            make_event(Role::ToolResult, "err1")
-                .with_error_fingerprints(vec!["IoError".into()]),
+            make_event(Role::ToolResult, "err1").with_error_fingerprints(vec!["IoError".into()]),
             make_event(Role::ToolResult, "err2")
                 .with_error_fingerprints(vec!["ParseError".into(), "IoError".into()]),
         ];

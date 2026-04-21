@@ -4,23 +4,23 @@
 //! and various filter/output modes against the Tantivy index.
 
 use crate::error::{AgentScribeError, Result};
-use crate::index::{build_schema, fields_from_schema, IndexFields};
+use crate::index::{build_schema, IndexFields};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use std::ops::Bound;
 use std::path::Path;
 use tantivy::collector::TopDocs;
 use tantivy::query::{
-    BooleanQuery, BoostQuery, FuzzyTermQuery, Occur, Query,
-    RangeQuery, TermQuery,
+    BooleanQuery, BoostQuery, FuzzyTermQuery, Occur, Query, RangeQuery, TermQuery,
 };
 use tantivy::schema::{Field, Value};
 use tantivy::{DateTime as TantivyDateTime, DocAddress, Searcher, TantivyDocument};
-use std::ops::Bound;
 
 /// Tantivy index directory name
 const INDEX_DIR_NAME: &str = "tantivy";
 
 /// Default snippet context around match (chars before/after)
+#[allow(dead_code)]
 const SNIPPET_MARGIN: usize = 100;
 
 /// Approximate chars per token for knapsack estimation
@@ -107,9 +107,8 @@ pub fn open_index(data_dir: &Path) -> Result<tantivy::Index> {
         )));
     }
 
-    let index = tantivy::Index::open_in_dir(&index_path).map_err(|e| {
-        AgentScribeError::DataDir(format!("Failed to open index: {}", e))
-    })?;
+    let index = tantivy::Index::open_in_dir(&index_path)
+        .map_err(|e| AgentScribeError::DataDir(format!("Failed to open index: {}", e)))?;
 
     Ok(index)
 }
@@ -117,9 +116,9 @@ pub fn open_index(data_dir: &Path) -> Result<tantivy::Index> {
 /// Execute a search and return results.
 pub fn execute_search(data_dir: &Path, opts: &SearchOptions) -> Result<SearchOutput> {
     let index = open_index(data_dir)?;
-    let reader = index.reader().map_err(|e| {
-        AgentScribeError::DataDir(format!("Failed to create index reader: {}", e))
-    })?;
+    let reader = index
+        .reader()
+        .map_err(|e| AgentScribeError::DataDir(format!("Failed to create index reader: {}", e)))?;
     let searcher = reader.searcher();
     let total_docs = searcher.num_docs();
 
@@ -152,8 +151,12 @@ pub fn execute_search(data_dir: &Path, opts: &SearchOptions) -> Result<SearchOut
     // Only triggers for plain queries (not error/code/like searches) and when --fuzzy was
     // not already set (to avoid double-fuzzing an explicit fuzzy request).
     let mut used_fuzzy_fallback = false;
-    if top_docs.is_empty() && opts.query.is_some() && !opts.fuzzy
-        && opts.error_pattern.is_none() && opts.code_query.is_none() && opts.like_session.is_none()
+    if top_docs.is_empty()
+        && opts.query.is_some()
+        && !opts.fuzzy
+        && opts.error_pattern.is_none()
+        && opts.code_query.is_none()
+        && opts.like_session.is_none()
     {
         let fuzzy_opts = SearchOptions {
             fuzzy: true,
@@ -183,7 +186,9 @@ pub fn execute_search(data_dir: &Path, opts: &SearchOptions) -> Result<SearchOut
         let fallback_query = build_query(&searcher, &fields, &fuzzy_opts, &schema)?;
         top_docs = searcher
             .search(&fallback_query, &TopDocs::with_limit(fetch_limit))
-            .map_err(|e| AgentScribeError::DataDir(format!("Fuzzy fallback search failed: {}", e)))?;
+            .map_err(|e| {
+                AgentScribeError::DataDir(format!("Fuzzy fallback search failed: {}", e))
+            })?;
         if !top_docs.is_empty() {
             used_fuzzy_fallback = true;
         }
@@ -246,6 +251,17 @@ fn build_query(
     opts: &SearchOptions,
     _schema: &tantivy::schema::Schema,
 ) -> Result<Box<dyn Query>> {
+    // Validate that at least one search mode is specified
+    if opts.query.is_none()
+        && opts.error_pattern.is_none()
+        && opts.code_query.is_none()
+        && opts.like_session.is_none()
+    {
+        return Err(AgentScribeError::DataDir(
+            "No search query provided. Use <query>, --error, --code, or --like.".to_string(),
+        ));
+    }
+
     let mut clauses: Vec<(Occur, Box<dyn Query>)> = Vec::new();
 
     // Main text query
@@ -270,27 +286,26 @@ fn build_query(
         let text_query = if opts.fuzzy {
             build_fuzzy_query_for_field(fields.code_content, code_q, opts.fuzzy_distance)?
         } else {
-            let (parsed, _errors) = tantivy::query::QueryParser::for_index(
-                searcher.index(),
-                vec![fields.code_content],
-            )
-            .parse_query_lenient(code_q);
+            let (parsed, _errors) =
+                tantivy::query::QueryParser::for_index(searcher.index(), vec![fields.code_content])
+                    .parse_query_lenient(code_q);
             Box::new(parsed)
         };
         clauses.push((Occur::Must, text_query));
 
         // Filter to code_artifact doc_type if searching code
-        let doc_term =
-            tantivy::schema::Term::from_field_text(fields.doc_type, "code_artifact");
+        let doc_term = tantivy::schema::Term::from_field_text(fields.doc_type, "code_artifact");
         clauses.push((
             Occur::Must,
-            Box::new(TermQuery::new(doc_term, tantivy::schema::IndexRecordOption::Basic)),
+            Box::new(TermQuery::new(
+                doc_term,
+                tantivy::schema::IndexRecordOption::Basic,
+            )),
         ));
 
         // Language filter
         if let Some(ref lang) = opts.code_lang {
-            let lang_term =
-                tantivy::schema::Term::from_field_text(fields.code_language, lang);
+            let lang_term = tantivy::schema::Term::from_field_text(fields.code_language, lang);
             clauses.push((
                 Occur::Must,
                 Box::new(TermQuery::new(
@@ -299,6 +314,16 @@ fn build_query(
                 )),
             ));
         }
+    } else if opts.doc_type_filter.is_none() {
+        // Default: only return session documents (never mix with code_artifacts)
+        let doc_term = tantivy::schema::Term::from_field_text(fields.doc_type, "session");
+        clauses.push((
+            Occur::Must,
+            Box::new(TermQuery::new(
+                doc_term,
+                tantivy::schema::IndexRecordOption::Basic,
+            )),
+        ));
     }
 
     // Solution-only: boost solution_summary field
@@ -437,8 +462,7 @@ fn build_query(
 
     if clauses.is_empty() {
         return Err(AgentScribeError::DataDir(
-            "No search query provided. Use <query>, --error, --code, or --like."
-                .to_string(),
+            "No search query provided. Use <query>, --error, --code, or --like.".to_string(),
         ));
     }
 
@@ -465,20 +489,22 @@ fn build_fulltext_query(
 }
 
 /// Build a fuzzy query for all query terms across content, summary, and solution_summary.
-fn build_fuzzy_query(fields: &IndexFields, query_str: &str, distance: u8) -> Result<Box<dyn Query>> {
+fn build_fuzzy_query(
+    fields: &IndexFields,
+    query_str: &str,
+    distance: u8,
+) -> Result<Box<dyn Query>> {
     let terms: Vec<(Occur, Box<dyn Query>)> = query_str
         .split_whitespace()
         .filter(|w| !w.is_empty())
         .flat_map(|word| {
             let mut sub = Vec::new();
-            let term_content =
-                tantivy::schema::Term::from_field_text(fields.content, word);
+            let term_content = tantivy::schema::Term::from_field_text(fields.content, word);
             sub.push((
                 Occur::Should,
                 Box::new(FuzzyTermQuery::new(term_content, distance, true)) as Box<dyn Query>,
             ));
-            let term_summary =
-                tantivy::schema::Term::from_field_text(fields.summary, word);
+            let term_summary = tantivy::schema::Term::from_field_text(fields.summary, word);
             sub.push((
                 Occur::Should,
                 Box::new(FuzzyTermQuery::new(term_summary, distance, true)) as Box<dyn Query>,
@@ -494,16 +520,18 @@ fn build_fuzzy_query(fields: &IndexFields, query_str: &str, distance: u8) -> Res
         .collect();
 
     if terms.is_empty() {
-        return Err(AgentScribeError::DataDir(
-            "Empty query string".to_string(),
-        ));
+        return Err(AgentScribeError::DataDir("Empty query string".to_string()));
     }
 
     Ok(Box::new(BooleanQuery::new(terms)))
 }
 
 /// Build a fuzzy query for a specific field.
-fn build_fuzzy_query_for_field(field: Field, query_str: &str, distance: u8) -> Result<Box<dyn Query>> {
+fn build_fuzzy_query_for_field(
+    field: Field,
+    query_str: &str,
+    distance: u8,
+) -> Result<Box<dyn Query>> {
     let terms: Vec<(Occur, Box<dyn Query>)> = query_str
         .split_whitespace()
         .filter(|w| !w.is_empty())
@@ -517,9 +545,7 @@ fn build_fuzzy_query_for_field(field: Field, query_str: &str, distance: u8) -> R
         .collect();
 
     if terms.is_empty() {
-        return Err(AgentScribeError::DataDir(
-            "Empty query string".to_string(),
-        ));
+        return Err(AgentScribeError::DataDir("Empty query string".to_string()));
     }
 
     Ok(Box::new(BooleanQuery::new(terms)))
@@ -528,13 +554,12 @@ fn build_fuzzy_query_for_field(field: Field, query_str: &str, distance: u8) -> R
 /// Common English stop words to exclude from MLT term extraction.
 /// Must be sorted alphabetically for binary_search.
 static MLT_STOP_WORDS: &[&str] = &[
-    "about", "after", "all", "also", "and", "are", "because", "been", "being",
-    "but", "can", "could", "did", "does", "doing", "each", "for", "from",
-    "get", "got", "had", "has", "have", "her", "how", "into", "its", "just",
-    "like", "make", "may", "new", "not", "now", "old", "one", "other", "our",
-    "out", "over", "see", "should", "some", "such", "than", "that", "the",
-    "their", "them", "then", "there", "these", "this", "was", "way", "were",
-    "who", "will", "with", "would", "you",
+    "about", "after", "all", "also", "and", "are", "because", "been", "being", "but", "can",
+    "could", "did", "does", "doing", "each", "for", "from", "get", "got", "had", "has", "have",
+    "her", "how", "into", "its", "just", "like", "make", "may", "new", "not", "now", "old", "one",
+    "other", "our", "out", "over", "see", "should", "some", "such", "than", "that", "the", "their",
+    "them", "then", "there", "these", "this", "was", "way", "were", "who", "will", "with", "would",
+    "you",
 ];
 
 /// Check if a token is a stop word.
@@ -586,19 +611,14 @@ fn build_more_like_this(
     }
 
     // Tokenize and compute term frequencies, filtering stop words and short tokens
-    let mut tf_counts: std::collections::HashMap<String, usize> =
-        std::collections::HashMap::new();
+    let mut tf_counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
     let total_tokens: usize = all_text
         .split_whitespace()
         .filter(|w| w.len() > 2)
-        .map(|w| {
-            let w = w.to_lowercase();
-            w
-        })
+        .map(|w| w.to_lowercase())
         .filter(|w| !is_stop_word(w))
-        .map(|w| {
+        .inspect(|w| {
             *tf_counts.entry(w.clone()).or_insert(0) += 1;
-            w
         })
         .count();
 
@@ -613,8 +633,7 @@ fn build_more_like_this(
     let mut scored_terms: Vec<(String, f64)> = tf_counts
         .into_iter()
         .filter_map(|(term_str, tf)| {
-            let term =
-                tantivy::schema::Term::from_field_text(fields.content, &term_str);
+            let term = tantivy::schema::Term::from_field_text(fields.content, &term_str);
             let df = searcher.doc_freq(&term).unwrap_or(1) as f64;
             if df < 1.0 {
                 return None;
@@ -627,16 +646,21 @@ fn build_more_like_this(
         .collect();
 
     // Sort by TF-IDF descending — most significant terms first
-    scored_terms.sort_by(|a, b| {
-        b.1.partial_cmp(&a.1)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
+    scored_terms.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
     // Take top 20 significant terms
     let top_terms: Vec<_> = scored_terms.into_iter().take(20).collect();
 
     #[cfg(test)]
-    eprintln!("DEBUG MLT: num_docs={}, total_tokens={}, top_terms={:?}", num_docs, total_tokens, top_terms.iter().map(|(t, s)| format!("{}={:.4}", t, s)).collect::<Vec<_>>());
+    eprintln!(
+        "DEBUG MLT: num_docs={}, total_tokens={}, top_terms={:?}",
+        num_docs,
+        total_tokens,
+        top_terms
+            .iter()
+            .map(|(t, s)| format!("{}={:.4}", t, s))
+            .collect::<Vec<_>>()
+    );
 
     if top_terms.is_empty() {
         return Err(AgentScribeError::DataDir(
@@ -649,8 +673,7 @@ fn build_more_like_this(
     let mlt_clauses: Vec<(Occur, Box<dyn Query>)> = top_terms
         .iter()
         .map(|(term_str, score)| {
-            let term =
-                tantivy::schema::Term::from_field_text(fields.content, term_str);
+            let term = tantivy::schema::Term::from_field_text(fields.content, term_str);
             let boost = (score / max_score * 2.0 + 0.5) as f32;
             (
                 Occur::Should,
@@ -757,7 +780,7 @@ fn doc_to_search_result(
     let token_count = {
         let snippet_chars = snippet.as_ref().map(|s| s.len()).unwrap_or(0);
         let summary_chars = summary.as_ref().map(|s| s.len()).unwrap_or(0);
-        (snippet_chars + summary_chars + CHARS_PER_TOKEN - 1) / CHARS_PER_TOKEN
+        (snippet_chars + summary_chars).div_ceil(CHARS_PER_TOKEN)
     };
 
     Some(SearchResult {
@@ -871,7 +894,11 @@ fn apply_sort(results: &mut [SearchResult], sort: SortOrder) {
     match sort {
         SortOrder::Relevance => {
             // Already sorted by BM25 score (descending)
-            results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+            results.sort_by(|a, b| {
+                b.score
+                    .partial_cmp(&a.score)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
         }
         SortOrder::Newest => {
             results.sort_by(|a, b| {
@@ -888,11 +915,7 @@ fn apply_sort(results: &mut [SearchResult], sort: SortOrder) {
             });
         }
         SortOrder::Turns => {
-            results.sort_by(|a, b| {
-                b.turns
-                    .unwrap_or(0)
-                    .cmp(&a.turns.unwrap_or(0))
-            });
+            results.sort_by(|a, b| b.turns.unwrap_or(0).cmp(&a.turns.unwrap_or(0)));
         }
     }
 }
@@ -907,7 +930,11 @@ fn apply_sort(results: &mut [SearchResult], sort: SortOrder) {
 fn knapsack_pack(results: Vec<SearchResult>, token_budget: usize) -> Vec<SearchResult> {
     // Sort by score descending (greedy by relevance)
     let mut items = results;
-    items.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+    items.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
 
     let mut selected = Vec::new();
     let mut remaining = token_budget;
@@ -919,7 +946,7 @@ fn knapsack_pack(results: Vec<SearchResult>, token_budget: usize) -> Vec<SearchR
 
         let snippet_chars = result.snippet.as_ref().map(|s| s.len()).unwrap_or(0);
         let summary_chars = result.summary.as_ref().map(|s| s.len()).unwrap_or(0);
-        let full_cost = (snippet_chars + summary_chars + CHARS_PER_TOKEN - 1) / CHARS_PER_TOKEN;
+        let full_cost = (snippet_chars + summary_chars).div_ceil(CHARS_PER_TOKEN);
 
         if full_cost <= remaining {
             // Full result fits unchanged
@@ -928,17 +955,19 @@ fn knapsack_pack(results: Vec<SearchResult>, token_budget: usize) -> Vec<SearchR
         } else {
             // Try to fit with a truncated snippet (adaptive packing).
             // Subtract 3 chars to leave room for the "..." suffix extract_snippet may add.
-            let summary_cost = (summary_chars + CHARS_PER_TOKEN - 1) / CHARS_PER_TOKEN;
+            let summary_cost = summary_chars.div_ceil(CHARS_PER_TOKEN);
             let available_snippet_chars = remaining
                 .saturating_sub(summary_cost)
                 .saturating_mul(CHARS_PER_TOKEN)
                 .saturating_sub(3);
 
             if available_snippet_chars > 0 {
-                let truncated = result.snippet.as_deref()
+                let truncated = result
+                    .snippet
+                    .as_deref()
                     .and_then(|s| extract_snippet(s, available_snippet_chars));
                 let truncated_chars = truncated.as_ref().map(|s| s.len()).unwrap_or(0);
-                let actual_cost = (truncated_chars + summary_chars + CHARS_PER_TOKEN - 1) / CHARS_PER_TOKEN;
+                let actual_cost = (truncated_chars + summary_chars).div_ceil(CHARS_PER_TOKEN);
 
                 if actual_cost <= remaining {
                     result.snippet = truncated;
@@ -971,7 +1000,11 @@ fn knapsack_pack(results: Vec<SearchResult>, token_budget: usize) -> Vec<SearchR
 pub fn format_human(output: &SearchOutput, _snippet_length: usize) -> String {
     let mut lines = Vec::new();
 
-    let fuzzy_note = if output.fuzzy_fallback { " [fuzzy fallback]" } else { "" };
+    let fuzzy_note = if output.fuzzy_fallback {
+        " [fuzzy fallback]"
+    } else {
+        ""
+    };
     lines.push(format!(
         "{} result(s) for \"{}\"{} (searched {} sessions in {}ms)",
         output.total_matches,
@@ -1033,7 +1066,7 @@ fn word_wrap(text: &str, width: usize) -> String {
         if line_len == 0 {
             result.push_str(word);
             line_len = word.len();
-        } else if line_len + word.len() + 1 <= width {
+        } else if line_len + word.len() < width {
             result.push(' ');
             result.push_str(word);
             line_len += word.len() + 1;
@@ -1196,7 +1229,10 @@ mod tests {
         ];
         let packed = knapsack_pack(results, 45);
         assert!(!packed.is_empty(), "highest-scored item must fit");
-        assert_eq!(packed[0].session_id, "a", "highest-scored item should come first");
+        assert_eq!(
+            packed[0].session_id, "a",
+            "highest-scored item should come first"
+        );
         let total: usize = packed.iter().map(|r| r.token_count).sum();
         assert!(total <= 45, "total tokens {} exceeded budget 45", total);
     }
@@ -1217,11 +1253,18 @@ mod tests {
         ];
         let packed = knapsack_pack(results, 60);
         // "a" (25 tokens) fits fully; "b" should be truncated to fit remaining 35 tokens
-        assert_eq!(packed.len(), 2, "adaptive truncation should include both results");
+        assert_eq!(
+            packed.len(),
+            2,
+            "adaptive truncation should include both results"
+        );
         assert_eq!(packed[0].session_id, "a");
         assert_eq!(packed[1].session_id, "b");
         // Verify "b"'s snippet was truncated
-        let b_snippet = packed[1].snippet.as_ref().expect("truncated snippet should exist");
+        let b_snippet = packed[1]
+            .snippet
+            .as_ref()
+            .expect("truncated snippet should exist");
         assert!(b_snippet.len() < 200, "snippet should have been truncated");
         // Verify token_count was updated
         assert!(packed[1].token_count <= 35);
@@ -1247,7 +1290,12 @@ mod tests {
         let budget = 25;
         let packed = knapsack_pack(results, budget);
         let total: usize = packed.iter().map(|r| r.token_count).sum();
-        assert!(total <= budget, "total tokens {} exceeded budget {}", total, budget);
+        assert!(
+            total <= budget,
+            "total tokens {} exceeded budget {}",
+            total,
+            budget
+        );
     }
 
     #[test]
@@ -1356,7 +1404,8 @@ mod tests {
         let now = Utc::now();
 
         let manifest1 = {
-            let mut m = SessionManifest::new("claude/abc123".to_string(), "claude-code".to_string());
+            let mut m =
+                SessionManifest::new("claude/abc123".to_string(), "claude-code".to_string());
             m.project = Some("/home/user/myapp".to_string());
             m.started = now;
             m.turns = 10;
@@ -1367,10 +1416,21 @@ mod tests {
         };
 
         let events1 = vec![
-            Event::new(now, "claude/abc123".to_string(), "claude-code".to_string(), Role::User,
-                "I need to migrate the Postgres schema from v3 to v4".to_string()),
-            Event::new(now, "claude/abc123".to_string(), "claude-code".to_string(), Role::Assistant,
-                "I'll create a migration script that alters the table and backfills data".to_string()),
+            Event::new(
+                now,
+                "claude/abc123".to_string(),
+                "claude-code".to_string(),
+                Role::User,
+                "I need to migrate the Postgres schema from v3 to v4".to_string(),
+            ),
+            Event::new(
+                now,
+                "claude/abc123".to_string(),
+                "claude-code".to_string(),
+                Role::Assistant,
+                "I'll create a migration script that alters the table and backfills data"
+                    .to_string(),
+            ),
         ];
 
         let doc1 = build_session_document(&fields, &events1, &manifest1);
@@ -1388,10 +1448,20 @@ mod tests {
         };
 
         let events2 = vec![
-            Event::new(now - chrono::Duration::days(3), "aider/def456".to_string(), "aider".to_string(), Role::User,
-                "The connection pool is exhausting under load".to_string()),
-            Event::new(now - chrono::Duration::days(3), "aider/def456".to_string(), "aider".to_string(), Role::Assistant,
-                "Bumped max_connections to 50 and added retry logic".to_string()),
+            Event::new(
+                now - chrono::Duration::days(3),
+                "aider/def456".to_string(),
+                "aider".to_string(),
+                Role::User,
+                "The connection pool is exhausting under load".to_string(),
+            ),
+            Event::new(
+                now - chrono::Duration::days(3),
+                "aider/def456".to_string(),
+                "aider".to_string(),
+                Role::Assistant,
+                "Bumped max_connections to 50 and added retry logic".to_string(),
+            ),
         ];
 
         let doc2 = build_session_document(&fields, &events2, &manifest2);
@@ -1465,10 +1535,24 @@ mod tests {
             m
         };
         let e1 = vec![
-            Event::new(now, "claude/1".to_string(), "claude-code".to_string(), Role::User, "fix bug".to_string()),
-            Event::new(now, "claude/1".to_string(), "claude-code".to_string(), Role::Assistant, "fixed it".to_string()),
+            Event::new(
+                now,
+                "claude/1".to_string(),
+                "claude-code".to_string(),
+                Role::User,
+                "fix bug".to_string(),
+            ),
+            Event::new(
+                now,
+                "claude/1".to_string(),
+                "claude-code".to_string(),
+                Role::Assistant,
+                "fixed it".to_string(),
+            ),
         ];
-        writer.add_document(build_session_document(&fields, &e1, &m1)).unwrap();
+        writer
+            .add_document(build_session_document(&fields, &e1, &m1))
+            .unwrap();
 
         // Session 2: aider, failure
         let m2 = {
@@ -1481,10 +1565,24 @@ mod tests {
             m
         };
         let e2 = vec![
-            Event::new(now - chrono::Duration::days(1), "aider/2".to_string(), "aider".to_string(), Role::User, "fix bug".to_string()),
-            Event::new(now - chrono::Duration::days(1), "aider/2".to_string(), "aider".to_string(), Role::Assistant, "could not fix".to_string()),
+            Event::new(
+                now - chrono::Duration::days(1),
+                "aider/2".to_string(),
+                "aider".to_string(),
+                Role::User,
+                "fix bug".to_string(),
+            ),
+            Event::new(
+                now - chrono::Duration::days(1),
+                "aider/2".to_string(),
+                "aider".to_string(),
+                Role::Assistant,
+                "could not fix".to_string(),
+            ),
         ];
-        writer.add_document(build_session_document(&fields, &e2, &m2)).unwrap();
+        writer
+            .add_document(build_session_document(&fields, &e2, &m2))
+            .unwrap();
 
         writer.commit().unwrap();
         writer.wait_merging_threads().unwrap();
@@ -1541,10 +1639,24 @@ mod tests {
             m
         };
         let e = vec![
-            Event::new(now, "claude/1".to_string(), "claude-code".to_string(), Role::User, "kubernetes deployment".to_string()),
-            Event::new(now, "claude/1".to_string(), "claude-code".to_string(), Role::Assistant, "deployed to k8s".to_string()),
+            Event::new(
+                now,
+                "claude/1".to_string(),
+                "claude-code".to_string(),
+                Role::User,
+                "kubernetes deployment".to_string(),
+            ),
+            Event::new(
+                now,
+                "claude/1".to_string(),
+                "claude-code".to_string(),
+                Role::Assistant,
+                "deployed to k8s".to_string(),
+            ),
         ];
-        writer.add_document(build_session_document(&fields, &e, &m)).unwrap();
+        writer
+            .add_document(build_session_document(&fields, &e, &m))
+            .unwrap();
         writer.commit().unwrap();
         writer.wait_merging_threads().unwrap();
 
@@ -1574,17 +1686,32 @@ mod tests {
 
         let now = Utc::now();
         let m = {
-            let mut m = SessionManifest::new("claude/specific-123".to_string(), "claude-code".to_string());
+            let mut m =
+                SessionManifest::new("claude/specific-123".to_string(), "claude-code".to_string());
             m.started = now;
             m.turns = 5;
             m.summary = Some("A very specific session".to_string());
             m
         };
         let e = vec![
-            Event::new(now, "claude/specific-123".to_string(), "claude-code".to_string(), Role::User, "do something".to_string()),
-            Event::new(now, "claude/specific-123".to_string(), "claude-code".to_string(), Role::Assistant, "done".to_string()),
+            Event::new(
+                now,
+                "claude/specific-123".to_string(),
+                "claude-code".to_string(),
+                Role::User,
+                "do something".to_string(),
+            ),
+            Event::new(
+                now,
+                "claude/specific-123".to_string(),
+                "claude-code".to_string(),
+                Role::Assistant,
+                "done".to_string(),
+            ),
         ];
-        writer.add_document(build_session_document(&fields, &e, &m)).unwrap();
+        writer
+            .add_document(build_session_document(&fields, &e, &m))
+            .unwrap();
         writer.commit().unwrap();
         writer.wait_merging_threads().unwrap();
 
@@ -1624,10 +1751,16 @@ mod tests {
             m.turns = 1;
             m
         };
-        let e1 = vec![
-            Event::new(now - chrono::Duration::days(30), "old/1".to_string(), "test".to_string(), Role::User, "old stuff".to_string()),
-        ];
-        writer.add_document(build_session_document(&fields, &e1, &m1)).unwrap();
+        let e1 = vec![Event::new(
+            now - chrono::Duration::days(30),
+            "old/1".to_string(),
+            "test".to_string(),
+            Role::User,
+            "old stuff".to_string(),
+        )];
+        writer
+            .add_document(build_session_document(&fields, &e1, &m1))
+            .unwrap();
 
         // Recent session
         let m2 = {
@@ -1636,10 +1769,16 @@ mod tests {
             m.turns = 1;
             m
         };
-        let e2 = vec![
-            Event::new(now - chrono::Duration::hours(1), "new/2".to_string(), "test".to_string(), Role::User, "new stuff".to_string()),
-        ];
-        writer.add_document(build_session_document(&fields, &e2, &m2)).unwrap();
+        let e2 = vec![Event::new(
+            now - chrono::Duration::hours(1),
+            "new/2".to_string(),
+            "test".to_string(),
+            Role::User,
+            "new stuff".to_string(),
+        )];
+        writer
+            .add_document(build_session_document(&fields, &e2, &m2))
+            .unwrap();
 
         writer.commit().unwrap();
         writer.wait_merging_threads().unwrap();
@@ -1673,7 +1812,7 @@ mod tests {
 
         let (schema, _) = build_schema();
         std::fs::create_dir_all(&index_path).unwrap();
-        let index = tantivy::Index::create_in_dir(&index_path, schema).unwrap();
+        let _index = tantivy::Index::create_in_dir(&index_path, schema).unwrap();
 
         let opts = SearchOptions {
             query: None,
@@ -1703,7 +1842,10 @@ mod tests {
 
         let result = execute_search(temp_dir.path(), &opts);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("No search query provided"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("No search query provided"));
     }
 
     #[test]
@@ -1750,7 +1892,9 @@ mod tests {
             Event::new(now, "claude/src-1".to_string(), "claude-code".to_string(), Role::Assistant,
                 "The migration ran successfully using ALTER TABLE and pg_dump for backup".to_string()),
         ];
-        writer.add_document(build_session_document(&fields, &e1, &m1)).unwrap();
+        writer
+            .add_document(build_session_document(&fields, &e1, &m1))
+            .unwrap();
 
         // Similar session: also postgres work
         let m2 = {
@@ -1763,16 +1907,30 @@ mod tests {
             m
         };
         let e2 = vec![
-            Event::new(now - chrono::Duration::days(1), "aider/sim-1".to_string(), "aider".to_string(), Role::User,
-                "Add connection pooling to the postgres database".to_string()),
-            Event::new(now - chrono::Duration::days(1), "aider/sim-1".to_string(), "aider".to_string(), Role::Assistant,
-                "Configured pgBouncer for postgres connection pooling with max 50 connections".to_string()),
+            Event::new(
+                now - chrono::Duration::days(1),
+                "aider/sim-1".to_string(),
+                "aider".to_string(),
+                Role::User,
+                "Add connection pooling to the postgres database".to_string(),
+            ),
+            Event::new(
+                now - chrono::Duration::days(1),
+                "aider/sim-1".to_string(),
+                "aider".to_string(),
+                Role::Assistant,
+                "Configured pgBouncer for postgres connection pooling with max 50 connections"
+                    .to_string(),
+            ),
         ];
-        writer.add_document(build_session_document(&fields, &e2, &m2)).unwrap();
+        writer
+            .add_document(build_session_document(&fields, &e2, &m2))
+            .unwrap();
 
         // Dissimilar session: completely different topic
         let m3 = {
-            let mut m = SessionManifest::new("claude/unrelated".to_string(), "claude-code".to_string());
+            let mut m =
+                SessionManifest::new("claude/unrelated".to_string(), "claude-code".to_string());
             m.project = Some("/home/user/frontend".to_string());
             m.started = now - chrono::Duration::days(2);
             m.turns = 3;
@@ -1781,12 +1939,24 @@ mod tests {
             m
         };
         let e3 = vec![
-            Event::new(now - chrono::Duration::days(2), "claude/unrelated".to_string(), "claude-code".to_string(), Role::User,
-                "The flexbox layout is broken on mobile".to_string()),
-            Event::new(now - chrono::Duration::days(2), "claude/unrelated".to_string(), "claude-code".to_string(), Role::Assistant,
-                "Fixed the CSS grid and flexbox properties for responsive design".to_string()),
+            Event::new(
+                now - chrono::Duration::days(2),
+                "claude/unrelated".to_string(),
+                "claude-code".to_string(),
+                Role::User,
+                "The flexbox layout is broken on mobile".to_string(),
+            ),
+            Event::new(
+                now - chrono::Duration::days(2),
+                "claude/unrelated".to_string(),
+                "claude-code".to_string(),
+                Role::Assistant,
+                "Fixed the CSS grid and flexbox properties for responsive design".to_string(),
+            ),
         ];
-        writer.add_document(build_session_document(&fields, &e3, &m3)).unwrap();
+        writer
+            .add_document(build_session_document(&fields, &e3, &m3))
+            .unwrap();
 
         writer.commit().unwrap();
         writer.wait_merging_threads().unwrap();
@@ -1810,11 +1980,25 @@ mod tests {
         // The postgres session should rank higher than the CSS session
         if result.results.len() >= 2 {
             let postgres_found = result.results.iter().any(|r| r.session_id == "aider/sim-1");
-            let css_found = result.results.iter().any(|r| r.session_id == "claude/unrelated");
+            let css_found = result
+                .results
+                .iter()
+                .any(|r| r.session_id == "claude/unrelated");
             if postgres_found && css_found {
-                let p_idx = result.results.iter().position(|r| r.session_id == "aider/sim-1").unwrap();
-                let c_idx = result.results.iter().position(|r| r.session_id == "claude/unrelated").unwrap();
-                assert!(p_idx < c_idx, "postgres session should rank higher than CSS session");
+                let p_idx = result
+                    .results
+                    .iter()
+                    .position(|r| r.session_id == "aider/sim-1")
+                    .unwrap();
+                let c_idx = result
+                    .results
+                    .iter()
+                    .position(|r| r.session_id == "claude/unrelated")
+                    .unwrap();
+                assert!(
+                    p_idx < c_idx,
+                    "postgres session should rank higher than CSS session"
+                );
             }
         }
     }
@@ -1835,10 +2019,16 @@ mod tests {
 
         let now = Utc::now();
         let m = SessionManifest::new("claude/exists".to_string(), "claude-code".to_string());
-        let e = vec![
-            Event::new(now, "claude/exists".to_string(), "claude-code".to_string(), Role::User, "hello".to_string()),
-        ];
-        writer.add_document(build_session_document(&fields, &e, &m)).unwrap();
+        let e = vec![Event::new(
+            now,
+            "claude/exists".to_string(),
+            "claude-code".to_string(),
+            Role::User,
+            "hello".to_string(),
+        )];
+        writer
+            .add_document(build_session_document(&fields, &e, &m))
+            .unwrap();
         writer.commit().unwrap();
         writer.wait_merging_threads().unwrap();
 
@@ -1877,12 +2067,24 @@ mod tests {
             m
         };
         let e1 = vec![
-            Event::new(now, "claude/src".to_string(), "claude-code".to_string(), Role::User,
-                "fix the postgres connection issue".to_string()),
-            Event::new(now, "claude/src".to_string(), "claude-code".to_string(), Role::Assistant,
-                "reconfigured postgres connection string".to_string()),
+            Event::new(
+                now,
+                "claude/src".to_string(),
+                "claude-code".to_string(),
+                Role::User,
+                "fix the postgres connection issue".to_string(),
+            ),
+            Event::new(
+                now,
+                "claude/src".to_string(),
+                "claude-code".to_string(),
+                Role::Assistant,
+                "reconfigured postgres connection string".to_string(),
+            ),
         ];
-        writer.add_document(build_session_document(&fields, &e1, &m1)).unwrap();
+        writer
+            .add_document(build_session_document(&fields, &e1, &m1))
+            .unwrap();
 
         // Similar: aider session about postgres
         let m2 = {
@@ -1893,12 +2095,24 @@ mod tests {
             m
         };
         let e2 = vec![
-            Event::new(now, "aider/sim".to_string(), "aider".to_string(), Role::User,
-                "postgres migration failed".to_string()),
-            Event::new(now, "aider/sim".to_string(), "aider".to_string(), Role::Assistant,
-                "fixed the postgres migration script".to_string()),
+            Event::new(
+                now,
+                "aider/sim".to_string(),
+                "aider".to_string(),
+                Role::User,
+                "postgres migration failed".to_string(),
+            ),
+            Event::new(
+                now,
+                "aider/sim".to_string(),
+                "aider".to_string(),
+                Role::Assistant,
+                "fixed the postgres migration script".to_string(),
+            ),
         ];
-        writer.add_document(build_session_document(&fields, &e2, &m2)).unwrap();
+        writer
+            .add_document(build_session_document(&fields, &e2, &m2))
+            .unwrap();
 
         writer.commit().unwrap();
         writer.wait_merging_threads().unwrap();
@@ -1941,12 +2155,25 @@ mod tests {
             m
         };
         let e1 = vec![
-            Event::new(now, "claude/k8s-1".to_string(), "claude-code".to_string(), Role::User,
-                "deploy the application to kubernetes cluster using kubectl".to_string()),
-            Event::new(now, "claude/k8s-1".to_string(), "claude-code".to_string(), Role::Assistant,
-                "created kubernetes deployment yaml manifest and applied kubectl rollout".to_string()),
+            Event::new(
+                now,
+                "claude/k8s-1".to_string(),
+                "claude-code".to_string(),
+                Role::User,
+                "deploy the application to kubernetes cluster using kubectl".to_string(),
+            ),
+            Event::new(
+                now,
+                "claude/k8s-1".to_string(),
+                "claude-code".to_string(),
+                Role::Assistant,
+                "created kubernetes deployment yaml manifest and applied kubectl rollout"
+                    .to_string(),
+            ),
         ];
-        writer.add_document(build_session_document(&fields, &e1, &m1)).unwrap();
+        writer
+            .add_document(build_session_document(&fields, &e1, &m1))
+            .unwrap();
 
         // Cross-agent similar: aider session about kubernetes deployment
         let m2 = {
@@ -1958,28 +2185,56 @@ mod tests {
             m
         };
         let e2 = vec![
-            Event::new(now, "aider/k8s-2".to_string(), "aider".to_string(), Role::User,
-                "deploy kubernetes deployment for the application".to_string()),
-            Event::new(now, "aider/k8s-2".to_string(), "aider".to_string(), Role::Assistant,
-                "created kubernetes deployment yaml and applied kubectl rollout successfully".to_string()),
+            Event::new(
+                now,
+                "aider/k8s-2".to_string(),
+                "aider".to_string(),
+                Role::User,
+                "deploy kubernetes deployment for the application".to_string(),
+            ),
+            Event::new(
+                now,
+                "aider/k8s-2".to_string(),
+                "aider".to_string(),
+                Role::Assistant,
+                "created kubernetes deployment yaml and applied kubectl rollout successfully"
+                    .to_string(),
+            ),
         ];
-        writer.add_document(build_session_document(&fields, &e2, &m2)).unwrap();
+        writer
+            .add_document(build_session_document(&fields, &e2, &m2))
+            .unwrap();
 
         // Unrelated session to dilute common terms
         let m3 = {
-            let mut m = SessionManifest::new("claude/unrelated-css".to_string(), "claude-code".to_string());
+            let mut m = SessionManifest::new(
+                "claude/unrelated-css".to_string(),
+                "claude-code".to_string(),
+            );
             m.started = now;
             m.turns = 2;
             m.tags = vec!["css".to_string(), "frontend".to_string()];
             m
         };
         let e3 = vec![
-            Event::new(now, "claude/unrelated-css".to_string(), "claude-code".to_string(), Role::User,
-                "fix flexbox layout".to_string()),
-            Event::new(now, "claude/unrelated-css".to_string(), "claude-code".to_string(), Role::Assistant,
-                "updated css grid properties".to_string()),
+            Event::new(
+                now,
+                "claude/unrelated-css".to_string(),
+                "claude-code".to_string(),
+                Role::User,
+                "fix flexbox layout".to_string(),
+            ),
+            Event::new(
+                now,
+                "claude/unrelated-css".to_string(),
+                "claude-code".to_string(),
+                Role::Assistant,
+                "updated css grid properties".to_string(),
+            ),
         ];
-        writer.add_document(build_session_document(&fields, &e3, &m3)).unwrap();
+        writer
+            .add_document(build_session_document(&fields, &e3, &m3))
+            .unwrap();
 
         writer.commit().unwrap();
         writer.wait_merging_threads().unwrap();
@@ -1996,49 +2251,87 @@ mod tests {
         let reader = index.reader().unwrap();
         let searcher = reader.searcher();
         let k8s_term = tantivy::schema::Term::from_field_text(fields.content, "kubernetes");
-        eprintln!("DEBUG: kubernetes doc_freq={:?}", searcher.doc_freq(&k8s_term));
-        let (schema2, fields2) = build_schema();
+        eprintln!(
+            "DEBUG: kubernetes doc_freq={:?}",
+            searcher.doc_freq(&k8s_term)
+        );
+        let (_schema2, fields2) = build_schema();
         let k8s_query = TermQuery::new(k8s_term, tantivy::schema::IndexRecordOption::Basic);
-        let k8s_docs: Vec<(f32, _)> = searcher.search(&k8s_query, &TopDocs::with_limit(10)).unwrap();
+        let k8s_docs: Vec<(f32, _)> = searcher
+            .search(&k8s_query, &TopDocs::with_limit(10))
+            .unwrap();
         eprintln!("DEBUG: kubernetes query matched {} docs", k8s_docs.len());
         for (score, addr) in &k8s_docs {
             let d: TantivyDocument = searcher.doc(*addr).unwrap();
-            let sid = d.get_first(fields2.session_id).and_then(|v| v.as_str()).unwrap_or("?");
+            let sid = d
+                .get_first(fields2.session_id)
+                .and_then(|v| v.as_str())
+                .unwrap_or("?");
             eprintln!("DEBUG:   {} score={}", sid, score);
         }
 
         // Debug: test the MLT Should-only BooleanQuery directly
         let mlt_query = build_more_like_this(&searcher, &fields, "claude/k8s-1").unwrap();
-        let mlt_docs: Vec<(f32, _)> = searcher.search(&*mlt_query, &TopDocs::with_limit(10)).unwrap();
-        eprintln!("DEBUG: MLT Should-only query matched {} docs", mlt_docs.len());
+        let mlt_docs: Vec<(f32, _)> = searcher
+            .search(&*mlt_query, &TopDocs::with_limit(10))
+            .unwrap();
+        eprintln!(
+            "DEBUG: MLT Should-only query matched {} docs",
+            mlt_docs.len()
+        );
         for (score, addr) in &mlt_docs {
             let d: TantivyDocument = searcher.doc(*addr).unwrap();
-            let sid = d.get_first(fields2.session_id).and_then(|v| v.as_str()).unwrap_or("?");
+            let sid = d
+                .get_first(fields2.session_id)
+                .and_then(|v| v.as_str())
+                .unwrap_or("?");
             eprintln!("DEBUG: MLT   {} score={}", sid, score);
         }
 
         // Debug: test with MustNot at same level
-        let exclude_term = tantivy::schema::Term::from_field_text(fields.session_id, "claude/k8s-1");
+        let exclude_term =
+            tantivy::schema::Term::from_field_text(fields.session_id, "claude/k8s-1");
         let combined = BooleanQuery::new(vec![
             (Occur::Must, mlt_query),
-            (Occur::MustNot, Box::new(TermQuery::new(exclude_term, tantivy::schema::IndexRecordOption::Basic)) as Box<dyn Query>),
+            (
+                Occur::MustNot,
+                Box::new(TermQuery::new(
+                    exclude_term,
+                    tantivy::schema::IndexRecordOption::Basic,
+                )) as Box<dyn Query>,
+            ),
         ]);
-        let combined_docs: Vec<(f32, _)> = searcher.search(&combined, &TopDocs::with_limit(10)).unwrap();
-        eprintln!("DEBUG: combined Must+MustNot query matched {} docs", combined_docs.len());
+        let combined_docs: Vec<(f32, _)> = searcher
+            .search(&combined, &TopDocs::with_limit(10))
+            .unwrap();
+        eprintln!(
+            "DEBUG: combined Must+MustNot query matched {} docs",
+            combined_docs.len()
+        );
         for (score, addr) in &combined_docs {
             let d: TantivyDocument = searcher.doc(*addr).unwrap();
-            let sid = d.get_first(fields2.session_id).and_then(|v| v.as_str()).unwrap_or("?");
+            let sid = d
+                .get_first(fields2.session_id)
+                .and_then(|v| v.as_str())
+                .unwrap_or("?");
             eprintln!("DEBUG: comb  {} score={}", sid, score);
         }
 
-        assert!(result.total_matches >= 1, "expected at least 1 match, got {}", result.total_matches);
+        assert!(
+            result.total_matches >= 1,
+            "expected at least 1 match, got {}",
+            result.total_matches
+        );
 
         // Should find the aider session (cross-agent discovery)
         let cross_agent_found = result
             .results
             .iter()
             .any(|r| r.session_id == "aider/k8s-2" && r.source_agent == "aider");
-        assert!(cross_agent_found, "should discover cross-agent similar sessions");
+        assert!(
+            cross_agent_found,
+            "should discover cross-agent similar sessions"
+        );
     }
 
     // Helper to create default search options
@@ -2072,7 +2365,7 @@ mod tests {
 
     // Helper to make a test search result
     fn make_test_result(id: &str, score: f32, text_len: usize) -> SearchResult {
-        let token_count = (text_len + CHARS_PER_TOKEN - 1) / CHARS_PER_TOKEN;
+        let token_count = text_len.div_ceil(CHARS_PER_TOKEN);
         SearchResult {
             session_id: id.to_string(),
             source_agent: "test".to_string(),
@@ -2183,7 +2476,7 @@ mod tests {
             timestamp: None,
             turns: Some(5),
             outcome: None,
-            score: 3.14,
+            score: 3.0,
             summary: None,
             snippet: Some("some code snippet".to_string()),
             tags: vec!["python".to_string(), "docker".to_string()],
@@ -2221,23 +2514,49 @@ mod tests {
         m1.started = now;
         m1.turns = 2;
         let e1 = vec![
-            Event::new(now, "claude/err-1".to_string(), "claude-code".to_string(), Role::User,
-                "help fix this error".to_string()),
-            Event::new(now, "claude/err-1".to_string(), "claude-code".to_string(), Role::ToolResult,
-                "connection refused error".to_string())
-                .with_error_fingerprints(vec!["connectionrefusederror".to_string()]),
+            Event::new(
+                now,
+                "claude/err-1".to_string(),
+                "claude-code".to_string(),
+                Role::User,
+                "help fix this error".to_string(),
+            ),
+            Event::new(
+                now,
+                "claude/err-1".to_string(),
+                "claude-code".to_string(),
+                Role::ToolResult,
+                "connection refused error".to_string(),
+            )
+            .with_error_fingerprints(vec!["connectionrefusederror".to_string()]),
         ];
-        writer.add_document(build_session_document(&fields, &e1, &m1)).unwrap();
+        writer
+            .add_document(build_session_document(&fields, &e1, &m1))
+            .unwrap();
 
         // Session without the error fingerprint
         let mut m2 = SessionManifest::new("claude/noerr".to_string(), "claude-code".to_string());
         m2.started = now;
         m2.turns = 2;
         let e2 = vec![
-            Event::new(now, "claude/noerr".to_string(), "claude-code".to_string(), Role::User, "normal session".to_string()),
-            Event::new(now, "claude/noerr".to_string(), "claude-code".to_string(), Role::Assistant, "done".to_string()),
+            Event::new(
+                now,
+                "claude/noerr".to_string(),
+                "claude-code".to_string(),
+                Role::User,
+                "normal session".to_string(),
+            ),
+            Event::new(
+                now,
+                "claude/noerr".to_string(),
+                "claude-code".to_string(),
+                Role::Assistant,
+                "done".to_string(),
+            ),
         ];
-        writer.add_document(build_session_document(&fields, &e2, &m2)).unwrap();
+        writer
+            .add_document(build_session_document(&fields, &e2, &m2))
+            .unwrap();
         writer.commit().unwrap();
         writer.wait_merging_threads().unwrap();
 
@@ -2268,9 +2587,16 @@ mod tests {
 
         // Session document
         let m = SessionManifest::new("claude/code-1".to_string(), "claude-code".to_string());
-        let e = vec![Event::new(now, "claude/code-1".to_string(), "claude-code".to_string(),
-            Role::User, "write a function".to_string())];
-        writer.add_document(build_session_document(&fields, &e, &m)).unwrap();
+        let e = vec![Event::new(
+            now,
+            "claude/code-1".to_string(),
+            "claude-code".to_string(),
+            Role::User,
+            "write a function".to_string(),
+        )];
+        writer
+            .add_document(build_session_document(&fields, &e, &m))
+            .unwrap();
 
         // Code artifact document
         let code_doc = build_code_artifact_document(
@@ -2317,18 +2643,36 @@ mod tests {
         let now = Utc::now();
 
         // Rust code artifact
-        writer.add_document(build_code_artifact_document(
-            &fields, "claude/rust-s", "claude-code", None, now, "rust",
-            "src/main.rs", "fn handle_request(req: &Request) -> Response { process(req) }",
-            true, None,
-        )).unwrap();
+        writer
+            .add_document(build_code_artifact_document(
+                &fields,
+                "claude/rust-s",
+                "claude-code",
+                None,
+                now,
+                "rust",
+                "src/main.rs",
+                "fn handle_request(req: &Request) -> Response { process(req) }",
+                true,
+                None,
+            ))
+            .unwrap();
 
         // Python code artifact
-        writer.add_document(build_code_artifact_document(
-            &fields, "claude/py-s", "claude-code", None, now, "python",
-            "app/handler.py", "def handle_request(req): return process(req)",
-            true, None,
-        )).unwrap();
+        writer
+            .add_document(build_code_artifact_document(
+                &fields,
+                "claude/py-s",
+                "claude-code",
+                None,
+                now,
+                "python",
+                "app/handler.py",
+                "def handle_request(req): return process(req)",
+                true,
+                None,
+            ))
+            .unwrap();
         writer.commit().unwrap();
         writer.wait_merging_threads().unwrap();
 
@@ -2364,20 +2708,48 @@ mod tests {
         m1.started = now;
         m1.turns = 2;
         let e1 = vec![
-            Event::new(now, "claude/1".to_string(), "claude-code".to_string(), Role::User, "debug the service".to_string()),
-            Event::new(now, "claude/1".to_string(), "claude-code".to_string(), Role::Assistant, "found the bug".to_string()),
+            Event::new(
+                now,
+                "claude/1".to_string(),
+                "claude-code".to_string(),
+                Role::User,
+                "debug the service".to_string(),
+            ),
+            Event::new(
+                now,
+                "claude/1".to_string(),
+                "claude-code".to_string(),
+                Role::Assistant,
+                "found the bug".to_string(),
+            ),
         ];
-        writer.add_document(build_session_document(&fields, &e1, &m1)).unwrap();
+        writer
+            .add_document(build_session_document(&fields, &e1, &m1))
+            .unwrap();
 
         let mut m2 = SessionManifest::new("claude/2".to_string(), "claude-code".to_string());
         m2.project = Some("/home/user/project-beta".to_string());
         m2.started = now;
         m2.turns = 2;
         let e2 = vec![
-            Event::new(now, "claude/2".to_string(), "claude-code".to_string(), Role::User, "debug the service".to_string()),
-            Event::new(now, "claude/2".to_string(), "claude-code".to_string(), Role::Assistant, "fixed it".to_string()),
+            Event::new(
+                now,
+                "claude/2".to_string(),
+                "claude-code".to_string(),
+                Role::User,
+                "debug the service".to_string(),
+            ),
+            Event::new(
+                now,
+                "claude/2".to_string(),
+                "claude-code".to_string(),
+                Role::Assistant,
+                "fixed it".to_string(),
+            ),
         ];
-        writer.add_document(build_session_document(&fields, &e2, &m2)).unwrap();
+        writer
+            .add_document(build_session_document(&fields, &e2, &m2))
+            .unwrap();
         writer.commit().unwrap();
         writer.wait_merging_threads().unwrap();
 
@@ -2389,7 +2761,10 @@ mod tests {
         let result = execute_search(temp_dir.path(), &opts).unwrap();
         assert_eq!(result.results.len(), 1);
         assert_eq!(result.results[0].session_id, "claude/1");
-        assert_eq!(result.results[0].project.as_deref(), Some("/home/user/project-alpha"));
+        assert_eq!(
+            result.results[0].project.as_deref(),
+            Some("/home/user/project-alpha")
+        );
     }
 
     #[test]
@@ -2412,20 +2787,48 @@ mod tests {
         m1.started = now;
         m1.turns = 2;
         let e1 = vec![
-            Event::new(now, "claude/sonnet-1".to_string(), "claude-code".to_string(), Role::User, "refactor the code".to_string()),
-            Event::new(now, "claude/sonnet-1".to_string(), "claude-code".to_string(), Role::Assistant, "done".to_string()),
+            Event::new(
+                now,
+                "claude/sonnet-1".to_string(),
+                "claude-code".to_string(),
+                Role::User,
+                "refactor the code".to_string(),
+            ),
+            Event::new(
+                now,
+                "claude/sonnet-1".to_string(),
+                "claude-code".to_string(),
+                Role::Assistant,
+                "done".to_string(),
+            ),
         ];
-        writer.add_document(build_session_document(&fields, &e1, &m1)).unwrap();
+        writer
+            .add_document(build_session_document(&fields, &e1, &m1))
+            .unwrap();
 
         let mut m2 = SessionManifest::new("claude/opus-1".to_string(), "claude-code".to_string());
         m2.model = Some("claude-opus-4-6".to_string());
         m2.started = now;
         m2.turns = 2;
         let e2 = vec![
-            Event::new(now, "claude/opus-1".to_string(), "claude-code".to_string(), Role::User, "refactor the code".to_string()),
-            Event::new(now, "claude/opus-1".to_string(), "claude-code".to_string(), Role::Assistant, "done".to_string()),
+            Event::new(
+                now,
+                "claude/opus-1".to_string(),
+                "claude-code".to_string(),
+                Role::User,
+                "refactor the code".to_string(),
+            ),
+            Event::new(
+                now,
+                "claude/opus-1".to_string(),
+                "claude-code".to_string(),
+                Role::Assistant,
+                "done".to_string(),
+            ),
         ];
-        writer.add_document(build_session_document(&fields, &e2, &m2)).unwrap();
+        writer
+            .add_document(build_session_document(&fields, &e2, &m2))
+            .unwrap();
         writer.commit().unwrap();
         writer.wait_merging_threads().unwrap();
 
@@ -2437,7 +2840,10 @@ mod tests {
         let result = execute_search(temp_dir.path(), &opts).unwrap();
         assert_eq!(result.results.len(), 1);
         assert_eq!(result.results[0].session_id, "claude/sonnet-1");
-        assert_eq!(result.results[0].model.as_deref(), Some("claude-sonnet-4-5"));
+        assert_eq!(
+            result.results[0].model.as_deref(),
+            Some("claude-sonnet-4-5")
+        );
     }
 
     #[test]
@@ -2463,22 +2869,53 @@ mod tests {
         m1.started = now;
         m1.turns = 2;
         let e1 = vec![
-            Event::new(now, "claude/target".to_string(), "claude-code".to_string(), Role::User, "fix memory leak".to_string()),
-            Event::new(now, "claude/target".to_string(), "claude-code".to_string(), Role::Assistant, "fixed it".to_string()),
+            Event::new(
+                now,
+                "claude/target".to_string(),
+                "claude-code".to_string(),
+                Role::User,
+                "fix memory leak".to_string(),
+            ),
+            Event::new(
+                now,
+                "claude/target".to_string(),
+                "claude-code".to_string(),
+                Role::Assistant,
+                "fixed it".to_string(),
+            ),
         ];
-        writer.add_document(build_session_document(&fields, &e1, &m1)).unwrap();
+        writer
+            .add_document(build_session_document(&fields, &e1, &m1))
+            .unwrap();
 
         // Wrong outcome (failure instead of success)
-        let mut m2 = SessionManifest::new("claude/wrong-outcome".to_string(), "claude-code".to_string());
+        let mut m2 = SessionManifest::new(
+            "claude/wrong-outcome".to_string(),
+            "claude-code".to_string(),
+        );
         m2.outcome = Some("failure".to_string());
         m2.tags = vec!["rust".to_string()];
         m2.started = now;
         m2.turns = 2;
         let e2 = vec![
-            Event::new(now, "claude/wrong-outcome".to_string(), "claude-code".to_string(), Role::User, "fix memory leak".to_string()),
-            Event::new(now, "claude/wrong-outcome".to_string(), "claude-code".to_string(), Role::Assistant, "failed".to_string()),
+            Event::new(
+                now,
+                "claude/wrong-outcome".to_string(),
+                "claude-code".to_string(),
+                Role::User,
+                "fix memory leak".to_string(),
+            ),
+            Event::new(
+                now,
+                "claude/wrong-outcome".to_string(),
+                "claude-code".to_string(),
+                Role::Assistant,
+                "failed".to_string(),
+            ),
         ];
-        writer.add_document(build_session_document(&fields, &e2, &m2)).unwrap();
+        writer
+            .add_document(build_session_document(&fields, &e2, &m2))
+            .unwrap();
 
         // Wrong agent (aider instead of claude-code)
         let mut m3 = SessionManifest::new("aider/wrong-agent".to_string(), "aider".to_string());
@@ -2487,22 +2924,51 @@ mod tests {
         m3.started = now;
         m3.turns = 2;
         let e3 = vec![
-            Event::new(now, "aider/wrong-agent".to_string(), "aider".to_string(), Role::User, "fix memory leak".to_string()),
-            Event::new(now, "aider/wrong-agent".to_string(), "aider".to_string(), Role::Assistant, "fixed".to_string()),
+            Event::new(
+                now,
+                "aider/wrong-agent".to_string(),
+                "aider".to_string(),
+                Role::User,
+                "fix memory leak".to_string(),
+            ),
+            Event::new(
+                now,
+                "aider/wrong-agent".to_string(),
+                "aider".to_string(),
+                Role::Assistant,
+                "fixed".to_string(),
+            ),
         ];
-        writer.add_document(build_session_document(&fields, &e3, &m3)).unwrap();
+        writer
+            .add_document(build_session_document(&fields, &e3, &m3))
+            .unwrap();
 
         // Wrong tag (python instead of rust)
-        let mut m4 = SessionManifest::new("claude/wrong-tag".to_string(), "claude-code".to_string());
+        let mut m4 =
+            SessionManifest::new("claude/wrong-tag".to_string(), "claude-code".to_string());
         m4.outcome = Some("success".to_string());
         m4.tags = vec!["python".to_string()];
         m4.started = now;
         m4.turns = 2;
         let e4 = vec![
-            Event::new(now, "claude/wrong-tag".to_string(), "claude-code".to_string(), Role::User, "fix memory leak".to_string()),
-            Event::new(now, "claude/wrong-tag".to_string(), "claude-code".to_string(), Role::Assistant, "fixed".to_string()),
+            Event::new(
+                now,
+                "claude/wrong-tag".to_string(),
+                "claude-code".to_string(),
+                Role::User,
+                "fix memory leak".to_string(),
+            ),
+            Event::new(
+                now,
+                "claude/wrong-tag".to_string(),
+                "claude-code".to_string(),
+                Role::Assistant,
+                "fixed".to_string(),
+            ),
         ];
-        writer.add_document(build_session_document(&fields, &e4, &m4)).unwrap();
+        writer
+            .add_document(build_session_document(&fields, &e4, &m4))
+            .unwrap();
 
         writer.commit().unwrap();
         writer.wait_merging_threads().unwrap();
@@ -2538,12 +3004,24 @@ mod tests {
         m.turns = 2;
         m.summary = Some("Unicode test session with authentication".to_string());
         let e = vec![
-            Event::new(now, "claude/unicode".to_string(), "claude-code".to_string(), Role::User,
-                "Fix authentication bug in the system".to_string()),
-            Event::new(now, "claude/unicode".to_string(), "claude-code".to_string(), Role::Assistant,
-                "Fixed authentication: 日本語コメント and Ответ на русском".to_string()),
+            Event::new(
+                now,
+                "claude/unicode".to_string(),
+                "claude-code".to_string(),
+                Role::User,
+                "Fix authentication bug in the system".to_string(),
+            ),
+            Event::new(
+                now,
+                "claude/unicode".to_string(),
+                "claude-code".to_string(),
+                Role::Assistant,
+                "Fixed authentication: 日本語コメント and Ответ на русском".to_string(),
+            ),
         ];
-        writer.add_document(build_session_document(&fields, &e, &m)).unwrap();
+        writer
+            .add_document(build_session_document(&fields, &e, &m))
+            .unwrap();
         writer.commit().unwrap();
         writer.wait_merging_threads().unwrap();
 
@@ -2574,16 +3052,25 @@ mod tests {
         // Session with no events
         let m_empty = SessionManifest::new("claude/empty".to_string(), "claude-code".to_string());
         let e_empty: Vec<Event> = vec![];
-        writer.add_document(build_session_document(&fields, &e_empty, &m_empty)).unwrap();
+        writer
+            .add_document(build_session_document(&fields, &e_empty, &m_empty))
+            .unwrap();
 
         // Normal session to ensure it still finds the right one
-        let mut m_normal = SessionManifest::new("claude/normal".to_string(), "claude-code".to_string());
+        let mut m_normal =
+            SessionManifest::new("claude/normal".to_string(), "claude-code".to_string());
         m_normal.started = now;
         m_normal.turns = 1;
-        let e_normal = vec![
-            Event::new(now, "claude/normal".to_string(), "claude-code".to_string(), Role::User, "fix the auth bug".to_string()),
-        ];
-        writer.add_document(build_session_document(&fields, &e_normal, &m_normal)).unwrap();
+        let e_normal = vec![Event::new(
+            now,
+            "claude/normal".to_string(),
+            "claude-code".to_string(),
+            Role::User,
+            "fix the auth bug".to_string(),
+        )];
+        writer
+            .add_document(build_session_document(&fields, &e_normal, &m_normal))
+            .unwrap();
         writer.commit().unwrap();
         writer.wait_merging_threads().unwrap();
 
@@ -2617,11 +3104,16 @@ mod tests {
             let mut m = SessionManifest::new(session_id.clone(), "claude-code".to_string());
             m.started = now - chrono::Duration::hours(i as i64);
             m.turns = 1;
-            let e = vec![
-                Event::new(now, session_id.clone(), "claude-code".to_string(), Role::User,
-                    "debug the authentication code".to_string()),
-            ];
-            writer.add_document(build_session_document(&fields, &e, &m)).unwrap();
+            let e = vec![Event::new(
+                now,
+                session_id.clone(),
+                "claude-code".to_string(),
+                Role::User,
+                "debug the authentication code".to_string(),
+            )];
+            writer
+                .add_document(build_session_document(&fields, &e, &m))
+                .unwrap();
         }
         writer.commit().unwrap();
         writer.wait_merging_threads().unwrap();
@@ -2643,7 +3135,10 @@ mod tests {
         };
         let offset_results = execute_search(temp_dir.path(), &opts_offset).unwrap();
         assert_eq!(offset_results.results.len(), 2);
-        assert_eq!(offset_results.results[0].session_id, all_results.results[1].session_id);
+        assert_eq!(
+            offset_results.results[0].session_id,
+            all_results.results[1].session_id
+        );
     }
 
     #[test]
@@ -2663,26 +3158,56 @@ mod tests {
         let now = Utc::now();
 
         // Session with both rust and docker tags
-        let mut m1 = SessionManifest::new("claude/multi-tag".to_string(), "claude-code".to_string());
+        let mut m1 =
+            SessionManifest::new("claude/multi-tag".to_string(), "claude-code".to_string());
         m1.tags = vec!["rust".to_string(), "docker".to_string()];
         m1.started = now;
         m1.turns = 2;
         let e1 = vec![
-            Event::new(now, "claude/multi-tag".to_string(), "claude-code".to_string(), Role::User, "containerize the rust app".to_string()),
-            Event::new(now, "claude/multi-tag".to_string(), "claude-code".to_string(), Role::Assistant, "done".to_string()),
+            Event::new(
+                now,
+                "claude/multi-tag".to_string(),
+                "claude-code".to_string(),
+                Role::User,
+                "containerize the rust app".to_string(),
+            ),
+            Event::new(
+                now,
+                "claude/multi-tag".to_string(),
+                "claude-code".to_string(),
+                Role::Assistant,
+                "done".to_string(),
+            ),
         ];
-        writer.add_document(build_session_document(&fields, &e1, &m1)).unwrap();
+        writer
+            .add_document(build_session_document(&fields, &e1, &m1))
+            .unwrap();
 
         // Session with only rust tag
-        let mut m2 = SessionManifest::new("claude/rust-only".to_string(), "claude-code".to_string());
+        let mut m2 =
+            SessionManifest::new("claude/rust-only".to_string(), "claude-code".to_string());
         m2.tags = vec!["rust".to_string()];
         m2.started = now;
         m2.turns = 2;
         let e2 = vec![
-            Event::new(now, "claude/rust-only".to_string(), "claude-code".to_string(), Role::User, "fix the rust app".to_string()),
-            Event::new(now, "claude/rust-only".to_string(), "claude-code".to_string(), Role::Assistant, "fixed".to_string()),
+            Event::new(
+                now,
+                "claude/rust-only".to_string(),
+                "claude-code".to_string(),
+                Role::User,
+                "fix the rust app".to_string(),
+            ),
+            Event::new(
+                now,
+                "claude/rust-only".to_string(),
+                "claude-code".to_string(),
+                Role::Assistant,
+                "fixed".to_string(),
+            ),
         ];
-        writer.add_document(build_session_document(&fields, &e2, &m2)).unwrap();
+        writer
+            .add_document(build_session_document(&fields, &e2, &m2))
+            .unwrap();
         writer.commit().unwrap();
         writer.wait_merging_threads().unwrap();
 
@@ -2715,15 +3240,31 @@ mod tests {
         let mut m = SessionManifest::new("claude/1".to_string(), "claude-code".to_string());
         m.started = now;
         m.turns = 1;
-        let e = vec![Event::new(now, "claude/1".to_string(), "claude-code".to_string(),
-            Role::User, "write function to validate input data".to_string())];
-        writer.add_document(build_session_document(&fields, &e, &m)).unwrap();
+        let e = vec![Event::new(
+            now,
+            "claude/1".to_string(),
+            "claude-code".to_string(),
+            Role::User,
+            "write function to validate input data".to_string(),
+        )];
+        writer
+            .add_document(build_session_document(&fields, &e, &m))
+            .unwrap();
 
-        writer.add_document(build_code_artifact_document(
-            &fields, "claude/1", "claude-code", None, now, "rust",
-            "src/validate.rs", "fn validate_input(s: &str) -> bool { !s.is_empty() }",
-            true, None,
-        )).unwrap();
+        writer
+            .add_document(build_code_artifact_document(
+                &fields,
+                "claude/1",
+                "claude-code",
+                None,
+                now,
+                "rust",
+                "src/validate.rs",
+                "fn validate_input(s: &str) -> bool { !s.is_empty() }",
+                true,
+                None,
+            ))
+            .unwrap();
         writer.commit().unwrap();
         writer.wait_merging_threads().unwrap();
 
@@ -2761,14 +3302,31 @@ mod tests {
         // Very large tool result (will trigger content truncation)
         let large_tool_result = "this is a large tool result with lots of content ".repeat(15000);
         let e = vec![
-            Event::new(now, "claude/large".to_string(), "claude-code".to_string(), Role::User,
-                "analyze this large codebase for authentication issues".to_string()),
-            Event::new(now, "claude/large".to_string(), "claude-code".to_string(), Role::ToolResult,
-                large_tool_result),
-            Event::new(now, "claude/large".to_string(), "claude-code".to_string(), Role::Assistant,
-                "I analyzed the authentication code and found issues".to_string()),
+            Event::new(
+                now,
+                "claude/large".to_string(),
+                "claude-code".to_string(),
+                Role::User,
+                "analyze this large codebase for authentication issues".to_string(),
+            ),
+            Event::new(
+                now,
+                "claude/large".to_string(),
+                "claude-code".to_string(),
+                Role::ToolResult,
+                large_tool_result,
+            ),
+            Event::new(
+                now,
+                "claude/large".to_string(),
+                "claude-code".to_string(),
+                Role::Assistant,
+                "I analyzed the authentication code and found issues".to_string(),
+            ),
         ];
-        writer.add_document(build_session_document(&fields, &e, &m)).unwrap();
+        writer
+            .add_document(build_session_document(&fields, &e, &m))
+            .unwrap();
         writer.commit().unwrap();
         writer.wait_merging_threads().unwrap();
 
@@ -2802,20 +3360,54 @@ mod tests {
         m.turns = 5;
         m.summary = Some("Refactored authentication middleware using JWT tokens".to_string());
         m.outcome = Some("success".to_string());
-        m.tags = vec!["python".to_string(), "jwt".to_string(), "authentication".to_string()];
-        let e = vec![
-            Event::new(now, "aider/session-1".to_string(), "aider".to_string(), Role::User,
-                "Refactor the auth middleware to use JWT tokens instead of session cookies".to_string()),
-            Event::new(now, "aider/session-1".to_string(), "aider".to_string(), Role::Assistant,
-                "I'll update the middleware to use JWT. Plan: 1) Install PyJWT 2) Update auth.py".to_string()),
-            Event::new(now, "aider/session-1".to_string(), "aider".to_string(), Role::ToolCall,
-                "pip install PyJWT".to_string()).with_tool(Some("Bash".to_string())),
-            Event::new(now, "aider/session-1".to_string(), "aider".to_string(), Role::ToolResult,
-                "Successfully installed PyJWT-2.8.0".to_string()),
-            Event::new(now, "aider/session-1".to_string(), "aider".to_string(), Role::Assistant,
-                "JWT authentication has been implemented successfully.".to_string()),
+        m.tags = vec![
+            "python".to_string(),
+            "jwt".to_string(),
+            "authentication".to_string(),
         ];
-        writer.add_document(build_session_document(&fields, &e, &m)).unwrap();
+        let e = vec![
+            Event::new(
+                now,
+                "aider/session-1".to_string(),
+                "aider".to_string(),
+                Role::User,
+                "Refactor the auth middleware to use JWT tokens instead of session cookies"
+                    .to_string(),
+            ),
+            Event::new(
+                now,
+                "aider/session-1".to_string(),
+                "aider".to_string(),
+                Role::Assistant,
+                "I'll update the middleware to use JWT. Plan: 1) Install PyJWT 2) Update auth.py"
+                    .to_string(),
+            ),
+            Event::new(
+                now,
+                "aider/session-1".to_string(),
+                "aider".to_string(),
+                Role::ToolCall,
+                "pip install PyJWT".to_string(),
+            )
+            .with_tool(Some("Bash".to_string())),
+            Event::new(
+                now,
+                "aider/session-1".to_string(),
+                "aider".to_string(),
+                Role::ToolResult,
+                "Successfully installed PyJWT-2.8.0".to_string(),
+            ),
+            Event::new(
+                now,
+                "aider/session-1".to_string(),
+                "aider".to_string(),
+                Role::Assistant,
+                "JWT authentication has been implemented successfully.".to_string(),
+            ),
+        ];
+        writer
+            .add_document(build_session_document(&fields, &e, &m))
+            .unwrap();
         writer.commit().unwrap();
         writer.wait_merging_threads().unwrap();
 
@@ -2871,7 +3463,9 @@ mod tests {
             Event::new(now, "claude/session-2".to_string(), "claude-code".to_string(), Role::Assistant,
                 "Rate limiting has been added to the authentication endpoints.".to_string()),
         ];
-        writer.add_document(build_session_document(&fields, &e, &m)).unwrap();
+        writer
+            .add_document(build_session_document(&fields, &e, &m))
+            .unwrap();
         writer.commit().unwrap();
         writer.wait_merging_threads().unwrap();
 
@@ -2912,12 +3506,24 @@ mod tests {
         // solution_summary is not in SessionManifest — set it via the document directly
         // We'll test that --solution_only routes snippet to the solution field
         let e = vec![
-            Event::new(now, "claude/solved".to_string(), "claude-code".to_string(), Role::User,
-                "fix the memory leak in the allocator".to_string()),
-            Event::new(now, "claude/solved".to_string(), "claude-code".to_string(), Role::Assistant,
-                "memory leak fixed by patching the allocator".to_string()),
+            Event::new(
+                now,
+                "claude/solved".to_string(),
+                "claude-code".to_string(),
+                Role::User,
+                "fix the memory leak in the allocator".to_string(),
+            ),
+            Event::new(
+                now,
+                "claude/solved".to_string(),
+                "claude-code".to_string(),
+                Role::Assistant,
+                "memory leak fixed by patching the allocator".to_string(),
+            ),
         ];
-        writer.add_document(build_session_document(&fields, &e, &m)).unwrap();
+        writer
+            .add_document(build_session_document(&fields, &e, &m))
+            .unwrap();
         writer.commit().unwrap();
         writer.wait_merging_threads().unwrap();
 
@@ -2929,7 +3535,8 @@ mod tests {
         };
         let result = execute_search(temp_dir.path(), &opts).unwrap();
         // Results are valid; solution_only only affects snippet source and adds a Should boost
-        assert!(result.total_matches >= 0); // May be 0 if solution_summary is empty — that's valid
+        // result.total_matches may be 0 if solution_summary is empty — that's valid
+        let _ = result.total_matches;
         // The important thing is no panic/error
     }
 
@@ -2953,18 +3560,33 @@ mod tests {
         let now = Utc::now();
 
         // Add three sessions with the same query term so they all match
-        for (i, session_id) in ["claude/tb-1", "claude/tb-2", "claude/tb-3"].iter().enumerate() {
+        for (i, session_id) in ["claude/tb-1", "claude/tb-2", "claude/tb-3"]
+            .iter()
+            .enumerate()
+        {
             let mut m = SessionManifest::new(session_id.to_string(), "claude-code".to_string());
             m.started = now - chrono::Duration::days(i as i64);
             m.turns = 5;
             m.summary = Some(format!("session {} summary for knapsack test", i + 1));
             let e = vec![
-                Event::new(now, session_id.to_string(), "claude-code".to_string(),
-                    Role::User, "knapsack budget test query".to_string()),
-                Event::new(now, session_id.to_string(), "claude-code".to_string(),
-                    Role::Assistant, format!("response content for session {}", i + 1)),
+                Event::new(
+                    now,
+                    session_id.to_string(),
+                    "claude-code".to_string(),
+                    Role::User,
+                    "knapsack budget test query".to_string(),
+                ),
+                Event::new(
+                    now,
+                    session_id.to_string(),
+                    "claude-code".to_string(),
+                    Role::Assistant,
+                    format!("response content for session {}", i + 1),
+                ),
             ];
-            writer.add_document(build_session_document(&fields, &e, &m)).unwrap();
+            writer
+                .add_document(build_session_document(&fields, &e, &m))
+                .unwrap();
         }
         writer.commit().unwrap();
         writer.wait_merging_threads().unwrap();
@@ -2981,7 +3603,10 @@ mod tests {
         let result = execute_search(temp_dir.path(), &opts).unwrap();
 
         // At least one result returned
-        assert!(!result.results.is_empty(), "should return at least one result");
+        assert!(
+            !result.results.is_empty(),
+            "should return at least one result"
+        );
 
         // Total token_count must not exceed budget
         let total_tokens: usize = result.results.iter().map(|r| r.token_count).sum();
@@ -2994,7 +3619,11 @@ mod tests {
 
         // Every result must have token_count > 0
         for r in &result.results {
-            assert!(r.token_count > 0, "token_count should be > 0 for result {}", r.session_id);
+            assert!(
+                r.token_count > 0,
+                "token_count should be > 0 for result {}",
+                r.session_id
+            );
         }
     }
 
@@ -3019,12 +3648,24 @@ mod tests {
         m1.turns = 2;
         m1.files_touched = vec!["src/auth.rs".to_string()];
         let e1 = vec![
-            Event::new(now, "claude/auth-1".to_string(), "claude-code".to_string(), Role::User,
-                "fix the authentication bug".to_string()),
-            Event::new(now, "claude/auth-1".to_string(), "claude-code".to_string(), Role::Assistant,
-                "fixed the auth issue".to_string()),
+            Event::new(
+                now,
+                "claude/auth-1".to_string(),
+                "claude-code".to_string(),
+                Role::User,
+                "fix the authentication bug".to_string(),
+            ),
+            Event::new(
+                now,
+                "claude/auth-1".to_string(),
+                "claude-code".to_string(),
+                Role::Assistant,
+                "fixed the auth issue".to_string(),
+            ),
         ];
-        writer.add_document(build_session_document(&fields, &e1, &m1)).unwrap();
+        writer
+            .add_document(build_session_document(&fields, &e1, &m1))
+            .unwrap();
 
         // Session 2: touches a different file
         let mut m2 = SessionManifest::new("claude/db-1".to_string(), "claude-code".to_string());
@@ -3032,12 +3673,24 @@ mod tests {
         m2.turns = 2;
         m2.files_touched = vec!["src/database.rs".to_string()];
         let e2 = vec![
-            Event::new(now, "claude/db-1".to_string(), "claude-code".to_string(), Role::User,
-                "fix the authentication bug".to_string()),
-            Event::new(now, "claude/db-1".to_string(), "claude-code".to_string(), Role::Assistant,
-                "fixed the auth issue in db".to_string()),
+            Event::new(
+                now,
+                "claude/db-1".to_string(),
+                "claude-code".to_string(),
+                Role::User,
+                "fix the authentication bug".to_string(),
+            ),
+            Event::new(
+                now,
+                "claude/db-1".to_string(),
+                "claude-code".to_string(),
+                Role::Assistant,
+                "fixed the auth issue in db".to_string(),
+            ),
         ];
-        writer.add_document(build_session_document(&fields, &e2, &m2)).unwrap();
+        writer
+            .add_document(build_session_document(&fields, &e2, &m2))
+            .unwrap();
         writer.commit().unwrap();
         writer.wait_merging_threads().unwrap();
 
@@ -3071,12 +3724,24 @@ mod tests {
         m.started = now;
         m.turns = 2;
         let e = vec![
-            Event::new(now, "claude/k8s".to_string(), "claude-code".to_string(), Role::User,
-                "deploy the kubernetes cluster".to_string()),
-            Event::new(now, "claude/k8s".to_string(), "claude-code".to_string(), Role::Assistant,
-                "deployed kubernetes successfully".to_string()),
+            Event::new(
+                now,
+                "claude/k8s".to_string(),
+                "claude-code".to_string(),
+                Role::User,
+                "deploy the kubernetes cluster".to_string(),
+            ),
+            Event::new(
+                now,
+                "claude/k8s".to_string(),
+                "claude-code".to_string(),
+                Role::Assistant,
+                "deployed kubernetes successfully".to_string(),
+            ),
         ];
-        writer.add_document(build_session_document(&fields, &e, &m)).unwrap();
+        writer
+            .add_document(build_session_document(&fields, &e, &m))
+            .unwrap();
         writer.commit().unwrap();
         writer.wait_merging_threads().unwrap();
 
@@ -3087,8 +3752,14 @@ mod tests {
             ..default_opts()
         };
         let result = execute_search(temp_dir.path(), &opts).unwrap();
-        assert!(result.fuzzy_fallback, "expected automatic fuzzy fallback to be triggered");
-        assert!(result.total_matches >= 1, "fuzzy fallback should return at least 1 result");
+        assert!(
+            result.fuzzy_fallback,
+            "expected automatic fuzzy fallback to be triggered"
+        );
+        assert!(
+            result.total_matches >= 1,
+            "fuzzy fallback should return at least 1 result"
+        );
     }
 
     #[test]
@@ -3103,7 +3774,10 @@ mod tests {
             fuzzy_fallback: true,
         };
         let formatted = format_human(&output, 200);
-        assert!(formatted.contains("[fuzzy fallback]"), "human output should note fuzzy fallback");
+        assert!(
+            formatted.contains("[fuzzy fallback]"),
+            "human output should note fuzzy fallback"
+        );
         assert!(formatted.contains("kuberntes"));
     }
 
@@ -3142,14 +3816,27 @@ mod tests {
         m.started = now;
         m.turns = 2;
         let e = vec![
-            Event::new(now, "claude/sol".to_string(), "claude-code".to_string(), Role::User,
-                "fix concurrency and authentication issue".to_string()),
-            Event::new(now, "claude/sol".to_string(), "claude-code".to_string(), Role::Assistant,
-                "analyzing the authentication code".to_string()),
+            Event::new(
+                now,
+                "claude/sol".to_string(),
+                "claude-code".to_string(),
+                Role::User,
+                "fix concurrency and authentication issue".to_string(),
+            ),
+            Event::new(
+                now,
+                "claude/sol".to_string(),
+                "claude-code".to_string(),
+                Role::Assistant,
+                "analyzing the authentication code".to_string(),
+            ),
         ];
         // Build the session doc and manually attach a solution_summary
         let mut doc = build_session_document(&fields, &e, &m);
-        doc.add_text(fields.solution_summary, "SOLUTION: use stateless JWT tokens with 1h expiry for authentication");
+        doc.add_text(
+            fields.solution_summary,
+            "SOLUTION: use stateless JWT tokens with 1h expiry for authentication",
+        );
         writer.add_document(doc).unwrap();
         writer.commit().unwrap();
         writer.wait_merging_threads().unwrap();
@@ -3161,7 +3848,10 @@ mod tests {
             ..default_opts()
         };
         let result = execute_search(temp_dir.path(), &opts).unwrap();
-        assert!(result.total_matches >= 1, "session should be found via content");
+        assert!(
+            result.total_matches >= 1,
+            "session should be found via content"
+        );
         let r = &result.results[0];
         assert_eq!(r.session_id, "claude/sol");
         // Snippet must come from solution_summary (contains "SOLUTION" or "JWT")
@@ -3193,20 +3883,30 @@ mod tests {
         let mut m_old = SessionManifest::new("old/1".to_string(), "test".to_string());
         m_old.started = now - chrono::Duration::days(10);
         m_old.turns = 1;
-        let e_old = vec![
-            Event::new(now - chrono::Duration::days(10), "old/1".to_string(), "test".to_string(),
-                Role::User, "historical session content".to_string()),
-        ];
-        writer.add_document(build_session_document(&fields, &e_old, &m_old)).unwrap();
+        let e_old = vec![Event::new(
+            now - chrono::Duration::days(10),
+            "old/1".to_string(),
+            "test".to_string(),
+            Role::User,
+            "historical session content".to_string(),
+        )];
+        writer
+            .add_document(build_session_document(&fields, &e_old, &m_old))
+            .unwrap();
 
         let mut m_new = SessionManifest::new("new/1".to_string(), "test".to_string());
         m_new.started = now - chrono::Duration::hours(1);
         m_new.turns = 1;
-        let e_new = vec![
-            Event::new(now - chrono::Duration::hours(1), "new/1".to_string(), "test".to_string(),
-                Role::User, "historical session content".to_string()),
-        ];
-        writer.add_document(build_session_document(&fields, &e_new, &m_new)).unwrap();
+        let e_new = vec![Event::new(
+            now - chrono::Duration::hours(1),
+            "new/1".to_string(),
+            "test".to_string(),
+            Role::User,
+            "historical session content".to_string(),
+        )];
+        writer
+            .add_document(build_session_document(&fields, &e_new, &m_new))
+            .unwrap();
         writer.commit().unwrap();
         writer.wait_merging_threads().unwrap();
 
@@ -3240,20 +3940,30 @@ mod tests {
         let mut m1 = SessionManifest::new("claude/1".to_string(), "claude-code".to_string());
         m1.started = now;
         m1.turns = 1;
-        let e1 = vec![
-            Event::new(now, "claude/1".to_string(), "claude-code".to_string(), Role::User,
-                "write some code for me".to_string()),
-        ];
-        writer.add_document(build_session_document(&fields, &e1, &m1)).unwrap();
+        let e1 = vec![Event::new(
+            now,
+            "claude/1".to_string(),
+            "claude-code".to_string(),
+            Role::User,
+            "write some code for me".to_string(),
+        )];
+        writer
+            .add_document(build_session_document(&fields, &e1, &m1))
+            .unwrap();
 
         let mut m2 = SessionManifest::new("aider/1".to_string(), "aider".to_string());
         m2.started = now;
         m2.turns = 1;
-        let e2 = vec![
-            Event::new(now, "aider/1".to_string(), "aider".to_string(), Role::User,
-                "write some code for me".to_string()),
-        ];
-        writer.add_document(build_session_document(&fields, &e2, &m2)).unwrap();
+        let e2 = vec![Event::new(
+            now,
+            "aider/1".to_string(),
+            "aider".to_string(),
+            Role::User,
+            "write some code for me".to_string(),
+        )];
+        writer
+            .add_document(build_session_document(&fields, &e2, &m2))
+            .unwrap();
         writer.commit().unwrap();
         writer.wait_merging_threads().unwrap();
 
@@ -3296,47 +4006,103 @@ mod tests {
         m1.model = Some("claude-sonnet-4-5".to_string());
         m1.files_touched = vec!["src/auth.rs".to_string(), "src/middleware.rs".to_string()];
         let e1 = vec![
-            Event::new(now - chrono::Duration::hours(2), "claude/auth-1".to_string(), "claude-code".to_string(),
-                Role::User, "Add JWT authentication to the middleware".to_string()),
-            Event::new(now - chrono::Duration::hours(2), "claude/auth-1".to_string(), "claude-code".to_string(),
-                Role::Assistant, "I'll implement JWT auth. Let me read the middleware first.".to_string()),
-            Event::new(now - chrono::Duration::hours(2), "claude/auth-1".to_string(), "claude-code".to_string(),
-                Role::ToolCall, "src/middleware.rs".to_string())
-                .with_tool(Some("Read".to_string()))
-                .with_file_paths(vec!["src/middleware.rs".to_string()]),
-            Event::new(now - chrono::Duration::hours(2), "claude/auth-1".to_string(), "claude-code".to_string(),
-                Role::ToolResult, "pub fn handle_request(req: &Request) -> Response { /* ... */ }".to_string()),
-            Event::new(now - chrono::Duration::hours(2), "claude/auth-1".to_string(), "claude-code".to_string(),
-                Role::ToolCall, "```rust\nfn validate_jwt(token: &str) -> bool { true }\n```".to_string())
-                .with_tool(Some("Edit".to_string()))
-                .with_file_paths(vec!["src/auth.rs".to_string()]),
-            Event::new(now - chrono::Duration::hours(2), "claude/auth-1".to_string(), "claude-code".to_string(),
-                Role::Assistant, "JWT authentication middleware implemented successfully.".to_string()),
+            Event::new(
+                now - chrono::Duration::hours(2),
+                "claude/auth-1".to_string(),
+                "claude-code".to_string(),
+                Role::User,
+                "Add JWT authentication to the middleware".to_string(),
+            ),
+            Event::new(
+                now - chrono::Duration::hours(2),
+                "claude/auth-1".to_string(),
+                "claude-code".to_string(),
+                Role::Assistant,
+                "I'll implement JWT auth. Let me read the middleware first.".to_string(),
+            ),
+            Event::new(
+                now - chrono::Duration::hours(2),
+                "claude/auth-1".to_string(),
+                "claude-code".to_string(),
+                Role::ToolCall,
+                "src/middleware.rs".to_string(),
+            )
+            .with_tool(Some("Read".to_string()))
+            .with_file_paths(vec!["src/middleware.rs".to_string()]),
+            Event::new(
+                now - chrono::Duration::hours(2),
+                "claude/auth-1".to_string(),
+                "claude-code".to_string(),
+                Role::ToolResult,
+                "pub fn handle_request(req: &Request) -> Response { /* ... */ }".to_string(),
+            ),
+            Event::new(
+                now - chrono::Duration::hours(2),
+                "claude/auth-1".to_string(),
+                "claude-code".to_string(),
+                Role::ToolCall,
+                "```rust\nfn validate_jwt(token: &str) -> bool { true }\n```".to_string(),
+            )
+            .with_tool(Some("Edit".to_string()))
+            .with_file_paths(vec!["src/auth.rs".to_string()]),
+            Event::new(
+                now - chrono::Duration::hours(2),
+                "claude/auth-1".to_string(),
+                "claude-code".to_string(),
+                Role::Assistant,
+                "JWT authentication middleware implemented successfully.".to_string(),
+            ),
         ];
-        writer.add_document(build_session_document(&fields, &e1, &m1)).unwrap();
+        writer
+            .add_document(build_session_document(&fields, &e1, &m1))
+            .unwrap();
 
         // Session 2: Claude Code — older, failure, postgres migration
-        let mut m2 = SessionManifest::new("claude/pg-migration".to_string(), "claude-code".to_string());
+        let mut m2 =
+            SessionManifest::new("claude/pg-migration".to_string(), "claude-code".to_string());
         m2.project = Some("/home/user/api-server".to_string());
         m2.started = now - chrono::Duration::days(5);
         m2.turns = 4;
-        m2.summary = Some("Failed to migrate postgres schema — downtime window too short".to_string());
+        m2.summary =
+            Some("Failed to migrate postgres schema — downtime window too short".to_string());
         m2.outcome = Some("failure".to_string());
         m2.tags = vec!["postgres".to_string(), "migration".to_string()];
         m2.model = Some("claude-opus-4-6".to_string());
         m2.files_touched = vec!["migrations/v3.sql".to_string()];
         let e2 = vec![
-            Event::new(now - chrono::Duration::days(5), "claude/pg-migration".to_string(), "claude-code".to_string(),
-                Role::User, "Migrate the postgres schema from v3 to v4".to_string()),
-            Event::new(now - chrono::Duration::days(5), "claude/pg-migration".to_string(), "claude-code".to_string(),
-                Role::Assistant, "I'll create the migration script for postgres.".to_string()),
-            Event::new(now - chrono::Duration::days(5), "claude/pg-migration".to_string(), "claude-code".to_string(),
-                Role::ToolResult, "connection refused error".to_string())
-                .with_error_fingerprints(vec!["ConnectionRefusedError".to_string()]),
-            Event::new(now - chrono::Duration::days(5), "claude/pg-migration".to_string(), "claude-code".to_string(),
-                Role::Assistant, "The postgres migration failed due to connection timeout.".to_string()),
+            Event::new(
+                now - chrono::Duration::days(5),
+                "claude/pg-migration".to_string(),
+                "claude-code".to_string(),
+                Role::User,
+                "Migrate the postgres schema from v3 to v4".to_string(),
+            ),
+            Event::new(
+                now - chrono::Duration::days(5),
+                "claude/pg-migration".to_string(),
+                "claude-code".to_string(),
+                Role::Assistant,
+                "I'll create the migration script for postgres.".to_string(),
+            ),
+            Event::new(
+                now - chrono::Duration::days(5),
+                "claude/pg-migration".to_string(),
+                "claude-code".to_string(),
+                Role::ToolResult,
+                "connection refused error".to_string(),
+            )
+            .with_error_fingerprints(vec!["ConnectionRefusedError".to_string()]),
+            Event::new(
+                now - chrono::Duration::days(5),
+                "claude/pg-migration".to_string(),
+                "claude-code".to_string(),
+                Role::Assistant,
+                "The postgres migration failed due to connection timeout.".to_string(),
+            ),
         ];
-        writer.add_document(build_session_document(&fields, &e2, &m2)).unwrap();
+        writer
+            .add_document(build_session_document(&fields, &e2, &m2))
+            .unwrap();
 
         // Session 3: Aider — recent, success, python/jwt
         let mut m3 = SessionManifest::new("aider/jwt-refactor".to_string(), "aider".to_string());
@@ -3345,21 +4111,54 @@ mod tests {
         m3.turns = 5;
         m3.summary = Some("Refactored authentication middleware using JWT tokens".to_string());
         m3.outcome = Some("success".to_string());
-        m3.tags = vec!["python".to_string(), "jwt".to_string(), "authentication".to_string()];
+        m3.tags = vec![
+            "python".to_string(),
+            "jwt".to_string(),
+            "authentication".to_string(),
+        ];
         m3.files_touched = vec!["app/auth.py".to_string()];
         let e3 = vec![
-            Event::new(now - chrono::Duration::hours(1), "aider/jwt-refactor".to_string(), "aider".to_string(),
-                Role::User, "Refactor auth middleware to use JWT tokens instead of session cookies".to_string()),
-            Event::new(now - chrono::Duration::hours(1), "aider/jwt-refactor".to_string(), "aider".to_string(),
-                Role::Assistant, "I'll update the middleware to use JWT. Plan: install PyJWT and update auth.py.".to_string()),
-            Event::new(now - chrono::Duration::hours(1), "aider/jwt-refactor".to_string(), "aider".to_string(),
-                Role::ToolCall, "pip install PyJWT".to_string()).with_tool(Some("Bash".to_string())),
-            Event::new(now - chrono::Duration::hours(1), "aider/jwt-refactor".to_string(), "aider".to_string(),
-                Role::ToolResult, "Successfully installed PyJWT-2.8.0".to_string()),
-            Event::new(now - chrono::Duration::hours(1), "aider/jwt-refactor".to_string(), "aider".to_string(),
-                Role::Assistant, "JWT authentication has been implemented successfully.".to_string()),
+            Event::new(
+                now - chrono::Duration::hours(1),
+                "aider/jwt-refactor".to_string(),
+                "aider".to_string(),
+                Role::User,
+                "Refactor auth middleware to use JWT tokens instead of session cookies".to_string(),
+            ),
+            Event::new(
+                now - chrono::Duration::hours(1),
+                "aider/jwt-refactor".to_string(),
+                "aider".to_string(),
+                Role::Assistant,
+                "I'll update the middleware to use JWT. Plan: install PyJWT and update auth.py."
+                    .to_string(),
+            ),
+            Event::new(
+                now - chrono::Duration::hours(1),
+                "aider/jwt-refactor".to_string(),
+                "aider".to_string(),
+                Role::ToolCall,
+                "pip install PyJWT".to_string(),
+            )
+            .with_tool(Some("Bash".to_string())),
+            Event::new(
+                now - chrono::Duration::hours(1),
+                "aider/jwt-refactor".to_string(),
+                "aider".to_string(),
+                Role::ToolResult,
+                "Successfully installed PyJWT-2.8.0".to_string(),
+            ),
+            Event::new(
+                now - chrono::Duration::hours(1),
+                "aider/jwt-refactor".to_string(),
+                "aider".to_string(),
+                Role::Assistant,
+                "JWT authentication has been implemented successfully.".to_string(),
+            ),
         ];
-        writer.add_document(build_session_document(&fields, &e3, &m3)).unwrap();
+        writer
+            .add_document(build_session_document(&fields, &e3, &m3))
+            .unwrap();
 
         // Session 4: Aider — old, success, css/frontend
         let mut m4 = SessionManifest::new("aider/css-fix".to_string(), "aider".to_string());
@@ -3370,14 +4169,31 @@ mod tests {
         m4.outcome = Some("success".to_string());
         m4.tags = vec!["css".to_string(), "frontend".to_string()];
         let e4 = vec![
-            Event::new(now - chrono::Duration::days(10), "aider/css-fix".to_string(), "aider".to_string(),
-                Role::User, "Fix the CSS flexbox layout for mobile".to_string()),
-            Event::new(now - chrono::Duration::days(10), "aider/css-fix".to_string(), "aider".to_string(),
-                Role::Assistant, "Updated CSS grid and flexbox properties.".to_string()),
-            Event::new(now - chrono::Duration::days(10), "aider/css-fix".to_string(), "aider".to_string(),
-                Role::Assistant, "Mobile layout fixed with responsive breakpoints.".to_string()),
+            Event::new(
+                now - chrono::Duration::days(10),
+                "aider/css-fix".to_string(),
+                "aider".to_string(),
+                Role::User,
+                "Fix the CSS flexbox layout for mobile".to_string(),
+            ),
+            Event::new(
+                now - chrono::Duration::days(10),
+                "aider/css-fix".to_string(),
+                "aider".to_string(),
+                Role::Assistant,
+                "Updated CSS grid and flexbox properties.".to_string(),
+            ),
+            Event::new(
+                now - chrono::Duration::days(10),
+                "aider/css-fix".to_string(),
+                "aider".to_string(),
+                Role::Assistant,
+                "Mobile layout fixed with responsive breakpoints.".to_string(),
+            ),
         ];
-        writer.add_document(build_session_document(&fields, &e4, &m4)).unwrap();
+        writer
+            .add_document(build_session_document(&fields, &e4, &m4))
+            .unwrap();
 
         writer.commit().unwrap();
         writer.wait_merging_threads().unwrap();
@@ -3395,9 +4211,15 @@ mod tests {
             ..default_opts()
         };
         let result = execute_search(temp_dir.path(), &opts).unwrap();
-        assert!(result.total_matches >= 2, "should match multiple sessions mentioning JWT/auth");
+        assert!(
+            result.total_matches >= 2,
+            "should match multiple sessions mentioning JWT/auth"
+        );
         // The aider JWT refactor session should rank high (it has JWT in summary, tags, and content)
-        let aider_jwt = result.results.iter().find(|r| r.session_id == "aider/jwt-refactor");
+        let aider_jwt = result
+            .results
+            .iter()
+            .find(|r| r.session_id == "aider/jwt-refactor");
         assert!(aider_jwt.is_some(), "aider/jwt-refactor should be found");
     }
 
@@ -3412,7 +4234,12 @@ mod tests {
             ..default_opts()
         };
         let result = execute_search(temp_dir.path(), &opts).unwrap();
-        assert_eq!(result.results.len(), 1, "expected 1 error fingerprint match, got {}", result.results.len());
+        assert_eq!(
+            result.results.len(),
+            1,
+            "expected 1 error fingerprint match, got {}",
+            result.results.len()
+        );
         assert_eq!(result.results[0].session_id, "claude/pg-migration");
     }
 
@@ -3436,7 +4263,7 @@ mod tests {
         for r in &result.results {
             assert_eq!(r.source_agent, "claude-code");
         }
-        assert!(result.results.len() >= 1);
+        assert!(!result.results.is_empty());
 
         // Aider sessions only
         let opts = SearchOptions {
@@ -3481,9 +4308,15 @@ mod tests {
             ..default_opts()
         };
         let result = execute_search(temp_dir.path(), &opts).unwrap();
-        assert!(result.results.len() >= 1);
-        let found = result.results.iter().any(|r| r.session_id == "claude/pg-migration");
-        assert!(found, "pg-migration (5 days ago) should be in the 3-7 day window");
+        assert!(!result.results.is_empty());
+        let found = result
+            .results
+            .iter()
+            .any(|r| r.session_id == "claude/pg-migration");
+        assert!(
+            found,
+            "pg-migration (5 days ago) should be in the 3-7 day window"
+        );
     }
 
     #[test]
@@ -3516,14 +4349,20 @@ mod tests {
             ..default_opts()
         };
         let result = execute_search(temp_dir.path(), &opts).unwrap();
-        assert!(result.results.len() >= 1);
+        assert!(!result.results.is_empty());
         for r in &result.results {
             assert_eq!(r.source_agent, "claude-code");
             assert_eq!(r.outcome.as_deref(), Some("success"));
         }
         // Should include auth-1 (claude-code, success, 2 hours ago)
-        let found = result.results.iter().any(|r| r.session_id == "claude/auth-1");
-        assert!(found, "claude/auth-1 should match agent+outcome+since filter");
+        let found = result
+            .results
+            .iter()
+            .any(|r| r.session_id == "claude/auth-1");
+        assert!(
+            found,
+            "claude/auth-1 should match agent+outcome+since filter"
+        );
     }
 
     #[test]
@@ -3539,7 +4378,7 @@ mod tests {
             ..default_opts()
         };
         let result = execute_search(temp_dir.path(), &opts).unwrap();
-        assert!(result.results.len() >= 1);
+        assert!(!result.results.is_empty());
         for r in &result.results {
             assert!(r.tags.contains(&"rust".to_string()));
         }
@@ -3605,9 +4444,20 @@ mod tests {
         let result = execute_search(temp_dir.path(), &opts).unwrap();
         assert!(result.results.len() >= 2);
         // The aider/jwt-refactor (1 hour ago) should come before claude/auth-1 (2 hours ago)
-        let jwt_idx = result.results.iter().position(|r| r.session_id == "aider/jwt-refactor").unwrap();
-        let auth_idx = result.results.iter().position(|r| r.session_id == "claude/auth-1").unwrap();
-        assert!(jwt_idx < auth_idx, "newer session should come first with Newest sort");
+        let jwt_idx = result
+            .results
+            .iter()
+            .position(|r| r.session_id == "aider/jwt-refactor")
+            .unwrap();
+        let auth_idx = result
+            .results
+            .iter()
+            .position(|r| r.session_id == "claude/auth-1")
+            .unwrap();
+        assert!(
+            jwt_idx < auth_idx,
+            "newer session should come first with Newest sort"
+        );
 
         // Sort by oldest — oldest session first
         let opts = SearchOptions {
@@ -3617,9 +4467,20 @@ mod tests {
             ..default_opts()
         };
         let result = execute_search(temp_dir.path(), &opts).unwrap();
-        let jwt_idx2 = result.results.iter().position(|r| r.session_id == "aider/jwt-refactor").unwrap();
-        let auth_idx2 = result.results.iter().position(|r| r.session_id == "claude/auth-1").unwrap();
-        assert!(auth_idx2 < jwt_idx2, "older session should come first with Oldest sort");
+        let jwt_idx2 = result
+            .results
+            .iter()
+            .position(|r| r.session_id == "aider/jwt-refactor")
+            .unwrap();
+        let auth_idx2 = result
+            .results
+            .iter()
+            .position(|r| r.session_id == "claude/auth-1")
+            .unwrap();
+        assert!(
+            auth_idx2 < jwt_idx2,
+            "older session should come first with Oldest sort"
+        );
     }
 
     #[test]
@@ -3637,7 +4498,12 @@ mod tests {
         for window in result.results.windows(2) {
             let t1 = window[0].turns.unwrap_or(0);
             let t2 = window[1].turns.unwrap_or(0);
-            assert!(t1 >= t2, "turns should be in descending order: {} >= {}", t1, t2);
+            assert!(
+                t1 >= t2,
+                "turns should be in descending order: {} >= {}",
+                t1,
+                t2
+            );
         }
     }
 
@@ -3657,7 +4523,10 @@ mod tests {
         }
         // The aider/jwt-refactor session (also about auth/JWT) should rank high
         if result.total_matches >= 1 {
-            let jwt_found = result.results.iter().any(|r| r.session_id == "aider/jwt-refactor");
+            let jwt_found = result
+                .results
+                .iter()
+                .any(|r| r.session_id == "aider/jwt-refactor");
             assert!(jwt_found, "cross-agent JWT session should be found via MLT");
         }
     }
@@ -3682,13 +4551,28 @@ mod tests {
 
         // Top-level fields
         assert!(json.get("query").is_some(), "query field must be present");
-        assert!(json.get("total_matches").is_some(), "total_matches must be present");
-        assert!(json.get("search_time_ms").is_some(), "search_time_ms must be present");
-        assert!(json.get("sessions_searched").is_some(), "sessions_searched must be present");
-        assert!(json.get("results").is_some(), "results array must be present");
+        assert!(
+            json.get("total_matches").is_some(),
+            "total_matches must be present"
+        );
+        assert!(
+            json.get("search_time_ms").is_some(),
+            "search_time_ms must be present"
+        );
+        assert!(
+            json.get("sessions_searched").is_some(),
+            "sessions_searched must be present"
+        );
+        assert!(
+            json.get("results").is_some(),
+            "results array must be present"
+        );
 
         // fuzzy_fallback should be absent when false
-        assert!(json.get("fuzzy_fallback").is_none(), "fuzzy_fallback should be omitted when false");
+        assert!(
+            json.get("fuzzy_fallback").is_none(),
+            "fuzzy_fallback should be omitted when false"
+        );
 
         // Validate first result has expected fields
         let first = &json["results"][0];
@@ -3726,7 +4610,10 @@ mod tests {
         };
         let json_str = serde_json::to_string(&output).unwrap();
         let json: serde_json::Value = serde_json::from_str(&json_str).unwrap();
-        assert!(json.get("fuzzy_fallback").is_some(), "fuzzy_fallback must be present when true");
+        assert!(
+            json.get("fuzzy_fallback").is_some(),
+            "fuzzy_fallback must be present when true"
+        );
         assert_eq!(json["fuzzy_fallback"], true);
     }
 
@@ -3778,7 +4665,11 @@ mod tests {
             score: 8.76,
             summary: Some("Fixed the authentication bug".to_string()),
             snippet: Some("Changed auth.rs to use JWT validation".to_string()),
-            tags: vec!["rust".to_string(), "jwt".to_string(), "authentication".to_string()],
+            tags: vec![
+                "rust".to_string(),
+                "jwt".to_string(),
+                "authentication".to_string(),
+            ],
             doc_type: Some("session".to_string()),
             model: Some("claude-sonnet-4-5".to_string()),
             token_count: 15,
@@ -3841,7 +4732,7 @@ mod tests {
             ..default_opts()
         };
         let result = execute_search(temp_dir.path(), &opts).unwrap();
-        assert!(result.results.len() >= 1);
+        assert!(!result.results.is_empty());
         for r in &result.results {
             assert_eq!(r.model.as_deref(), Some("claude-sonnet-4-5"));
         }
@@ -3853,7 +4744,7 @@ mod tests {
             ..default_opts()
         };
         let result = execute_search(temp_dir.path(), &opts).unwrap();
-        assert!(result.results.len() >= 1);
+        assert!(!result.results.is_empty());
         assert_eq!(result.results[0].session_id, "claude/pg-migration");
     }
 
@@ -3885,7 +4776,10 @@ mod tests {
         };
         let result = execute_search(temp_dir.path(), &opts).unwrap();
         for r in &result.results {
-            assert!(r.snippet.is_none(), "snippet should be None when snippet_length=0");
+            assert!(
+                r.snippet.is_none(),
+                "snippet should be None when snippet_length=0"
+            );
         }
     }
 
@@ -3899,6 +4793,9 @@ mod tests {
             ..default_opts()
         };
         let result = execute_search(temp_dir.path(), &opts).unwrap();
-        assert!(result.results.len() <= 1, "max_results should limit results");
+        assert!(
+            result.results.len() <= 1,
+            "max_results should limit results"
+        );
     }
 }

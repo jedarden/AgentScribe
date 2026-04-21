@@ -2,6 +2,7 @@
 
 use crate::config::{self, Config};
 use crate::error::Result;
+use crate::index::IndexManager;
 use crate::plugin::validate_plugin_file;
 use crate::scraper::{git_auto_commit, Scraper};
 use crate::search::{self, SearchOptions, SortOrder};
@@ -22,6 +23,7 @@ struct Args {
 
 /// Available CLI commands
 #[derive(Subcommand, Debug)]
+#[allow(clippy::large_enum_variant)]
 enum Commands {
     /// Manage global config and data directory
     Config {
@@ -54,6 +56,11 @@ enum Commands {
         /// JSON output
         #[arg(long)]
         json: bool,
+    },
+    /// Manage the Tantivy search index
+    Index {
+        #[command(subcommand)]
+        action: IndexAction,
     },
     /// Show tracked agents and session counts
     Status {
@@ -301,6 +308,25 @@ enum PluginsAction {
 
 /// Daemon subcommands
 #[derive(Subcommand, Debug)]
+enum IndexAction {
+    /// Drop and rebuild the index from session files
+    Rebuild {
+        /// Only re-index sessions from this plugin
+        #[arg(short, long)]
+        plugin: Option<String>,
+
+        /// Tantivy writer heap size in MB
+        #[arg(long, default_value = "50")]
+        heap_size: usize,
+    },
+    /// Show index statistics
+    Stats,
+    /// Merge segments for better query performance
+    Optimize,
+}
+
+/// Daemon subcommands
+#[derive(Subcommand, Debug)]
 enum DaemonAction {
     /// Start the daemon in the background
     Start,
@@ -353,6 +379,7 @@ pub fn run() -> Result<()> {
             json,
         } => run_scrape(plugin, file, dry_run, output_events, json),
         Commands::Status { json, plugin } => run_status(json, plugin),
+        Commands::Index { action } => run_index(action),
         Commands::Search {
             query,
             error,
@@ -379,17 +406,59 @@ pub fn run() -> Result<()> {
             hint,
             json,
         } => run_search(
-            query, error, code, lang, solution_only, like, session,
-            agent, project, since, before, tag, outcome, r#type, model,
-            fuzzy, edit_distance, max_results, snippet_length, token_budget, offset, sort, hint, json,
+            query,
+            error,
+            code,
+            lang,
+            solution_only,
+            like,
+            session,
+            agent,
+            project,
+            since,
+            before,
+            tag,
+            outcome,
+            r#type,
+            model,
+            fuzzy,
+            edit_distance,
+            max_results,
+            snippet_length,
+            token_budget,
+            offset,
+            sort,
+            hint,
+            json,
         ),
-        Commands::Recurring { since, threshold, json } => run_recurring(since, threshold, json),
+        Commands::Recurring {
+            since,
+            threshold,
+            json,
+        } => run_recurring(since, threshold, json),
         Commands::Daemon { action } => run_daemon(action),
-        Commands::Rules { project_path, format, json } => run_rules(project_path, format, json),
-        Commands::Analytics { agent, project, since, json } => run_analytics(agent, project, since, json),
-        Commands::Gc { older_than, dry_run, json } => run_gc(older_than, dry_run, json),
+        Commands::Rules {
+            project_path,
+            format,
+            json,
+        } => run_rules(project_path, format, json),
+        Commands::Analytics {
+            agent,
+            project,
+            since,
+            json,
+        } => run_analytics(agent, project, since, json),
+        Commands::Gc {
+            older_than,
+            dry_run,
+            json,
+        } => run_gc(older_than, dry_run, json),
         Commands::ShellHook { shell } => run_shell_hook(&shell),
-        Commands::Digest { since, output, json } => run_digest(since, output, json),
+        Commands::Digest {
+            since,
+            output,
+            json,
+        } => run_digest(since, output, json),
         Commands::Completions { shell } => {
             let mut cmd = Args::command();
             generate(shell, &mut cmd, "agentscribe", &mut io::stdout());
@@ -421,12 +490,8 @@ fn run_daemon(action: DaemonAction) -> Result<()> {
             crate::daemon::start(&data_dir)?;
             Ok(())
         }
-        DaemonAction::Run => {
-            crate::daemon::run(&data_dir)
-        }
-        DaemonAction::Stop => {
-            crate::daemon::stop(&data_dir)
-        }
+        DaemonAction::Run => crate::daemon::run(&data_dir),
+        DaemonAction::Stop => crate::daemon::stop(&data_dir),
         DaemonAction::Status { json } => {
             let info = crate::daemon::status(&data_dir)?;
             if json {
@@ -436,9 +501,7 @@ fn run_daemon(action: DaemonAction) -> Result<()> {
             }
             Ok(())
         }
-        DaemonAction::Logs { follow, lines } => {
-            crate::daemon::logs(&data_dir, follow, lines)
-        }
+        DaemonAction::Logs { follow, lines } => crate::daemon::logs(&data_dir, follow, lines),
         // Already handled above
         DaemonAction::Install | DaemonAction::Uninstall => unreachable!(),
     }
@@ -487,7 +550,10 @@ fn run_config(action: ConfigAction) -> Result<()> {
     match action {
         ConfigAction::Init { force } => {
             let data_dir = config::init(force)?;
-            println!("Initialized AgentScribe data directory: {}", data_dir.display());
+            println!(
+                "Initialized AgentScribe data directory: {}",
+                data_dir.display()
+            );
             Ok(())
         }
         ConfigAction::Show => {
@@ -497,11 +563,20 @@ fn run_config(action: ConfigAction) -> Result<()> {
             println!("Log level: {}", config.general.log_level);
             println!("\nScraping:");
             println!("  Debounce: {}s", config.scrape.debounce_seconds);
-            println!("  Max session age: {} days", config.scrape.max_session_age_days);
+            println!(
+                "  Max session age: {} days",
+                config.scrape.max_session_age_days
+            );
             println!("  Git auto-commit: {}", config.scrape.git_auto_commit);
             println!("\nSearch:");
-            println!("  Default max results: {}", config.search.default_max_results);
-            println!("  Default snippet length: {}", config.search.default_snippet_length);
+            println!(
+                "  Default max results: {}",
+                config.search.default_max_results
+            );
+            println!(
+                "  Default snippet length: {}",
+                config.search.default_snippet_length
+            );
             Ok(())
         }
         ConfigAction::Set { key, value } => {
@@ -516,7 +591,8 @@ fn run_config(action: ConfigAction) -> Result<()> {
                     config.scrape.max_session_age_days = value.parse().unwrap_or(0);
                 }
                 ["scrape", "git_auto_commit"] => {
-                    config.scrape.git_auto_commit = matches!(value.to_lowercase().as_str(), "true" | "1" | "yes");
+                    config.scrape.git_auto_commit =
+                        matches!(value.to_lowercase().as_str(), "true" | "1" | "yes");
                 }
                 _ => {
                     eprintln!("Unknown configuration key: {}", key);
@@ -536,7 +612,9 @@ fn run_config(action: ConfigAction) -> Result<()> {
                 ["general", "data_dir"] => config.data_dir()?.display().to_string(),
                 ["general", "log_level"] => config.general.log_level.clone(),
                 ["scrape", "debounce_seconds"] => config.scrape.debounce_seconds.to_string(),
-                ["scrape", "max_session_age_days"] => config.scrape.max_session_age_days.to_string(),
+                ["scrape", "max_session_age_days"] => {
+                    config.scrape.max_session_age_days.to_string()
+                }
                 ["scrape", "git_auto_commit"] => config.scrape.git_auto_commit.to_string(),
                 _ => {
                     eprintln!("Unknown configuration key: {}", key);
@@ -657,7 +735,8 @@ fn run_scrape(
         config::init(false)?;
     }
 
-    let mut scraper = Scraper::new_with_lock_timeout(data_dir.clone(), config.scrape.lock_timeout_seconds)?;
+    let mut scraper =
+        Scraper::new_with_lock_timeout(data_dir.clone(), config.scrape.lock_timeout_seconds)?;
     scraper.load_plugins()?;
 
     if let Some(file_path) = file {
@@ -699,10 +778,8 @@ fn run_scrape(
                 if !result.errors.is_empty() {
                     eprintln!("Errors: {}", result.errors.len());
                 }
-                if config.scrape.git_auto_commit {
-                    if git_auto_commit(&data_dir, &result)? {
-                        println!("Git: committed {} session(s)", result.sessions_scraped);
-                    }
+                if config.scrape.git_auto_commit && git_auto_commit(&data_dir, &result)? {
+                    println!("Git: committed {} session(s)", result.sessions_scraped);
                 }
             }
         } else {
@@ -725,8 +802,7 @@ fn run_scrape(
                 scraper.state_manager().save()?;
                 println!(
                     "Scraped {} session(s) from {} file(s)",
-                    result.sessions_scraped,
-                    result.files_processed
+                    result.sessions_scraped, result.files_processed
                 );
                 if result.sessions_indexed > 0 {
                     println!("Indexed {} session(s)", result.sessions_indexed);
@@ -743,10 +819,8 @@ fn run_scrape(
                         eprintln!("  ... and {} more", result.errors.len() - 5);
                     }
                 }
-                if config.scrape.git_auto_commit {
-                    if git_auto_commit(&data_dir, &result)? {
-                        println!("Git: committed {} session(s)", result.sessions_scraped);
-                    }
+                if config.scrape.git_auto_commit && git_auto_commit(&data_dir, &result)? {
+                    println!("Git: committed {} session(s)", result.sessions_scraped);
                 }
             }
         } else {
@@ -763,20 +837,19 @@ fn run_scrape(
             }
         } else {
             let result = scraper.scrape_all()?;
-            println!(
-                "Scraped {} session(s) total",
-                result.sessions_scraped
-            );
+            println!("Scraped {} session(s) total", result.sessions_scraped);
             if result.sessions_indexed > 0 {
                 println!("Indexed {} session(s)", result.sessions_indexed);
             }
             if !result.errors.is_empty() {
                 eprintln!("Errors: {}", result.errors.len());
             }
-            if config.scrape.git_auto_commit {
-                if git_auto_commit(&data_dir, &result)? {
-                    println!("Git: committed {} session(s) ({})", result.sessions_scraped, result.agent_types.join(", "));
-                }
+            if config.scrape.git_auto_commit && git_auto_commit(&data_dir, &result)? {
+                println!(
+                    "Git: committed {} session(s) ({})",
+                    result.sessions_scraped,
+                    result.agent_types.join(", ")
+                );
             }
         }
     }
@@ -822,15 +895,9 @@ fn run_search(
         _ => SortOrder::Relevance,
     };
 
-    let since_dt = since
-        .as_deref()
-        .map(search::parse_datetime)
-        .transpose()?;
+    let since_dt = since.as_deref().map(search::parse_datetime).transpose()?;
 
-    let before_dt = before
-        .as_deref()
-        .map(search::parse_datetime)
-        .transpose()?;
+    let before_dt = before.as_deref().map(search::parse_datetime).transpose()?;
 
     let opts = SearchOptions {
         query,
@@ -895,6 +962,248 @@ fn run_shell_hook(shell: &str) -> Result<()> {
     Ok(())
 }
 
+/// Run index subcommands
+fn run_index(action: IndexAction) -> Result<()> {
+    let config = load_config()?;
+    let data_dir = config.data_dir()?;
+
+    if !data_dir.exists() {
+        eprintln!("AgentScribe not initialized. Run 'agentscribe config init' to set up.");
+        std::process::exit(1);
+    }
+
+    match action {
+        IndexAction::Rebuild { plugin, heap_size } => {
+            run_index_rebuild(&data_dir, plugin.as_deref(), heap_size)
+        }
+        IndexAction::Stats => run_index_stats(&data_dir),
+        IndexAction::Optimize => run_index_optimize(&data_dir),
+    }
+}
+
+/// Run index rebuild: drop existing index and rebuild from session files.
+fn run_index_rebuild(
+    data_dir: &std::path::Path,
+    plugin_filter: Option<&str>,
+    _heap_size: usize,
+) -> Result<()> {
+    let sessions_dir = data_dir.join("sessions");
+
+    if !sessions_dir.exists() {
+        eprintln!("No sessions directory found. Run 'agentscribe scrape' first.");
+        std::process::exit(2);
+    }
+
+    // Drop existing index
+    let index_path = data_dir.join("index").join("tantivy");
+    if index_path.exists() {
+        println!("Dropping existing index...");
+        std::fs::remove_dir_all(&index_path)?;
+    }
+
+    let mut manager = IndexManager::open(data_dir)?;
+    manager.begin_write()?;
+
+    let mut total_docs = 0usize;
+    let mut total_errors = 0usize;
+
+    // Walk session directories
+    let entries = match std::fs::read_dir(&sessions_dir) {
+        Ok(e) => e,
+        Err(_) => {
+            eprintln!("Cannot read sessions directory.");
+            std::process::exit(2);
+        }
+    };
+
+    for agent_entry in entries.filter_map(|e| e.ok()) {
+        let agent_path = agent_entry.path();
+        if !agent_path.is_dir() {
+            continue;
+        }
+
+        let agent_name = match agent_path.file_name().and_then(|n| n.to_str()) {
+            Some(n) => n.to_string(),
+            None => continue,
+        };
+
+        // Apply plugin filter
+        if let Some(filter) = plugin_filter {
+            if agent_name != filter {
+                continue;
+            }
+        }
+
+        let session_files = match std::fs::read_dir(&agent_path) {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+
+        for session_entry in session_files.filter_map(|e| e.ok()) {
+            let session_path = session_entry.path();
+            if session_path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
+                continue;
+            }
+
+            let session_id = format!(
+                "{}/{}",
+                agent_name,
+                session_path
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("unknown")
+            );
+
+            // Read events from the normalized session file
+            let file = match std::fs::File::open(&session_path) {
+                Ok(f) => f,
+                Err(e) => {
+                    eprintln!("Error reading {}: {}", session_path.display(), e);
+                    total_errors += 1;
+                    continue;
+                }
+            };
+
+            use std::io::BufRead;
+            let reader = std::io::BufReader::new(file);
+            let mut events = Vec::new();
+
+            for line in reader.lines() {
+                match line {
+                    Ok(l) => {
+                        if let Ok(event) = crate::event::Event::from_jsonl(&l) {
+                            events.push(event);
+                        }
+                    }
+                    Err(_) => {
+                        total_errors += 1;
+                        continue;
+                    }
+                }
+            }
+
+            if events.is_empty() {
+                continue;
+            }
+
+            // Build manifest from events
+            let first = &events[0];
+            let manifest = crate::index::build_manifest_from_events(
+                &events,
+                &session_id,
+                &agent_name,
+                first.project.as_deref(),
+                first.model.as_deref(),
+            );
+
+            match manager.index_session(&events, &manifest) {
+                Ok(_) => total_docs += 1,
+                Err(e) => {
+                    eprintln!("Error indexing {}: {}", session_id, e);
+                    total_errors += 1;
+                }
+            }
+        }
+    }
+
+    manager.finish()?;
+
+    println!(
+        "Rebuilt index from {} session files ({} errors)",
+        total_docs, total_errors
+    );
+    Ok(())
+}
+
+/// Show index statistics.
+fn run_index_stats(data_dir: &std::path::Path) -> Result<()> {
+    let index_path = data_dir.join("index").join("tantivy");
+
+    if !index_path.exists() {
+        println!("Index not found. Run 'agentscribe scrape' first.");
+        return Ok(());
+    }
+
+    let index = match search::open_index(data_dir) {
+        Ok(i) => i,
+        Err(e) => {
+            eprintln!("Error opening index: {}", e);
+            std::process::exit(1);
+        }
+    };
+
+    let reader = index.reader().map_err(|e| {
+        crate::error::AgentScribeError::DataDir(format!("Failed to create reader: {}", e))
+    })?;
+    let searcher = reader.searcher();
+
+    let num_docs = searcher.num_docs();
+    let segments = index.searchable_segment_metas().map_err(|e| {
+        crate::error::AgentScribeError::DataDir(format!("Failed to get segment metas: {}", e))
+    })?;
+    let num_segments = segments.len();
+    let schema = index.schema();
+    let fields: Vec<String> = schema
+        .fields()
+        .map(|(field, _)| schema.get_field_name(field).to_string())
+        .collect();
+
+    let size_bytes = dir_size(&index_path);
+
+    println!("Tantivy index at {}", index_path.display());
+    println!("  Documents:    {}", num_docs);
+    println!("  Segments:     {}", num_segments);
+    println!("  Size on disk: {}", format_bytes(size_bytes));
+    println!("  Fields:       {}", fields.join(", "));
+
+    Ok(())
+}
+
+/// Optimize the index by merging segments.
+fn run_index_optimize(data_dir: &std::path::Path) -> Result<()> {
+    let index_path = data_dir.join("index").join("tantivy");
+
+    if !index_path.exists() {
+        println!("Index not found. Run 'agentscribe scrape' first.");
+        return Ok(());
+    }
+
+    let pre_size = dir_size(&index_path);
+
+    let index = search::open_index(data_dir)?;
+    let segment_ids = index.searchable_segment_ids().map_err(|e| {
+        crate::error::AgentScribeError::DataDir(format!("Failed to get segment IDs: {}", e))
+    })?;
+    let num_segments = segment_ids.len();
+
+    println!("Merging {} segments...", num_segments);
+
+    let mut writer = index
+        .writer::<tantivy::TantivyDocument>(50_000_000)
+        .map_err(|e| {
+            crate::error::AgentScribeError::DataDir(format!("Failed to open writer: {}", e))
+        })?;
+
+    // Merge all segments into one and wait for completion
+    writer.merge(&segment_ids).wait().map_err(|e| {
+        crate::error::AgentScribeError::DataDir(format!("Failed to merge segments: {}", e))
+    })?;
+    writer.garbage_collect_files().wait().map_err(|e| {
+        crate::error::AgentScribeError::DataDir(format!("Failed to garbage collect: {}", e))
+    })?;
+
+    let post_size = dir_size(&index_path);
+
+    println!(
+        "Merged {} segments ({} → {})",
+        num_segments,
+        format_bytes(pre_size),
+        format_bytes(post_size)
+    );
+
+    Ok(())
+}
+
 /// Run status command
 fn run_status(json: bool, plugin_filter: Option<String>) -> Result<()> {
     let config = load_config()?;
@@ -918,7 +1227,9 @@ fn run_status(json: bool, plugin_filter: Option<String>) -> Result<()> {
             std::process::exit(1);
         }
     } else {
-        scraper.plugin_manager().names()
+        scraper
+            .plugin_manager()
+            .names()
             .into_iter()
             .map(String::from)
             .collect()
@@ -929,7 +1240,7 @@ fn run_status(json: bool, plugin_filter: Option<String>) -> Result<()> {
 
     // Collect per-plugin status
     let mut plugin_statuses = Vec::new();
-    let mut total_events: u64 = 0;
+    let mut _total_events: u64 = 0;
     let mut total_sources: usize = 0;
     let mut total_bytes: u64 = 0;
 
@@ -943,22 +1254,23 @@ fn run_status(json: bool, plugin_filter: Option<String>) -> Result<()> {
                 plugin_events += events.len() as u64;
             }
         }
-        total_events += plugin_events;
+        _total_events += plugin_events;
 
         // Get source paths and truncation_limit from plugin config
-        let (source_paths, truncation_limit) = scraper.plugin_manager()
+        let (source_paths, truncation_limit) = scraper
+            .plugin_manager()
             .get(plugin_name)
             .map(|p| (p.source.paths.clone(), p.source.truncation_limit))
             .unwrap_or_default();
 
         // Find last scraped time and byte totals from scrape state for this plugin
-        let plugin_files: Vec<_> = scrape_state.sources.iter()
+        let plugin_files: Vec<_> = scrape_state
+            .sources
+            .iter()
             .filter(|(_, s)| s.plugin == *plugin_name)
             .collect();
 
-        let last_scraped = plugin_files.iter()
-            .filter_map(|(_, s)| Some(s.last_scraped))
-            .max();
+        let last_scraped = plugin_files.iter().map(|(_, s)| s.last_scraped).max();
 
         let mut plugin_bytes: u64 = 0;
         for (_, file_state) in &plugin_files {
@@ -1009,7 +1321,7 @@ fn run_status(json: bool, plugin_filter: Option<String>) -> Result<()> {
             plugins_json.push(p);
         }
 
-        let mut status = json!({
+        let status = json!({
             "version": env!("CARGO_PKG_VERSION"),
             "data_dir": data_dir_str,
             "data_dir_bytes": dir_bytes,
@@ -1057,18 +1369,31 @@ fn run_status(json: bool, plugin_filter: Option<String>) -> Result<()> {
             };
             println!(
                 "  {:<14} {:>4} sessions  {:>6} events  {}  ({} source files, {})",
-                ps.name, ps.sessions, ps.events, last, ps.source_files, format_bytes(ps.bytes)
+                ps.name,
+                ps.sessions,
+                ps.events,
+                last,
+                ps.source_files,
+                format_bytes(ps.bytes)
             );
         }
 
         // Windsurf truncation warning
         for ps in &plugin_statuses {
-            if ps.name == "windsurf" && ps.truncation_limit.is_some() {
-                println!("\n  WARNING: Windsurf retains at most {} conversations.",
-                         ps.truncation_limit.unwrap());
-                println!("  Old conversations are silently overwritten. Run 'agentscribe scrape'");
-                println!("  frequently (e.g., via 'agentscribe daemon start') to avoid data loss.");
-                break;
+            if ps.name == "windsurf" {
+                if let Some(limit) = ps.truncation_limit {
+                    println!(
+                        "\n  WARNING: Windsurf retains at most {} conversations.",
+                        limit
+                    );
+                    println!(
+                        "  Old conversations are silently overwritten. Run 'agentscribe scrape'"
+                    );
+                    println!(
+                        "  frequently (e.g., via 'agentscribe daemon start') to avoid data loss."
+                    );
+                    break;
+                }
             }
         }
 
@@ -1144,7 +1469,8 @@ fn get_daemon_status(data_dir: &std::path::Path) -> DaemonStatus {
 
 /// Get index stats
 fn get_index_stats(index_dir: &std::path::Path) -> IndexStats {
-    if !index_dir.exists() {
+    let tantivy_dir = index_dir.join("tantivy");
+    if !tantivy_dir.exists() {
         return IndexStats {
             exists: false,
             documents: 0,
@@ -1152,13 +1478,19 @@ fn get_index_stats(index_dir: &std::path::Path) -> IndexStats {
         };
     }
 
-    let size_bytes = dir_size(index_dir);
+    let size_bytes = dir_size(&tantivy_dir);
 
-    // Count JSONL session files as document proxy (index not yet built in Phase 1)
-    let documents = count_files_recursive(index_dir, "jsonl");
+    // Read actual document count from Tantivy index
+    let documents = match tantivy::Index::open_in_dir(&tantivy_dir) {
+        Ok(index) => match index.reader() {
+            Ok(reader) => reader.searcher().num_docs() as usize,
+            Err(_) => 0,
+        },
+        Err(_) => 0,
+    };
 
     IndexStats {
-        exists: !documents == 0 || size_bytes > 0,
+        exists: documents > 0 || size_bytes > 0,
         documents,
         size_bytes,
     }
@@ -1222,6 +1554,7 @@ fn dir_size(path: &std::path::Path) -> u64 {
 }
 
 /// Count files with a given extension recursively
+#[allow(dead_code)]
 fn count_files_recursive(path: &std::path::Path, ext: &str) -> usize {
     if !path.is_dir() {
         return 0;
@@ -1304,14 +1637,16 @@ fn run_rules(project_path: PathBuf, format: String, json: bool) -> Result<()> {
 
     if json {
         use serde_json::json;
-        let rules_json: Vec<serde_json::Value> = output.rules.iter().map(|r| {
-            match r {
+        let rules_json: Vec<serde_json::Value> = output
+            .rules
+            .iter()
+            .map(|r| match r {
                 crate::rules::Rule::Correction(s) => json!({"type": "correction", "rule": s}),
                 crate::rules::Rule::Convention(s) => json!({"type": "convention", "rule": s}),
                 crate::rules::Rule::Context(s) => json!({"type": "context", "rule": s}),
                 crate::rules::Rule::Warning(s) => json!({"type": "warning", "rule": s}),
-            }
-        }).collect();
+            })
+            .collect();
 
         let result = json!({
             "project_path": output.project_path.display().to_string(),

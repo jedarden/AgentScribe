@@ -5,8 +5,8 @@
 
 use crate::event::{Event, Role, SessionManifest};
 use regex::Regex;
-use std::sync::LazyLock;
 use serde::{Deserialize, Serialize};
+use std::sync::LazyLock;
 
 /// Outcome classification for a session.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -41,6 +41,7 @@ impl Outcome {
 
 /// Signal types that contribute to outcome detection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
 pub enum OutcomeSignal {
     /// User expressed satisfaction (e.g., "thanks", "works now")
     UserSatisfaction,
@@ -120,19 +121,45 @@ pub struct OutcomeConfig {
     pub min_turns: u32,
 }
 
-fn default_user_satisfaction() -> i32 { 30 }
-fn default_user_frustration() -> i32 { -25 }
-fn default_final_edit_write() -> i32 { 15 }
-fn default_final_error() -> i32 { -20 }
-fn default_unresolved_error() -> i32 { -15 }
-fn default_tool_success() -> i32 { 10 }
-fn default_tool_failure() -> i32 { -10 }
-fn default_very_short_session() -> i32 { -5 }
-fn default_help_without_resolution() -> i32 { -10 }
-fn default_task_completion() -> i32 { 25 }
-fn default_success_threshold() -> i32 { 20 }
-fn default_failure_threshold() -> i32 { -20 }
-fn default_min_turns() -> u32 { 3 }
+fn default_user_satisfaction() -> i32 {
+    30
+}
+fn default_user_frustration() -> i32 {
+    -25
+}
+fn default_final_edit_write() -> i32 {
+    15
+}
+fn default_final_error() -> i32 {
+    -20
+}
+fn default_unresolved_error() -> i32 {
+    -15
+}
+fn default_tool_success() -> i32 {
+    10
+}
+fn default_tool_failure() -> i32 {
+    -10
+}
+fn default_very_short_session() -> i32 {
+    -5
+}
+fn default_help_without_resolution() -> i32 {
+    -10
+}
+fn default_task_completion() -> i32 {
+    25
+}
+fn default_success_threshold() -> i32 {
+    20
+}
+fn default_failure_threshold() -> i32 {
+    -20
+}
+fn default_min_turns() -> u32 {
+    3
+}
 
 impl Default for OutcomeConfig {
     fn default() -> Self {
@@ -171,12 +198,15 @@ static ERROR_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?i)\b(error|failed|exception|panic|fatal|timeout|refused|denied|invalid|not found|unexpected)\b").unwrap()
 });
 
-static SUCCESS_TOOL_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)\b(success\w*|ok|completed|done|passed)\b").unwrap()
-});
+static SUCCESS_TOOL_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)\b(success\w*|ok|completed|done|passed)\b").unwrap());
 
 /// Detect the outcome of a session based on events and configuration.
-pub fn detect_outcome(events: &[Event], manifest: &SessionManifest, config: &OutcomeConfig) -> Outcome {
+pub fn detect_outcome(
+    events: &[Event],
+    manifest: &SessionManifest,
+    config: &OutcomeConfig,
+) -> Outcome {
     // If manifest already has an outcome, respect it
     if let Some(ref outcome) = manifest.outcome {
         if let Some(parsed) = Outcome::from_str(outcome) {
@@ -310,12 +340,24 @@ mod tests {
     use chrono::Utc;
 
     fn make_event(role: Role, content: &str) -> Event {
-        Event::new(Utc::now(), "test/1".into(), "test".into(), role, content.into())
+        Event::new(
+            Utc::now(),
+            "test/1".into(),
+            "test".into(),
+            role,
+            content.into(),
+        )
     }
 
     fn make_tool_call(tool: &str) -> Event {
-        Event::new(Utc::now(), "test/1".into(), "test".into(), Role::ToolCall, "".into())
-            .with_tool(Some(tool.into()))
+        Event::new(
+            Utc::now(),
+            "test/1".into(),
+            "test".into(),
+            Role::ToolCall,
+            "".into(),
+        )
+        .with_tool(Some(tool.into()))
     }
 
     fn make_manifest(turns: u32) -> SessionManifest {
@@ -370,9 +412,7 @@ mod tests {
 
     #[test]
     fn test_very_short_session_abandoned() {
-        let events = vec![
-            make_event(Role::User, "can you help with"),
-        ];
+        let events = vec![make_event(Role::User, "can you help with")];
         let manifest = make_manifest(1);
         let config = OutcomeConfig::default();
 
@@ -382,9 +422,7 @@ mod tests {
 
     #[test]
     fn test_respects_manifest_outcome() {
-        let events = vec![
-            make_event(Role::User, "do something"),
-        ];
+        let events = vec![make_event(Role::User, "do something")];
         let mut manifest = make_manifest(1);
         manifest.outcome = Some("success".into());
         let config = OutcomeConfig::default();

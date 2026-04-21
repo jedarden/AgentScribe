@@ -115,42 +115,49 @@ impl Event {
     }
 
     /// Set the source version
+    #[allow(dead_code)]
     pub fn with_source_version(mut self, version: Option<String>) -> Self {
         self.source_version = version;
         self
     }
 
     /// Set the project path
+    #[allow(dead_code)]
     pub fn with_project(mut self, project: Option<String>) -> Self {
         self.project = project;
         self
     }
 
     /// Set the tool name
+    #[allow(dead_code)]
     pub fn with_tool(mut self, tool: Option<String>) -> Self {
         self.tool = tool;
         self
     }
 
     /// Set token counts
+    #[allow(dead_code)]
     pub fn with_tokens(mut self, tokens: Option<TokenCounts>) -> Self {
         self.tokens = tokens;
         self
     }
 
     /// Set model name
+    #[allow(dead_code)]
     pub fn with_model(mut self, model: Option<String>) -> Self {
         self.model = model;
         self
     }
 
     /// Add file paths
+    #[allow(dead_code)]
     pub fn with_file_paths(mut self, paths: Vec<String>) -> Self {
         self.file_paths = paths;
         self
     }
 
     /// Add error fingerprints
+    #[allow(dead_code)]
     pub fn with_error_fingerprints(mut self, fingerprints: Vec<String>) -> Self {
         self.error_fingerprints = fingerprints;
         self
@@ -255,6 +262,7 @@ impl ScrapeState {
     }
 
     /// Get state for a file, or create new if not exists
+    #[allow(dead_code)]
     pub fn get_or_create(&mut self, file_path: &str, plugin: &str) -> &mut SourceFileState {
         self.sources
             .entry(file_path.to_string())
@@ -262,11 +270,13 @@ impl ScrapeState {
     }
 
     /// Remove state for a file
+    #[allow(dead_code)]
     pub fn remove(&mut self, file_path: &str) -> Option<SourceFileState> {
         self.sources.remove(file_path)
     }
 
     /// Get all files for a plugin
+    #[allow(dead_code)]
     pub fn files_for_plugin(&self, plugin: &str) -> Vec<&str> {
         self.sources
             .iter()

@@ -17,11 +17,11 @@ pub mod outcome;
 pub mod solution;
 pub mod summary;
 
-pub use antipatterns::{AntiPattern, detect_antipatterns, write_antipatterns_sidecar};
-pub use code_artifacts::{CodeArtifact, extract_code_artifacts};
-pub use errors::{extract_error_fingerprints, normalize_error, enrich_events};
-pub use git::{GitCommit, correlate_commits, blame_file_line, BlameResult, build_commit_index, file_git_log};
-pub use outcome::{detect_outcome, Outcome, OutcomeConfig, OutcomeSignal};
+pub use antipatterns::{detect_antipatterns, AntiPattern};
+pub use code_artifacts::{extract_code_artifacts, CodeArtifact};
+pub use errors::enrich_events;
+pub use git::{correlate_commits, GitCommit};
+pub use outcome::{detect_outcome, Outcome, OutcomeConfig};
 pub use solution::extract_solution;
 pub use summary::generate_summary;
 
@@ -30,6 +30,7 @@ use crate::scraper::Scraper;
 use std::path::Path;
 
 /// Result of enriching a session.
+#[allow(dead_code)]
 pub struct EnrichmentResult {
     /// Detected outcome
     pub outcome: Outcome,
@@ -46,11 +47,12 @@ pub struct EnrichmentResult {
 }
 
 /// Run the full enrichment pipeline on a session.
+#[allow(dead_code)]
 pub fn enrich_session(
     events: &[Event],
     manifest: &SessionManifest,
     outcome_config: &OutcomeConfig,
-    data_dir: &Path,
+    _data_dir: &Path,
     scraper: &Scraper,
 ) -> EnrichmentResult {
     // Enrich events with error fingerprints

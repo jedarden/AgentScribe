@@ -68,6 +68,7 @@ pub enum AgentScribeError {
 
 impl AgentScribeError {
     /// Create a parser error with skip-and-log semantics
+    #[allow(dead_code)]
     pub fn parse_error(file: impl Into<String>, message: impl Into<String>) -> Self {
         let file = file.into();
         let message = message.into();

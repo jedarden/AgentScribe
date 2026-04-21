@@ -3,10 +3,10 @@
 //! Parses append-only Markdown files where roles are distinguished by line prefixes.
 //! Used by agents like Aider.
 
+use crate::error::{AgentScribeError, Result};
 use crate::event::{Event, Role};
 use crate::parser::{ParseContext, SessionInfo};
 use crate::plugin::{Plugin, SessionDetection};
-use crate::error::{AgentScribeError, Result};
 use chrono::Utc;
 use regex::Regex;
 use std::path::Path;
@@ -57,7 +57,9 @@ impl MarkdownParser {
             .assistant_prefix
             .as_ref()
             .ok_or_else(|| {
-                AgentScribeError::InvalidPlugin("Missing assistant_prefix in parser config".to_string())
+                AgentScribeError::InvalidPlugin(
+                    "Missing assistant_prefix in parser config".to_string(),
+                )
             })?
             .clone();
 
@@ -193,8 +195,9 @@ impl super::FormatParser for MarkdownParser {
         match &plugin.source.session_detection {
             SessionDetection::Delimiter { delimiter_pattern } => {
                 let content = std::fs::read_to_string(source_path)?;
-                let re = Regex::new(delimiter_pattern)
-                    .map_err(|e| AgentScribeError::InvalidPlugin(format!("Invalid delimiter regex: {}", e)))?;
+                let re = Regex::new(delimiter_pattern).map_err(|e| {
+                    AgentScribeError::InvalidPlugin(format!("Invalid delimiter regex: {}", e))
+                })?;
 
                 let mut sessions = Vec::new();
                 let mut current_offset = 0u64;

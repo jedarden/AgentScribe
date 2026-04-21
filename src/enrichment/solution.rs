@@ -3,6 +3,8 @@
 //! Identifies the resolution window (last error -> user confirmation)
 //! and extracts Edit/Write/Bash tool calls as a solution summary.
 
+#![allow(dead_code)]
+
 use crate::event::{Event, Role};
 
 /// Maximum solution summary length in characters.
@@ -46,11 +48,7 @@ pub fn extract_solution(events: &[Event]) -> Option<String> {
                 "Bash" => {
                     // For Bash, extract the command
                     let cmd = e.content.lines().next().unwrap_or("");
-                    let truncated = if cmd.len() > 120 {
-                        &cmd[..120]
-                    } else {
-                        cmd
-                    };
+                    let truncated = if cmd.len() > 120 { &cmd[..120] } else { cmd };
                     Some(format!("[Bash] {}", truncated.trim()))
                 }
                 _ => None,
@@ -145,7 +143,13 @@ mod tests {
     use chrono::Utc;
 
     fn make_event(role: Role, content: &str, tool: Option<&str>) -> Event {
-        let mut e = Event::new(Utc::now(), "test/1".into(), "test".into(), role, content.into());
+        let mut e = Event::new(
+            Utc::now(),
+            "test/1".into(),
+            "test".into(),
+            role,
+            content.into(),
+        );
         e.tool = tool.map(|s| s.to_string());
         e
     }
@@ -155,11 +159,23 @@ mod tests {
         let events = vec![
             make_event(Role::User, "fix the auth bug", None),
             make_event(Role::Assistant, "let me look at it", None),
-            make_event(Role::ToolResult, "error: compile failed\nmissing import", None),
+            make_event(
+                Role::ToolResult,
+                "error: compile failed\nmissing import",
+                None,
+            ),
             make_event(Role::Assistant, "I need to add the import", None),
-            make_event(Role::ToolCall, "Edit src/auth.rs\n+use std::collections::HashMap;", Some("Edit")),
+            make_event(
+                Role::ToolCall,
+                "Edit src/auth.rs\n+use std::collections::HashMap;",
+                Some("Edit"),
+            ),
             make_event(Role::ToolCall, "Bash cargo test", Some("Bash")),
-            make_event(Role::ToolResult, "running 5 tests...\ntest result: ok", None),
+            make_event(
+                Role::ToolResult,
+                "running 5 tests...\ntest result: ok",
+                None,
+            ),
             make_event(Role::User, "thanks, works now", None),
         ];
         let solution = extract_solution(&events).unwrap();

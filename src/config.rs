@@ -4,11 +4,11 @@
 
 use crate::enrichment::outcome::OutcomeConfig;
 use crate::error::{AgentScribeError, Result};
+use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
 use std::fs;
-use directories::ProjectDirs;
+use std::path::{Path, PathBuf};
 
 /// Default data directory name
 const DATA_DIR_NAME: &str = ".agentscribe";
@@ -27,6 +27,7 @@ pub struct CostConfig {
     pub models: HashMap<String, ModelPricing>,
 }
 
+#[allow(clippy::derivable_impls)]
 impl Default for CostConfig {
     fn default() -> Self {
         CostConfig {
@@ -69,6 +70,7 @@ pub struct DaemonConfig {
     pub mcp_socket_path: Option<String>,
 }
 
+#[allow(clippy::derivable_impls)]
 impl Default for DaemonConfig {
     fn default() -> Self {
         DaemonConfig {
@@ -189,7 +191,9 @@ impl Config {
             // Use default: ~/.agentscribe
             let home = directories::BaseDirs::new()
                 .map(|d| d.home_dir().to_path_buf())
-                .ok_or_else(|| AgentScribeError::DataDir("Cannot determine home directory".to_string()))?;
+                .ok_or_else(|| {
+                    AgentScribeError::DataDir("Cannot determine home directory".to_string())
+                })?;
             Ok(home.join(DATA_DIR_NAME))
         }
     }
@@ -283,6 +287,7 @@ pub fn config_path() -> Option<PathBuf> {
 }
 
 /// Get the default data directory
+#[allow(dead_code)]
 pub fn default_data_dir() -> Result<PathBuf> {
     Config::default().data_dir()
 }

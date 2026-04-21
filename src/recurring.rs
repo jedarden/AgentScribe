@@ -6,12 +6,12 @@
 
 use crate::enrichment::outcome::{detect_outcome, OutcomeConfig};
 use crate::error::Result;
-use crate::event::{Event, Role, SessionManifest};
+use crate::event::{Event, SessionManifest};
 use crate::scraper::Scraper;
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 /// Options for recurring problem detection
 pub struct RecurringOptions {
@@ -65,10 +65,7 @@ pub struct RecurringOutput {
 }
 
 /// Execute recurring problem detection
-pub fn detect_recurring(
-    data_dir: &Path,
-    opts: &RecurringOptions,
-) -> Result<RecurringOutput> {
+pub fn detect_recurring(data_dir: &Path, opts: &RecurringOptions) -> Result<RecurringOutput> {
     let mut scraper = Scraper::new(data_dir.to_path_buf())?;
     scraper.load_plugins()?;
 
@@ -124,14 +121,17 @@ pub fn detect_recurring(
 
         for (fp, event_count) in fp_event_counts {
             let ts = fp_latest_ts[&fp];
-            fingerprint_map.entry(fp).or_default().push(FingerprintOccurrence {
-                session_id: session_id.clone(),
-                source_agent: source_agent.clone(),
-                project: project.clone(),
-                timestamp: ts,
-                outcome: Some(outcome_str.clone()),
-                event_count,
-            });
+            fingerprint_map
+                .entry(fp)
+                .or_default()
+                .push(FingerprintOccurrence {
+                    session_id: session_id.clone(),
+                    source_agent: source_agent.clone(),
+                    project: project.clone(),
+                    timestamp: ts,
+                    outcome: Some(outcome_str.clone()),
+                    event_count,
+                });
         }
     }
 
@@ -304,7 +304,11 @@ fn truncate_fingerprint(fp: &str, max_len: usize) -> String {
         let prefix = &fp[..=colon_pos];
         let remaining = max_len.saturating_sub(prefix.len() + 6); // 3 for "..." + 3 safety margin
         if remaining > 10 {
-            return format!("{}{}...", prefix, &fp[colon_pos + 1..colon_pos + 1 + remaining]);
+            return format!(
+                "{}{}...",
+                prefix,
+                &fp[colon_pos + 1..colon_pos + 1 + remaining]
+            );
         }
     }
     format!("{}...", &fp[..max_len.saturating_sub(3)])
@@ -332,6 +336,7 @@ fn format_list(items: &[String]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::event::Role;
     use chrono::Duration;
     use std::path::PathBuf;
 
@@ -368,10 +373,7 @@ mod tests {
             let path = data_dir
                 .join("sessions/test-agent")
                 .join(format!("{}.jsonl", session_id));
-            let content: Vec<String> = events
-                .iter()
-                .map(|e| e.to_jsonl().unwrap())
-                .collect();
+            let content: Vec<String> = events.iter().map(|e| e.to_jsonl().unwrap()).collect();
             std::fs::write(path, content.join("\n")).unwrap();
         }
 
@@ -436,30 +438,68 @@ content = "content"
             (
                 "session-1".to_string(),
                 vec![
-                    make_event(now - Duration::days(10), "test-agent/session-1", Role::User, "fix this", vec!["ErrorType:connection refused"]),
-                    make_event(now - Duration::days(10), "test-agent/session-1", Role::Assistant, "done", vec![]),
-                    make_event(now - Duration::days(10), "test-agent/session-1", Role::User, "thanks, that worked!", vec![]),
+                    make_event(
+                        now - Duration::days(10),
+                        "test-agent/session-1",
+                        Role::User,
+                        "fix this",
+                        vec!["ErrorType:connection refused"],
+                    ),
+                    make_event(
+                        now - Duration::days(10),
+                        "test-agent/session-1",
+                        Role::Assistant,
+                        "done",
+                        vec![],
+                    ),
+                    make_event(
+                        now - Duration::days(10),
+                        "test-agent/session-1",
+                        Role::User,
+                        "thanks, that worked!",
+                        vec![],
+                    ),
                 ],
             ),
             (
                 "session-2".to_string(),
                 vec![
-                    make_event(now - Duration::days(5), "test-agent/session-2", Role::User, "same error", vec!["ErrorType:connection refused"]),
-                    make_event(now - Duration::days(5), "test-agent/session-2", Role::User, "thanks!", vec![]),
+                    make_event(
+                        now - Duration::days(5),
+                        "test-agent/session-2",
+                        Role::User,
+                        "same error",
+                        vec!["ErrorType:connection refused"],
+                    ),
+                    make_event(
+                        now - Duration::days(5),
+                        "test-agent/session-2",
+                        Role::User,
+                        "thanks!",
+                        vec![],
+                    ),
                 ],
             ),
             (
                 "session-3".to_string(),
-                vec![
-                    make_event(now - Duration::days(2), "test-agent/session-3", Role::User, "again", vec!["ErrorType:connection refused"]),
-                ],
+                vec![make_event(
+                    now - Duration::days(2),
+                    "test-agent/session-3",
+                    Role::User,
+                    "again",
+                    vec!["ErrorType:connection refused"],
+                )],
             ),
             // Different fingerprint — should not be grouped
             (
                 "session-4".to_string(),
-                vec![
-                    make_event(now - Duration::days(1), "test-agent/session-4", Role::User, "other error", vec!["OtherError:something else"]),
-                ],
+                vec![make_event(
+                    now - Duration::days(1),
+                    "test-agent/session-4",
+                    Role::User,
+                    "other error",
+                    vec!["OtherError:something else"],
+                )],
             ),
         ]);
 
@@ -474,7 +514,10 @@ content = "content"
         let output = detect_recurring(&data_dir, &opts).unwrap();
 
         assert_eq!(output.problems.len(), 1);
-        assert_eq!(output.problems[0].fingerprint, "ErrorType:connection refused");
+        assert_eq!(
+            output.problems[0].fingerprint,
+            "ErrorType:connection refused"
+        );
         assert_eq!(output.problems[0].session_count, 3);
     }
 
@@ -485,24 +528,72 @@ content = "content"
             (
                 "session-1".to_string(),
                 vec![
-                    make_event(now - Duration::days(5), "test-agent/session-1", Role::ToolResult, "err1", vec!["Err:X"]),
-                    make_event(now - Duration::days(5), "test-agent/session-1", Role::ToolResult, "err2", vec!["Err:X"]),
-                    make_event(now - Duration::days(5), "test-agent/session-1", Role::User, "thanks!", vec![]),
+                    make_event(
+                        now - Duration::days(5),
+                        "test-agent/session-1",
+                        Role::ToolResult,
+                        "err1",
+                        vec!["Err:X"],
+                    ),
+                    make_event(
+                        now - Duration::days(5),
+                        "test-agent/session-1",
+                        Role::ToolResult,
+                        "err2",
+                        vec!["Err:X"],
+                    ),
+                    make_event(
+                        now - Duration::days(5),
+                        "test-agent/session-1",
+                        Role::User,
+                        "thanks!",
+                        vec![],
+                    ),
                 ],
             ),
             (
                 "session-2".to_string(),
                 vec![
-                    make_event(now - Duration::days(3), "test-agent/session-2", Role::ToolResult, "err", vec!["Err:X"]),
-                    make_event(now - Duration::days(3), "test-agent/session-2", Role::User, "thanks!", vec![]),
+                    make_event(
+                        now - Duration::days(3),
+                        "test-agent/session-2",
+                        Role::ToolResult,
+                        "err",
+                        vec!["Err:X"],
+                    ),
+                    make_event(
+                        now - Duration::days(3),
+                        "test-agent/session-2",
+                        Role::User,
+                        "thanks!",
+                        vec![],
+                    ),
                 ],
             ),
             (
                 "session-3".to_string(),
                 vec![
-                    make_event(now - Duration::days(1), "test-agent/session-3", Role::ToolResult, "err", vec!["Err:X"]),
-                    make_event(now - Duration::days(1), "test-agent/session-3", Role::ToolResult, "err", vec!["Err:X"]),
-                    make_event(now - Duration::days(1), "test-agent/session-3", Role::ToolResult, "err", vec!["Err:X"]),
+                    make_event(
+                        now - Duration::days(1),
+                        "test-agent/session-3",
+                        Role::ToolResult,
+                        "err",
+                        vec!["Err:X"],
+                    ),
+                    make_event(
+                        now - Duration::days(1),
+                        "test-agent/session-3",
+                        Role::ToolResult,
+                        "err",
+                        vec!["Err:X"],
+                    ),
+                    make_event(
+                        now - Duration::days(1),
+                        "test-agent/session-3",
+                        Role::ToolResult,
+                        "err",
+                        vec!["Err:X"],
+                    ),
                 ],
             ),
         ]);
@@ -528,11 +619,23 @@ content = "content"
         let sessions = HashMap::from([
             (
                 "session-1".to_string(),
-                vec![make_event(now, "test-agent/session-1", Role::User, "err", vec!["E:A"])],
+                vec![make_event(
+                    now,
+                    "test-agent/session-1",
+                    Role::User,
+                    "err",
+                    vec!["E:A"],
+                )],
             ),
             (
                 "session-2".to_string(),
-                vec![make_event(now, "test-agent/session-2", Role::User, "err", vec!["E:A"])],
+                vec![make_event(
+                    now,
+                    "test-agent/session-2",
+                    Role::User,
+                    "err",
+                    vec!["E:A"],
+                )],
             ),
         ]);
 
@@ -555,23 +658,65 @@ content = "content"
             (
                 "session-1".to_string(),
                 vec![
-                    make_event(now - Duration::days(10), "test-agent/session-1", Role::User, "fix this error", vec!["Err:foo"]),
-                    make_event(now - Duration::days(10), "test-agent/session-1", Role::Assistant, "fixed it", vec![]),
-                    make_event(now - Duration::days(10), "test-agent/session-1", Role::User, "thanks, that worked!", vec![]),
+                    make_event(
+                        now - Duration::days(10),
+                        "test-agent/session-1",
+                        Role::User,
+                        "fix this error",
+                        vec!["Err:foo"],
+                    ),
+                    make_event(
+                        now - Duration::days(10),
+                        "test-agent/session-1",
+                        Role::Assistant,
+                        "fixed it",
+                        vec![],
+                    ),
+                    make_event(
+                        now - Duration::days(10),
+                        "test-agent/session-1",
+                        Role::User,
+                        "thanks, that worked!",
+                        vec![],
+                    ),
                 ],
             ),
             (
                 "session-2".to_string(),
                 vec![
-                    make_event(now - Duration::days(5), "test-agent/session-2", Role::User, "same error", vec!["Err:foo"]),
-                    make_event(now - Duration::days(5), "test-agent/session-2", Role::Assistant, "fixed it", vec![]),
-                    make_event(now - Duration::days(5), "test-agent/session-2", Role::User, "great, works now!", vec![]),
+                    make_event(
+                        now - Duration::days(5),
+                        "test-agent/session-2",
+                        Role::User,
+                        "same error",
+                        vec!["Err:foo"],
+                    ),
+                    make_event(
+                        now - Duration::days(5),
+                        "test-agent/session-2",
+                        Role::Assistant,
+                        "fixed it",
+                        vec![],
+                    ),
+                    make_event(
+                        now - Duration::days(5),
+                        "test-agent/session-2",
+                        Role::User,
+                        "great, works now!",
+                        vec![],
+                    ),
                 ],
             ),
             (
                 "session-3".to_string(),
                 vec![
-                    make_event(now - Duration::days(2), "test-agent/session-3", Role::User, "again", vec!["Err:foo"]),
+                    make_event(
+                        now - Duration::days(2),
+                        "test-agent/session-3",
+                        Role::User,
+                        "again",
+                        vec!["Err:foo"],
+                    ),
                     // No resolution — this should not count as a fix
                 ],
             ),
@@ -591,7 +736,11 @@ content = "content"
         assert_eq!(output.problems[0].fix_agents, vec!["test-agent"]);
         assert!(output.problems[0].last_fix_session.is_some());
         // Last fix should be session-2 (day 5), not session-3 (day 2, unresolved)
-        assert!(output.problems[0].last_fix_session.as_ref().unwrap().contains("session-2"));
+        assert!(output.problems[0]
+            .last_fix_session
+            .as_ref()
+            .unwrap()
+            .contains("session-2"));
     }
 
     #[test]
@@ -600,15 +749,33 @@ content = "content"
         let sessions = HashMap::from([
             (
                 "session-1".to_string(),
-                vec![make_event(now - Duration::days(60), "test-agent/session-1", Role::User, "old", vec!["Err:A"])],
+                vec![make_event(
+                    now - Duration::days(60),
+                    "test-agent/session-1",
+                    Role::User,
+                    "old",
+                    vec!["Err:A"],
+                )],
             ),
             (
                 "session-2".to_string(),
-                vec![make_event(now - Duration::days(5), "test-agent/session-2", Role::User, "new", vec!["Err:A"])],
+                vec![make_event(
+                    now - Duration::days(5),
+                    "test-agent/session-2",
+                    Role::User,
+                    "new",
+                    vec!["Err:A"],
+                )],
             ),
             (
                 "session-3".to_string(),
-                vec![make_event(now - Duration::days(3), "test-agent/session-3", Role::User, "new", vec!["Err:A"])],
+                vec![make_event(
+                    now - Duration::days(3),
+                    "test-agent/session-3",
+                    Role::User,
+                    "new",
+                    vec!["Err:A"],
+                )],
             ),
         ]);
 
