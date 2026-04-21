@@ -11,6 +11,7 @@ use regex::Regex;
 use crate::event::Event;
 
 /// Regex patterns that extract error lines from content.
+#[allow(dead_code)]
 static ERROR_EXTRACT_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
     vec![
         // Rust compiler errors
@@ -48,30 +49,39 @@ static ERROR_EXTRACT_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
 });
 
 /// Normalization regexes: strip variable parts to create stable fingerprints.
+#[allow(dead_code)]
 static NORMALIZATION_RULES: LazyLock<Vec<(Regex, &'static str)>> = LazyLock::new(|| {
     vec![
-        // File paths: /home/user/project/src/file.rs -> <PATH>
-        (Regex::new(r"(?:/[\w.-]+){2,}").unwrap(), "<PATH>"),
-        // Windows paths: C:\Users\... -> <PATH>
-        (Regex::new(r"[A-Z]:\\[\w\\.-]+").unwrap(), "<PATH>"),
-        // Host:port patterns: 192.168.1.1:8080 -> <HOST>:<PORT>
-        (Regex::new(r"\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}").unwrap(), "<HOST>"),
-        // Port numbers after known protocols
-        (Regex::new(r":\d{2,5}(?=[/\s)]|$)").unwrap(), ":<PORT>"),
-        // PIDs: pid 12345 -> pid <PID>
-        (Regex::new(r"\bpid\s+\d+\b").unwrap(), "pid <PID>"),
-        // Timestamps: 2026-03-20T10:30:00.123Z or similar ISO 8601
-        (Regex::new(r"\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}").unwrap(), "<TIMESTAMP>"),
+        // Timestamps first (before port/line rules that match colons+digits):
+        // ISO 8601: 2026-03-20T10:30:00 or 2026-03-20 10:30:00
+        (
+            Regex::new(r"\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}").unwrap(),
+            "<TIMESTAMP>",
+        ),
         // Simple timestamps: HH:MM:SS
         (Regex::new(r"\b\d{2}:\d{2}:\d{2}\b").unwrap(), "<TIME>"),
-        // UUIDs
-        (Regex::new(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}").unwrap(), "<UUID>"),
+        // UUIDs (before general number rules)
+        (
+            Regex::new(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}").unwrap(),
+            "<UUID>",
+        ),
         // Memory addresses: 0x7f8b4c2d3a10
         (Regex::new(r"0x[0-9a-fA-F]{8,16}").unwrap(), "<ADDR>"),
-        // Line numbers: :42 -> :<LINE>
-        (Regex::new(r":(\d{2,5})(?=[\s,)\]:]|$)").unwrap(), ":<LINE>"),
-        // Hex numbers (other than addresses): 0x1234
-        (Regex::new(r"0x[0-9a-fA-F]{1,6}(?![0-9a-fA-F])").unwrap(), "<HEX>"),
+        // File paths: /home/user/project/src/file.rs -> <PATH>
+        (Regex::new(r"(?:/[\w.-]+){2,}").unwrap(), "<PATH>"),
+        // Relative paths: src/main.rs, lib/utils.py -> <PATH>
+        (Regex::new(r"\b\w[\w-]*/[\w./\-]+").unwrap(), "<PATH>"),
+        // Windows paths: C:\Users\... -> <PATH>
+        (Regex::new(r"[A-Z]:\\[\w\\.-]+").unwrap(), "<PATH>"),
+        // Host:port patterns: 192.168.1.1 -> <HOST>
+        (
+            Regex::new(r"\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}").unwrap(),
+            "<HOST>",
+        ),
+        // Line numbers and ports: :42 :8080 -> :<LINE>
+        (Regex::new(r":\d{2,5}\b").unwrap(), ":<LINE>"),
+        // PIDs: pid 12345 -> pid <PID>
+        (Regex::new(r"\bpid\s+\d+\b").unwrap(), "pid <PID>"),
         // Large numbers that might be sizes/offsets (6+ digits)
         (Regex::new(r"\b\d{6,}\b").unwrap(), "<NUM>"),
     ]
@@ -80,6 +90,7 @@ static NORMALIZATION_RULES: LazyLock<Vec<(Regex, &'static str)>> = LazyLock::new
 /// Extract error fingerprints from a piece of content.
 ///
 /// Returns normalized error patterns found in the content.
+#[allow(dead_code)]
 pub fn extract_error_fingerprints(content: &str) -> Vec<String> {
     let mut fingerprints = Vec::new();
 
@@ -100,6 +111,7 @@ pub fn extract_error_fingerprints(content: &str) -> Vec<String> {
 }
 
 /// Normalize an error string by stripping variable parts.
+#[allow(dead_code)]
 pub fn normalize_error(error: &str) -> String {
     let mut normalized = error.to_string();
 
@@ -125,6 +137,7 @@ pub fn normalize_error(error: &str) -> String {
 /// Enrich events with error fingerprints.
 ///
 /// Returns new events with error_fingerprints populated.
+#[allow(dead_code)]
 pub fn enrich_events(events: &[Event]) -> Vec<Event> {
     events
         .iter()

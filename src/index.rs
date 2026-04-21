@@ -9,7 +9,7 @@ use crate::tags;
 use chrono::{DateTime, Utc};
 use std::collections::HashSet;
 use std::path::Path;
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 use tantivy::schema::*;
 use tantivy::TantivyDocument;
@@ -28,6 +28,7 @@ const CONTENT_HALF_BYTES: usize = CONTENT_MAX_BYTES / 2;
 /// Returned alongside the schema so callers can reference fields by name
 /// without re-resolving them.
 #[derive(Clone)]
+#[allow(dead_code)]
 pub struct IndexFields {
     // Full-text searchable + stored
     pub content: Field,
@@ -66,26 +67,66 @@ pub struct IndexFields {
 /// creating new handles that may have different field IDs.
 pub fn fields_from_schema(schema: &Schema) -> IndexFields {
     IndexFields {
-        content: schema.get_field("content").expect("missing 'content' field in schema"),
-        summary: schema.get_field("summary").expect("missing 'summary' field in schema"),
-        solution_summary: schema.get_field("solution_summary").expect("missing 'solution_summary' field in schema"),
-        code_content: schema.get_field("code_content").expect("missing 'code_content' field in schema"),
-        session_id: schema.get_field("session_id").expect("missing 'session_id' field in schema"),
-        source_agent: schema.get_field("source_agent").expect("missing 'source_agent' field in schema"),
-        project: schema.get_field("project").expect("missing 'project' field in schema"),
-        tags: schema.get_field("tags").expect("missing 'tags' field in schema"),
-        outcome: schema.get_field("outcome").expect("missing 'outcome' field in schema"),
-        error_fingerprint: schema.get_field("error_fingerprint").expect("missing 'error_fingerprint' field in schema"),
-        file_paths: schema.get_field("file_paths").expect("missing 'file_paths' field in schema"),
-        git_commits: schema.get_field("git_commits").expect("missing 'git_commits' field in schema"),
-        doc_type: schema.get_field("doc_type").expect("missing 'doc_type' field in schema"),
-        code_language: schema.get_field("code_language").expect("missing 'code_language' field in schema"),
-        code_file_path: schema.get_field("code_file_path").expect("missing 'code_file_path' field in schema"),
-        code_is_final: schema.get_field("code_is_final").expect("missing 'code_is_final' field in schema"),
-        model: schema.get_field("model").expect("missing 'model' field in schema"),
-        session_type: schema.get_field("session_type").expect("missing 'session_type' field in schema"),
-        timestamp: schema.get_field("timestamp").expect("missing 'timestamp' field in schema"),
-        turn_count: schema.get_field("turn_count").expect("missing 'turn_count' field in schema"),
+        content: schema
+            .get_field("content")
+            .expect("missing 'content' field in schema"),
+        summary: schema
+            .get_field("summary")
+            .expect("missing 'summary' field in schema"),
+        solution_summary: schema
+            .get_field("solution_summary")
+            .expect("missing 'solution_summary' field in schema"),
+        code_content: schema
+            .get_field("code_content")
+            .expect("missing 'code_content' field in schema"),
+        session_id: schema
+            .get_field("session_id")
+            .expect("missing 'session_id' field in schema"),
+        source_agent: schema
+            .get_field("source_agent")
+            .expect("missing 'source_agent' field in schema"),
+        project: schema
+            .get_field("project")
+            .expect("missing 'project' field in schema"),
+        tags: schema
+            .get_field("tags")
+            .expect("missing 'tags' field in schema"),
+        outcome: schema
+            .get_field("outcome")
+            .expect("missing 'outcome' field in schema"),
+        error_fingerprint: schema
+            .get_field("error_fingerprint")
+            .expect("missing 'error_fingerprint' field in schema"),
+        file_paths: schema
+            .get_field("file_paths")
+            .expect("missing 'file_paths' field in schema"),
+        git_commits: schema
+            .get_field("git_commits")
+            .expect("missing 'git_commits' field in schema"),
+        doc_type: schema
+            .get_field("doc_type")
+            .expect("missing 'doc_type' field in schema"),
+        code_language: schema
+            .get_field("code_language")
+            .expect("missing 'code_language' field in schema"),
+        code_file_path: schema
+            .get_field("code_file_path")
+            .expect("missing 'code_file_path' field in schema"),
+        code_is_final: schema
+            .get_field("code_is_final")
+            .expect("missing 'code_is_final' field in schema"),
+        model: schema
+            .get_field("model")
+            .expect("missing 'model' field in schema"),
+        session_type: schema
+            .get_field("session_type")
+            .expect("missing 'session_type' field in schema"),
+        timestamp: schema
+            .get_field("timestamp")
+            .expect("missing 'timestamp' field in schema"),
+        turn_count: schema
+            .get_field("turn_count")
+            .expect("missing 'turn_count' field in schema"),
     }
 }
 
@@ -306,6 +347,7 @@ pub fn build_session_document(
 ///
 /// Code artifacts share session-level fields with their parent session and
 /// have the `doc_type` set to "code_artifact".
+#[allow(dead_code)]
 pub fn build_code_artifact_document(
     fields: &IndexFields,
     session_id: &str,
@@ -410,9 +452,8 @@ impl IndexManager {
         let index_path = data_dir.join("index").join(INDEX_DIR_NAME);
 
         let (index, fields) = if index_path.exists() {
-            let index = tantivy::Index::open_in_dir(&index_path).map_err(|e| {
-                AgentScribeError::DataDir(format!("Failed to open index: {}", e))
-            })?;
+            let index = tantivy::Index::open_in_dir(&index_path)
+                .map_err(|e| AgentScribeError::DataDir(format!("Failed to open index: {}", e)))?;
             // Derive field handles from the stored schema so IDs are always
             // in sync with whatever schema the index was originally created with.
             let fields = fields_from_schema(&index.schema());
@@ -420,9 +461,8 @@ impl IndexManager {
         } else {
             let (schema, fields) = build_schema();
             std::fs::create_dir_all(&index_path)?;
-            let index = tantivy::Index::create_in_dir(&index_path, schema).map_err(|e| {
-                AgentScribeError::DataDir(format!("Failed to create index: {}", e))
-            })?;
+            let index = tantivy::Index::create_in_dir(&index_path, schema)
+                .map_err(|e| AgentScribeError::DataDir(format!("Failed to create index: {}", e)))?;
             (index, fields)
         };
 
@@ -455,11 +495,7 @@ impl IndexManager {
     ///
     /// The delete is soft until `commit()` is called, so within a single write session
     /// this correctly replaces the old document with the new one.
-    pub fn index_session(
-        &mut self,
-        events: &[Event],
-        manifest: &SessionManifest,
-    ) -> Result<()> {
+    pub fn index_session(&mut self, events: &[Event], manifest: &SessionManifest) -> Result<()> {
         let writer = self.writer.as_mut().ok_or_else(|| {
             AgentScribeError::DataDir(
                 "Index writer not active. Call begin_write() first.".to_string(),
@@ -473,9 +509,9 @@ impl IndexManager {
 
         // Build and add new document
         let doc = build_session_document(&self.fields, events, manifest);
-        writer.add_document(doc).map_err(|e| {
-            AgentScribeError::DataDir(format!("Failed to add document: {}", e))
-        })?;
+        writer
+            .add_document(doc)
+            .map_err(|e| AgentScribeError::DataDir(format!("Failed to add document: {}", e)))?;
         info!(session_id = %manifest.session_id, "indexed session");
 
         Ok(())
@@ -501,9 +537,9 @@ impl IndexManager {
     /// continue using it. Call `finish()` to release the writer.
     pub fn commit(&mut self) -> Result<()> {
         if let Some(ref mut writer) = self.writer {
-            writer.commit().map_err(|e| {
-                AgentScribeError::DataDir(format!("Failed to commit index: {}", e))
-            })?;
+            writer
+                .commit()
+                .map_err(|e| AgentScribeError::DataDir(format!("Failed to commit index: {}", e)))?;
             info!("index committed");
         }
         Ok(())
@@ -527,17 +563,15 @@ impl IndexManager {
         let writer: tantivy::IndexWriter = self.index.writer(50_000_000).map_err(|e| {
             AgentScribeError::DataDir(format!("Failed to open writer for GC: {}", e))
         })?;
-        writer
-            .garbage_collect_files()
-            .wait()
-            .map_err(|e| {
-                AgentScribeError::DataDir(format!("Failed to garbage collect index: {}", e))
-            })?;
+        writer.garbage_collect_files().wait().map_err(|e| {
+            AgentScribeError::DataDir(format!("Failed to garbage collect index: {}", e))
+        })?;
         info!("index garbage collection complete");
         Ok(())
     }
 
     /// Check if a writer is currently active.
+    #[allow(dead_code)]
     pub fn is_writing(&self) -> bool {
         self.writer.is_some()
     }
@@ -665,7 +699,10 @@ mod tests {
             "session"
         );
         assert_eq!(
-            doc.get_first(fields.source_agent).unwrap().as_str().unwrap(),
+            doc.get_first(fields.source_agent)
+                .unwrap()
+                .as_str()
+                .unwrap(),
             "claude"
         );
         assert_eq!(
@@ -701,11 +738,17 @@ mod tests {
             "code_artifact"
         );
         assert_eq!(
-            doc.get_first(fields.code_language).unwrap().as_str().unwrap(),
+            doc.get_first(fields.code_language)
+                .unwrap()
+                .as_str()
+                .unwrap(),
             "rust"
         );
         assert_eq!(
-            doc.get_first(fields.code_file_path).unwrap().as_str().unwrap(),
+            doc.get_first(fields.code_file_path)
+                .unwrap()
+                .as_str()
+                .unwrap(),
             "src/main.rs"
         );
     }
@@ -762,10 +805,28 @@ mod tests {
         use chrono::Duration;
         let now = Utc::now();
         let events = vec![
-            Event::new(now, "test/1".to_string(), "claude".to_string(), Role::User, "hello".to_string()),
-            Event::new(now + Duration::seconds(10), "test/1".to_string(), "claude".to_string(), Role::Assistant, "world".to_string()),
+            Event::new(
+                now,
+                "test/1".to_string(),
+                "claude".to_string(),
+                Role::User,
+                "hello".to_string(),
+            ),
+            Event::new(
+                now + Duration::seconds(10),
+                "test/1".to_string(),
+                "claude".to_string(),
+                Role::Assistant,
+                "world".to_string(),
+            ),
         ];
-        let manifest = build_manifest_from_events(&events, "test/1", "claude", Some("/project"), Some("claude-3"));
+        let manifest = build_manifest_from_events(
+            &events,
+            "test/1",
+            "claude",
+            Some("/project"),
+            Some("claude-3"),
+        );
         assert_eq!(manifest.session_id, "test/1");
         assert_eq!(manifest.source_agent, "claude");
         assert_eq!(manifest.project, Some("/project".to_string()));
@@ -790,10 +851,22 @@ mod tests {
     fn test_build_manifest_from_events_files_deduped() {
         let now = Utc::now();
         let events = vec![
-            Event::new(now, "test/1".to_string(), "claude".to_string(), Role::ToolCall, "read".to_string())
-                .with_file_paths(vec!["src/main.rs".to_string(), "src/lib.rs".to_string()]),
-            Event::new(now, "test/1".to_string(), "claude".to_string(), Role::ToolResult, "done".to_string())
-                .with_file_paths(vec!["src/main.rs".to_string()]), // duplicate
+            Event::new(
+                now,
+                "test/1".to_string(),
+                "claude".to_string(),
+                Role::ToolCall,
+                "read".to_string(),
+            )
+            .with_file_paths(vec!["src/main.rs".to_string(), "src/lib.rs".to_string()]),
+            Event::new(
+                now,
+                "test/1".to_string(),
+                "claude".to_string(),
+                Role::ToolResult,
+                "done".to_string(),
+            )
+            .with_file_paths(vec!["src/main.rs".to_string()]), // duplicate
         ];
         let manifest = build_manifest_from_events(&events, "test/1", "claude", None, None);
         assert_eq!(manifest.files_touched.len(), 2);
@@ -807,8 +880,20 @@ mod tests {
         let t1 = Utc::now();
         let t2 = t1 + Duration::minutes(5);
         let events = vec![
-            Event::new(t1, "test/1".to_string(), "claude".to_string(), Role::User, "start".to_string()),
-            Event::new(t2, "test/1".to_string(), "claude".to_string(), Role::Assistant, "end".to_string()),
+            Event::new(
+                t1,
+                "test/1".to_string(),
+                "claude".to_string(),
+                Role::User,
+                "start".to_string(),
+            ),
+            Event::new(
+                t2,
+                "test/1".to_string(),
+                "claude".to_string(),
+                Role::Assistant,
+                "end".to_string(),
+            ),
         ];
         let manifest = build_manifest_from_events(&events, "test/1", "claude", None, None);
         // started should be the first event's timestamp
@@ -820,10 +905,20 @@ mod tests {
     #[test]
     fn test_build_content_unicode() {
         let events = vec![
-            Event::new(Utc::now(), "test/1".to_string(), "test".to_string(), Role::User,
-                "日本語テスト: サンプルコード".to_string()),
-            Event::new(Utc::now(), "test/1".to_string(), "test".to_string(), Role::Assistant,
-                "Ответ на русском языке".to_string()),
+            Event::new(
+                Utc::now(),
+                "test/1".to_string(),
+                "test".to_string(),
+                Role::User,
+                "日本語テスト: サンプルコード".to_string(),
+            ),
+            Event::new(
+                Utc::now(),
+                "test/1".to_string(),
+                "test".to_string(),
+                Role::Assistant,
+                "Ответ на русском языке".to_string(),
+            ),
         ];
         let content = build_content(&events);
         assert!(content.contains("日本語テスト"));
@@ -834,9 +929,13 @@ mod tests {
     fn test_build_content_very_large() {
         // Build content that exceeds 500KB
         let large_content = "a ".repeat(300_000); // ~600KB
-        let events = vec![
-            Event::new(Utc::now(), "test/1".to_string(), "test".to_string(), Role::User, large_content),
-        ];
+        let events = vec![Event::new(
+            Utc::now(),
+            "test/1".to_string(),
+            "test".to_string(),
+            Role::User,
+            large_content,
+        )];
         let content = build_content(&events);
         assert!(content.contains("[...trimmed...]"));
         assert!(content.len() < CONTENT_MAX_BYTES + 200);
@@ -870,16 +969,19 @@ mod tests {
             &fields,
             "claude/123",
             "claude",
-            None,       // no project
+            None, // no project
             Utc::now(),
             "python",
             "app/main.py",
             "def main(): pass",
             false,
-            None,       // no model
+            None, // no model
         );
         assert_eq!(
-            doc.get_first(fields.code_language).unwrap().as_str().unwrap(),
+            doc.get_first(fields.code_language)
+                .unwrap()
+                .as_str()
+                .unwrap(),
             "python"
         );
         assert_eq!(
@@ -889,10 +991,11 @@ mod tests {
         assert!(doc.get_first(fields.project).is_none());
         assert!(doc.get_first(fields.model).is_none());
         // code_is_final = false
-        assert_eq!(
-            doc.get_first(fields.code_is_final).unwrap().as_bool().unwrap(),
-            false
-        );
+        assert!(!doc
+            .get_first(fields.code_is_final)
+            .unwrap()
+            .as_bool()
+            .unwrap());
     }
 
     #[test]
@@ -911,9 +1014,13 @@ mod tests {
         assert!(manager.is_writing());
 
         let now = Utc::now();
-        let events = vec![
-            Event::new(now, "test/1".to_string(), "claude".to_string(), Role::User, "fix the bug".to_string()),
-        ];
+        let events = vec![Event::new(
+            now,
+            "test/1".to_string(),
+            "claude".to_string(),
+            Role::User,
+            "fix the bug".to_string(),
+        )];
         let manifest = build_manifest_from_events(&events, "test/1", "claude", None, None);
         manager.index_session(&events, &manifest).unwrap();
 
@@ -930,9 +1037,13 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let mut manager = IndexManager::open(temp_dir.path()).unwrap();
 
-        let events = vec![
-            Event::new(Utc::now(), "test/1".to_string(), "claude".to_string(), Role::User, "hello".to_string()),
-        ];
+        let events = vec![Event::new(
+            Utc::now(),
+            "test/1".to_string(),
+            "claude".to_string(),
+            Role::User,
+            "hello".to_string(),
+        )];
         let manifest = build_manifest_from_events(&events, "test/1", "claude", None, None);
 
         // Should error because begin_write() was never called
@@ -969,9 +1080,13 @@ mod tests {
             let mut manager = IndexManager::open(temp_dir.path()).unwrap();
             manager.begin_write().unwrap();
             let now = Utc::now();
-            let events = vec![
-                Event::new(now, "test/1".to_string(), "claude".to_string(), Role::User, "hello world".to_string()),
-            ];
+            let events = vec![Event::new(
+                now,
+                "test/1".to_string(),
+                "claude".to_string(),
+                Role::User,
+                "hello world".to_string(),
+            )];
             let manifest = build_manifest_from_events(&events, "test/1", "claude", None, None);
             manager.index_session(&events, &manifest).unwrap();
             manager.finish().unwrap();
@@ -999,8 +1114,20 @@ mod tests {
             let mut manager = IndexManager::open(temp_dir.path()).unwrap();
             manager.begin_write().unwrap();
             let events = vec![
-                Event::new(now, "test/abc".to_string(), "claude".to_string(), Role::User, "original query".to_string()),
-                Event::new(now, "test/abc".to_string(), "claude".to_string(), Role::Assistant, "original answer".to_string()),
+                Event::new(
+                    now,
+                    "test/abc".to_string(),
+                    "claude".to_string(),
+                    Role::User,
+                    "original query".to_string(),
+                ),
+                Event::new(
+                    now,
+                    "test/abc".to_string(),
+                    "claude".to_string(),
+                    Role::Assistant,
+                    "original answer".to_string(),
+                ),
             ];
             let manifest = build_manifest_from_events(&events, "test/abc", "claude", None, None);
             manager.index_session(&events, &manifest).unwrap();
@@ -1012,8 +1139,20 @@ mod tests {
             let mut manager = IndexManager::open(temp_dir.path()).unwrap();
             manager.begin_write().unwrap();
             let events = vec![
-                Event::new(now, "test/abc".to_string(), "claude".to_string(), Role::User, "updated query after edit".to_string()),
-                Event::new(now, "test/abc".to_string(), "claude".to_string(), Role::Assistant, "updated answer".to_string()),
+                Event::new(
+                    now,
+                    "test/abc".to_string(),
+                    "claude".to_string(),
+                    Role::User,
+                    "updated query after edit".to_string(),
+                ),
+                Event::new(
+                    now,
+                    "test/abc".to_string(),
+                    "claude".to_string(),
+                    Role::Assistant,
+                    "updated answer".to_string(),
+                ),
             ];
             let manifest = build_manifest_from_events(&events, "test/abc", "claude", None, None);
             manager.index_session(&events, &manifest).unwrap();
@@ -1032,7 +1171,10 @@ mod tests {
         let count = searcher.search(&query, &Count).unwrap();
 
         // Must be exactly 1 — delete_term + add ensures no duplicates
-        assert_eq!(count, 1, "re-indexing a session must produce exactly one document");
+        assert_eq!(
+            count, 1,
+            "re-indexing a session must produce exactly one document"
+        );
     }
 
     #[test]
@@ -1050,9 +1192,13 @@ mod tests {
         {
             let mut manager = IndexManager::open(temp_dir.path()).unwrap();
             manager.begin_write().unwrap();
-            let events = vec![
-                Event::new(now, "test/xyz".to_string(), "claude".to_string(), Role::User, "old content here".to_string()),
-            ];
+            let events = vec![Event::new(
+                now,
+                "test/xyz".to_string(),
+                "claude".to_string(),
+                Role::User,
+                "old content here".to_string(),
+            )];
             let manifest = build_manifest_from_events(&events, "test/xyz", "claude", None, None);
             manager.index_session(&events, &manifest).unwrap();
             manager.finish().unwrap();
@@ -1062,9 +1208,13 @@ mod tests {
         {
             let mut manager = IndexManager::open(temp_dir.path()).unwrap();
             manager.begin_write().unwrap();
-            let events = vec![
-                Event::new(now, "test/xyz".to_string(), "claude".to_string(), Role::User, "brand new content".to_string()),
-            ];
+            let events = vec![Event::new(
+                now,
+                "test/xyz".to_string(),
+                "claude".to_string(),
+                Role::User,
+                "brand new content".to_string(),
+            )];
             let manifest = build_manifest_from_events(&events, "test/xyz", "claude", None, None);
             manager.index_session(&events, &manifest).unwrap();
             manager.finish().unwrap();
@@ -1083,8 +1233,14 @@ mod tests {
 
         let doc: tantivy::TantivyDocument = searcher.doc(top[0].1).unwrap();
         let content = doc.get_first(fields.content).unwrap().as_str().unwrap();
-        assert!(content.contains("brand new content"), "stored content must reflect the updated events");
-        assert!(!content.contains("old content here"), "old content must not remain after re-index");
+        assert!(
+            content.contains("brand new content"),
+            "stored content must reflect the updated events"
+        );
+        assert!(
+            !content.contains("old content here"),
+            "old content must not remain after re-index"
+        );
     }
 
     #[test]
@@ -1096,9 +1252,13 @@ mod tests {
         manager.begin_write().unwrap();
 
         let now = Utc::now();
-        let events = vec![
-            Event::new(now, "test/1".to_string(), "claude".to_string(), Role::User, "test content".to_string()),
-        ];
+        let events = vec![Event::new(
+            now,
+            "test/1".to_string(),
+            "claude".to_string(),
+            Role::User,
+            "test content".to_string(),
+        )];
         let manifest = build_manifest_from_events(&events, "test/1", "claude", None, None);
         manager.index_session(&events, &manifest).unwrap();
         manager.finish().unwrap();
@@ -1111,11 +1271,41 @@ mod tests {
     fn test_build_content_role_prefixes() {
         // All five roles should appear with their canonical prefix
         let events = vec![
-            Event::new(Utc::now(), "test/1".to_string(), "test".to_string(), Role::System, "Be helpful".to_string()),
-            Event::new(Utc::now(), "test/1".to_string(), "test".to_string(), Role::User, "Hello".to_string()),
-            Event::new(Utc::now(), "test/1".to_string(), "test".to_string(), Role::Assistant, "Hi".to_string()),
-            Event::new(Utc::now(), "test/1".to_string(), "test".to_string(), Role::ToolCall, "execute".to_string()),
-            Event::new(Utc::now(), "test/1".to_string(), "test".to_string(), Role::ToolResult, "done".to_string()),
+            Event::new(
+                Utc::now(),
+                "test/1".to_string(),
+                "test".to_string(),
+                Role::System,
+                "Be helpful".to_string(),
+            ),
+            Event::new(
+                Utc::now(),
+                "test/1".to_string(),
+                "test".to_string(),
+                Role::User,
+                "Hello".to_string(),
+            ),
+            Event::new(
+                Utc::now(),
+                "test/1".to_string(),
+                "test".to_string(),
+                Role::Assistant,
+                "Hi".to_string(),
+            ),
+            Event::new(
+                Utc::now(),
+                "test/1".to_string(),
+                "test".to_string(),
+                Role::ToolCall,
+                "execute".to_string(),
+            ),
+            Event::new(
+                Utc::now(),
+                "test/1".to_string(),
+                "test".to_string(),
+                Role::ToolResult,
+                "done".to_string(),
+            ),
         ];
         let content = build_content(&events);
         assert!(content.contains("system: Be helpful"));
@@ -1148,9 +1338,15 @@ mod tests {
         assert!(doc.get_first(fields.solution_summary).is_none());
 
         // Can be added externally
-        doc.add_text(fields.solution_summary, "Use async/await pattern to fix concurrency issue");
+        doc.add_text(
+            fields.solution_summary,
+            "Use async/await pattern to fix concurrency issue",
+        );
         assert_eq!(
-            doc.get_first(fields.solution_summary).unwrap().as_str().unwrap(),
+            doc.get_first(fields.solution_summary)
+                .unwrap()
+                .as_str()
+                .unwrap(),
             "Use async/await pattern to fix concurrency issue",
         );
     }
@@ -1162,9 +1358,27 @@ mod tests {
         let t2 = t1 + Duration::seconds(30);
         let t3 = t2 + Duration::minutes(2);
         let events = vec![
-            Event::new(t1, "test/1".to_string(), "claude".to_string(), Role::User, "start".to_string()),
-            Event::new(t2, "test/1".to_string(), "claude".to_string(), Role::Assistant, "mid".to_string()),
-            Event::new(t3, "test/1".to_string(), "claude".to_string(), Role::User, "end".to_string()),
+            Event::new(
+                t1,
+                "test/1".to_string(),
+                "claude".to_string(),
+                Role::User,
+                "start".to_string(),
+            ),
+            Event::new(
+                t2,
+                "test/1".to_string(),
+                "claude".to_string(),
+                Role::Assistant,
+                "mid".to_string(),
+            ),
+            Event::new(
+                t3,
+                "test/1".to_string(),
+                "claude".to_string(),
+                Role::User,
+                "end".to_string(),
+            ),
         ];
         let manifest = build_manifest_from_events(&events, "test/1", "claude", None, None);
         assert_eq!(manifest.started.timestamp(), t1.timestamp());
@@ -1178,10 +1392,16 @@ mod tests {
         let (_, fields) = build_schema();
         let mut manifest = SessionManifest::new("test/1".to_string(), "claude".to_string());
         manifest.tags = vec![
-            "rust".to_string(), "async".to_string(), "tokio".to_string(), "docker".to_string(),
+            "rust".to_string(),
+            "async".to_string(),
+            "tokio".to_string(),
+            "docker".to_string(),
         ];
         let doc = build_session_document(&fields, &[], &manifest);
-        let doc_tags: Vec<&str> = doc.get_all(fields.tags).filter_map(|v| v.as_str()).collect();
+        let doc_tags: Vec<&str> = doc
+            .get_all(fields.tags)
+            .filter_map(|v| v.as_str())
+            .collect();
         assert_eq!(doc_tags.len(), 4);
     }
 
@@ -1200,10 +1420,13 @@ mod tests {
         {
             let mut manager = IndexManager::open(temp_dir.path()).unwrap();
             manager.begin_write().unwrap();
-            let events = vec![
-                Event::new(now, "test/del".to_string(), "claude".to_string(), Role::User,
-                    "delete me later".to_string()),
-            ];
+            let events = vec![Event::new(
+                now,
+                "test/del".to_string(),
+                "claude".to_string(),
+                Role::User,
+                "delete me later".to_string(),
+            )];
             let manifest = build_manifest_from_events(&events, "test/del", "claude", None, None);
             manager.index_session(&events, &manifest).unwrap();
             manager.finish().unwrap();
@@ -1218,7 +1441,11 @@ mod tests {
             let searcher = reader.searcher();
             let term = Term::from_field_text(fields.session_id, "test/del");
             let query = TermQuery::new(term, IndexRecordOption::Basic);
-            assert_eq!(searcher.search(&query, &Count).unwrap(), 1, "session should exist after indexing");
+            assert_eq!(
+                searcher.search(&query, &Count).unwrap(),
+                1,
+                "session should exist after indexing"
+            );
         }
 
         // Phase 3: delete the session
@@ -1238,7 +1465,11 @@ mod tests {
             let searcher = reader.searcher();
             let term = Term::from_field_text(fields.session_id, "test/del");
             let query = TermQuery::new(term, IndexRecordOption::Basic);
-            assert_eq!(searcher.search(&query, &Count).unwrap(), 0, "session should be absent after deletion");
+            assert_eq!(
+                searcher.search(&query, &Count).unwrap(),
+                0,
+                "session should be absent after deletion"
+            );
         }
     }
 
@@ -1252,7 +1483,10 @@ mod tests {
         // Externally add git commits (pattern used by enrichment pipeline)
         doc.add_text(fields.git_commits, "abc1234");
         doc.add_text(fields.git_commits, "def5678");
-        let commits: Vec<&str> = doc.get_all(fields.git_commits).filter_map(|v| v.as_str()).collect();
+        let commits: Vec<&str> = doc
+            .get_all(fields.git_commits)
+            .filter_map(|v| v.as_str())
+            .collect();
         assert_eq!(commits.len(), 2);
         assert!(commits.contains(&"abc1234"));
     }

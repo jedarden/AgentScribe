@@ -2,18 +2,18 @@
 //!
 //! Tracks position per source file for incremental scrapes.
 
-use crate::event::{ScrapeState, SourceFileState};
 use crate::error::Result;
+use crate::event::{ScrapeState, SourceFileState};
+use chrono::Utc;
 use fs2::FileExt;
-use serde_json;
 use std::fs::{File, OpenOptions};
 use std::io::{BufReader, BufWriter};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use chrono::Utc;
 
 /// Default lock timeout (30 seconds).
+#[allow(dead_code)]
 const DEFAULT_LOCK_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Poll interval when waiting for the exclusive file lock.
@@ -62,6 +62,7 @@ pub struct StateManager {
 
 impl StateManager {
     /// Create a new state manager with the default 30-second lock timeout.
+    #[allow(dead_code)]
     pub fn new(state_file: PathBuf) -> Result<Self> {
         Self::new_with_timeout(state_file, DEFAULT_LOCK_TIMEOUT)
     }
@@ -94,8 +95,9 @@ impl StateManager {
         }
 
         let reader = BufReader::new(file);
-        let state = serde_json::from_reader(reader)
-            .map_err(|e| crate::error::AgentScribeError::State(format!("Failed to parse state: {}", e)))?;
+        let state = serde_json::from_reader(reader).map_err(|e| {
+            crate::error::AgentScribeError::State(format!("Failed to parse state: {}", e))
+        })?;
         Ok(state)
     }
 
@@ -119,6 +121,7 @@ impl StateManager {
         let file = OpenOptions::new()
             .write(true)
             .create(true)
+            .truncate(false)
             .open(&self.state_file)?;
 
         // Acquire the exclusive lock before modifying the file.
@@ -130,8 +133,9 @@ impl StateManager {
         // File position for a freshly-opened (non-append) file is always 0,
         // so writing immediately after set_len(0) is correct.
         let writer = BufWriter::new(file);
-        serde_json::to_writer_pretty(writer, state_ref)
-            .map_err(|e| crate::error::AgentScribeError::State(format!("Failed to write state: {}", e)))?;
+        serde_json::to_writer_pretty(writer, state_ref).map_err(|e| {
+            crate::error::AgentScribeError::State(format!("Failed to write state: {}", e))
+        })?;
 
         // Lock is released when the file handle inside BufWriter is dropped.
         Ok(())
@@ -144,6 +148,7 @@ impl StateManager {
     }
 
     /// Get or create state for a file
+    #[allow(dead_code)]
     pub fn get_or_create_file_state(&self, file_path: &str, plugin: &str) -> SourceFileState {
         let mut state = self.state.lock().unwrap();
         state
@@ -178,6 +183,7 @@ impl StateManager {
     }
 
     /// Set the last delimiter offset for a file (for markdown delimiter-based parsing)
+    #[allow(dead_code)]
     pub fn set_delimiter_offset(&self, file_path: &str, offset: u64) -> Result<()> {
         self.update_file_state(file_path, |state| {
             state.last_delimiter_offset = Some(offset);
@@ -208,6 +214,7 @@ impl StateManager {
     }
 
     /// Get all files for a plugin
+    #[allow(dead_code)]
     pub fn files_for_plugin(&self, plugin: &str) -> Vec<String> {
         let state = self.state.lock().unwrap();
         state
@@ -226,18 +233,23 @@ impl StateManager {
 
     /// Check if a file needs re-scraping based on modification time
     pub fn needs_rescrape(&self, file_path: &Path, _plugin: &str) -> Result<bool> {
-        let path_str = file_path.to_str().ok_or_else(|| {
-            crate::error::AgentScribeError::FileNotFound(file_path.to_path_buf())
-        })?;
+        let path_str = file_path
+            .to_str()
+            .ok_or_else(|| crate::error::AgentScribeError::FileNotFound(file_path.to_path_buf()))?;
 
         let metadata = std::fs::metadata(file_path)?;
         let system_time = metadata.modified()?;
         // Convert SystemTime to DateTime<Utc> using duration since epoch
         let duration = system_time
             .duration_since(std::time::UNIX_EPOCH)
-            .map_err(|_| crate::error::AgentScribeError::State("Invalid file modification time".to_string()))?;
-        let modified = chrono::DateTime::from_timestamp(duration.as_secs() as i64, duration.subsec_nanos())
-            .ok_or_else(|| crate::error::AgentScribeError::State("Invalid timestamp".to_string()))?;
+            .map_err(|_| {
+                crate::error::AgentScribeError::State("Invalid file modification time".to_string())
+            })?;
+        let modified =
+            chrono::DateTime::from_timestamp(duration.as_secs() as i64, duration.subsec_nanos())
+                .ok_or_else(|| {
+                    crate::error::AgentScribeError::State("Invalid timestamp".to_string())
+                })?;
 
         if let Some(file_state) = self.get_file_state(path_str) {
             // Check if file was modified since last scrape
@@ -258,6 +270,7 @@ impl StateManager {
     }
 
     /// Check for truncated files and remove their state
+    #[allow(dead_code)]
     pub fn detect_truncation(&self) -> Result<Vec<String>> {
         let mut truncated = Vec::new();
         let state = self.state.lock().unwrap();
@@ -294,10 +307,12 @@ mod tests {
 
         // Create and save state
         let manager = StateManager::new(state_path.clone()).unwrap();
-        manager.update_file_state("/test/file.jsonl", |state| {
-            state.last_byte_offset = 1000;
-            state.session_ids.push("test-session".to_string());
-        }).unwrap();
+        manager
+            .update_file_state("/test/file.jsonl", |state| {
+                state.last_byte_offset = 1000;
+                state.session_ids.push("test-session".to_string());
+            })
+            .unwrap();
         manager.save().unwrap();
 
         // Load state in new manager
@@ -335,8 +350,10 @@ mod tests {
             StateManager::new_with_timeout(state_path.clone(), Duration::from_secs(10)).unwrap(),
         );
 
-        m1.update_file_state("/test/file.jsonl", |s| s.last_byte_offset = 111).unwrap();
-        m2.update_file_state("/test/file.jsonl", |s| s.last_byte_offset = 222).unwrap();
+        m1.update_file_state("/test/file.jsonl", |s| s.last_byte_offset = 111)
+            .unwrap();
+        m2.update_file_state("/test/file.jsonl", |s| s.last_byte_offset = 222)
+            .unwrap();
 
         let m1c = m1.clone();
         let m2c = m2.clone();
@@ -349,7 +366,10 @@ mod tests {
 
         // The file must be valid, parseable JSON — not a truncated/empty blob.
         let content = std::fs::read_to_string(&state_path).unwrap();
-        assert!(!content.is_empty(), "state file must not be empty after concurrent saves");
+        assert!(
+            !content.is_empty(),
+            "state file must not be empty after concurrent saves"
+        );
         let _: ScrapeState = serde_json::from_str(&content)
             .expect("state file must be valid JSON after concurrent saves");
     }
@@ -368,10 +388,7 @@ mod tests {
         }
 
         // Hold an exclusive lock on the state file via a separate fd.
-        let lock_fd = OpenOptions::new()
-            .write(true)
-            .open(&state_path)
-            .unwrap();
+        let lock_fd = OpenOptions::new().write(true).open(&state_path).unwrap();
         lock_fd.lock_exclusive().unwrap();
 
         // A manager with a very short timeout should fail quickly.
@@ -382,7 +399,10 @@ mod tests {
         // Release the external lock
         lock_fd.unlock().unwrap();
 
-        assert!(result.is_err(), "expected timeout error when lock is held externally");
+        assert!(
+            result.is_err(),
+            "expected timeout error when lock is held externally"
+        );
         let err_str = result.unwrap_err().to_string();
         assert!(
             err_str.contains("timed out"),

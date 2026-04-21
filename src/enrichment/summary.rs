@@ -8,6 +8,7 @@
 use crate::event::{Event, Role, SessionManifest};
 
 /// Maximum characters for the first prompt in summary
+#[allow(dead_code)]
 const MAX_PROMPT_CHARS: usize = 80;
 
 /// Generate a one-line summary from session events and manifest.
@@ -16,6 +17,7 @@ const MAX_PROMPT_CHARS: usize = 80;
 /// 1. First user prompt (truncated to ~80 chars)
 /// 2. Outcome (if detected)
 /// 3. Key files touched (up to 3)
+#[allow(dead_code)]
 pub fn generate_summary(events: &[Event], manifest: &SessionManifest) -> String {
     // If manifest already has a good summary, use it
     if let Some(ref summary) = manifest.summary {
@@ -56,12 +58,10 @@ pub fn generate_summary(events: &[Event], manifest: &SessionManifest) -> String 
 }
 
 /// Truncate text to max_chars, cleaning up whitespace and adding ellipsis if needed.
+#[allow(dead_code)]
 fn truncate_and_clean(text: &str, max_chars: usize) -> String {
     // Normalize whitespace
-    let cleaned: String = text
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ");
+    let cleaned: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
 
     if cleaned.len() <= max_chars {
         return cleaned;
@@ -77,6 +77,7 @@ fn truncate_and_clean(text: &str, max_chars: usize) -> String {
 }
 
 /// Get key files from the list, preferring files with extensions.
+#[allow(dead_code)]
 fn get_key_files(files: &[String], max: usize) -> Vec<String> {
     if files.is_empty() {
         return Vec::new();
@@ -85,17 +86,24 @@ fn get_key_files(files: &[String], max: usize) -> Vec<String> {
     // Prefer files with extensions (likely code files)
     let mut with_ext: Vec<&String> = files
         .iter()
-        .filter(|f| f.rsplit('.').next().map(|ext| ext.len() <= 10).unwrap_or(false))
+        .filter(|f| {
+            let filename = f.rsplit('/').next().unwrap_or(f.as_str());
+            filename.contains('.') && !filename.starts_with('.')
+        })
         .collect();
 
     // Sort by path length (shorter paths often more significant)
     with_ext.sort_by_key(|f| f.len());
 
     // If not enough files with extensions, add others
-    let mut result: Vec<String> = with_ext.into_iter().take(max).map(|s| {
-        // Extract just the filename for brevity
-        s.rsplit('/').next().unwrap_or(s).to_string()
-    }).collect();
+    let mut result: Vec<String> = with_ext
+        .into_iter()
+        .take(max)
+        .map(|s| {
+            // Extract just the filename for brevity
+            s.rsplit('/').next().unwrap_or(s).to_string()
+        })
+        .collect();
 
     if result.len() < max {
         for f in files {
@@ -146,10 +154,7 @@ mod tests {
             make_event(Role::Assistant, "Done"),
         ];
         let mut manifest = SessionManifest::new("test/1".into(), "test".into());
-        manifest.files_touched = vec![
-            "src/api/handlers.rs".into(),
-            "src/api/mod.rs".into(),
-        ];
+        manifest.files_touched = vec!["src/api/handlers.rs".into(), "src/api/mod.rs".into()];
 
         let summary = generate_summary(&events, &manifest);
         assert!(summary.contains("handlers.rs"));

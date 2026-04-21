@@ -29,9 +29,7 @@ static CODE_FENCE_RE: LazyLock<regex::Regex> =
 
 /// Regex to extract file path from content near code blocks.
 static FILE_PATH_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
-    regex::Regex::new(
-        r"(?:File:|Path:|file |path |`)((?:/[\w.-]+|[\w.-]+\.\w{1,10}))`?"
-    ).unwrap()
+    regex::Regex::new(r"(?:File:|Path:|file |path |`)([/.\w-]+\.\w{1,10})").unwrap()
 });
 
 /// Extract code artifacts from a session's events.
@@ -88,26 +86,11 @@ pub fn extract_code_artifacts(events: &[Event]) -> Vec<CodeArtifact> {
 
 /// Try to extract a file path from the surrounding context of a code block.
 fn extract_context_file(content: &str) -> Option<String> {
-    // Look for file path mentions before code blocks
-    if let Some(mat) = FILE_PATH_RE.find(content) {
-        let path = mat.as_str();
-        // Clean up the match
-        let cleaned = path
-            .trim_start_matches("File: ")
-            .trim_start_matches("Path: ")
-            .trim_start_matches("file ")
-            .trim_start_matches("path ")
-            .trim_start_matches('`')
-            .trim_end_matches('`')
-            .trim()
-            .to_string();
-
-        if !cleaned.is_empty() && (cleaned.contains('/') || cleaned.contains('.')) {
-            return Some(cleaned);
-        }
-    }
-
-    None
+    FILE_PATH_RE
+        .captures(content)
+        .and_then(|caps| caps.get(1))
+        .map(|m| m.as_str().trim_matches('`').trim().to_string())
+        .filter(|p| !p.is_empty() && (p.contains('/') || p.contains('.')))
 }
 
 #[cfg(test)]
@@ -160,7 +143,7 @@ mod tests {
         let artifacts = extract_code_artifacts(&events);
         assert_eq!(artifacts.len(), 2);
         assert!(!artifacts[0].is_final); // First version is not final
-        assert!(artifacts[1].is_final);  // Second version is final
+        assert!(artifacts[1].is_final); // Second version is final
     }
 
     #[test]
@@ -189,15 +172,13 @@ mod tests {
 
     #[test]
     fn test_non_assistant_events_ignored() {
-        let events = vec![
-            Event::new(
-                Utc::now(),
-                "test/1".into(),
-                "test".into(),
-                Role::User,
-                "```rust\nfn main() {}\n```".into(),
-            ),
-        ];
+        let events = vec![Event::new(
+            Utc::now(),
+            "test/1".into(),
+            "test".into(),
+            Role::User,
+            "```rust\nfn main() {}\n```".into(),
+        )];
         let artifacts = extract_code_artifacts(&events);
         assert!(artifacts.is_empty());
     }
@@ -215,12 +196,8 @@ mod tests {
     #[test]
     fn test_different_file_same_language_both_final() {
         let events = vec![
-            make_assistant_event(
-                "File: `src/a.rs`:\n```rust\nfn a() {}\n```",
-            ),
-            make_assistant_event(
-                "File: `src/b.rs`:\n```rust\nfn b() {}\n```",
-            ),
+            make_assistant_event("File: `src/a.rs`:\n```rust\nfn a() {}\n```"),
+            make_assistant_event("File: `src/b.rs`:\n```rust\nfn b() {}\n```"),
         ];
         let artifacts = extract_code_artifacts(&events);
         assert_eq!(artifacts.len(), 2);

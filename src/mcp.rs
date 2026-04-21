@@ -216,41 +216,51 @@ fn tool_definitions() -> Value {
 
 async fn handle_search(data_dir: Arc<PathBuf>, args: Value) -> Value {
     let result = task::spawn_blocking(move || {
-        let query         = args["query"].as_str().map(String::from);
+        let query = args["query"].as_str().map(String::from);
         let error_pattern = args["error"].as_str().map(String::from);
-        let code_query    = args["code"].as_str().map(String::from);
-        let code_lang     = args["lang"].as_str().map(String::from);
+        let code_query = args["code"].as_str().map(String::from);
+        let code_lang = args["lang"].as_str().map(String::from);
         let solution_only = args["solution_only"].as_bool().unwrap_or(false);
-        let like_session  = args["like"].as_str().map(String::from);
-        let session_id    = args["session"].as_str().map(String::from);
-        let project       = args["project"].as_str().map(String::from);
-        let outcome       = args["outcome"].as_str().map(String::from);
-        let model         = args["model"].as_str().map(String::from);
-        let file_path     = args["file_path"].as_str().map(String::from);
-        let fuzzy         = args["fuzzy"].as_bool().unwrap_or(false);
-        let max_results   = args["max_results"].as_u64().unwrap_or(10) as usize;
+        let like_session = args["like"].as_str().map(String::from);
+        let session_id = args["session"].as_str().map(String::from);
+        let project = args["project"].as_str().map(String::from);
+        let outcome = args["outcome"].as_str().map(String::from);
+        let model = args["model"].as_str().map(String::from);
+        let file_path = args["file_path"].as_str().map(String::from);
+        let fuzzy = args["fuzzy"].as_bool().unwrap_or(false);
+        let max_results = args["max_results"].as_u64().unwrap_or(10) as usize;
         let snippet_length = args["snippet_length"].as_u64().unwrap_or(200) as usize;
-        let token_budget  = args["token_budget"].as_u64().map(|v| v as usize);
-        let offset        = args["offset"].as_u64().unwrap_or(0) as usize;
+        let token_budget = args["token_budget"].as_u64().map(|v| v as usize);
+        let offset = args["offset"].as_u64().unwrap_or(0) as usize;
 
         let sort = match args["sort"].as_str().unwrap_or("relevance") {
             "newest" => SortOrder::Newest,
             "oldest" => SortOrder::Oldest,
-            "turns"  => SortOrder::Turns,
-            _        => SortOrder::Relevance,
+            "turns" => SortOrder::Turns,
+            _ => SortOrder::Relevance,
         };
 
         let agent: Vec<String> = args["agent"]
             .as_array()
-            .map(|a| a.iter().filter_map(|v| v.as_str()).map(String::from).collect())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str())
+                    .map(String::from)
+                    .collect()
+            })
             .unwrap_or_default();
 
         let tag: Vec<String> = args["tag"]
             .as_array()
-            .map(|a| a.iter().filter_map(|v| v.as_str()).map(String::from).collect())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str())
+                    .map(String::from)
+                    .collect()
+            })
             .unwrap_or_default();
 
-        let since  = args["since"].as_str().and_then(|s| parse_datetime(s).ok());
+        let since = args["since"].as_str().and_then(|s| parse_datetime(s).ok());
         let before = args["before"].as_str().and_then(|s| parse_datetime(s).ok());
 
         let opts = SearchOptions {
@@ -288,7 +298,7 @@ async fn handle_search(data_dir: Arc<PathBuf>, args: Value) -> Value {
             serde_json::to_value(&output).unwrap_or_else(|e| json!({"error": e.to_string()}))
         }
         Ok(Err(e)) => json!({"error": e.to_string()}),
-        Err(e)     => json!({"error": format!("task panicked: {}", e)}),
+        Err(e) => json!({"error": format!("task panicked: {}", e)}),
     }
 }
 
@@ -301,7 +311,7 @@ async fn handle_status(data_dir: Arc<PathBuf>, args: Value) -> Value {
         let daemon_info = crate::daemon::status(&data_dir).ok();
 
         let mut scraper = match Scraper::new(data_dir.to_path_buf()) {
-            Ok(s)  => s,
+            Ok(s) => s,
             Err(e) => return json!({"error": format!("scraper init failed: {}", e)}),
         };
         if let Err(e) = scraper.load_plugins() {
@@ -324,10 +334,7 @@ async fn handle_status(data_dir: Arc<PathBuf>, args: Value) -> Value {
         let plugins: Vec<Value> = plugin_names
             .iter()
             .map(|plugin_name| {
-                let session_count = scraper
-                    .list_sessions(plugin_name)
-                    .unwrap_or_default()
-                    .len();
+                let session_count = scraper.list_sessions(plugin_name).unwrap_or_default().len();
                 let source_paths = scraper
                     .plugin_manager()
                     .get(plugin_name)
@@ -338,10 +345,7 @@ async fn handle_status(data_dir: Arc<PathBuf>, args: Value) -> Value {
                     .iter()
                     .filter(|(_, s)| s.plugin == *plugin_name)
                     .collect();
-                let last_scraped = plugin_files
-                    .iter()
-                    .filter_map(|(_, s)| Some(s.last_scraped))
-                    .max();
+                let last_scraped = plugin_files.iter().map(|(_, s)| s.last_scraped).max();
                 json!({
                     "name":         plugin_name,
                     "sessions":     session_count,
@@ -352,7 +356,7 @@ async fn handle_status(data_dir: Arc<PathBuf>, args: Value) -> Value {
             })
             .collect();
 
-        let index_dir  = data_dir.join("index");
+        let index_dir = data_dir.join("index");
         let index_size = if index_dir.exists() {
             dir_size_sync(&index_dir)
         } else {
@@ -385,7 +389,7 @@ async fn handle_status(data_dir: Arc<PathBuf>, args: Value) -> Value {
     .await;
 
     match result {
-        Ok(v)  => v,
+        Ok(v) => v,
         Err(e) => json!({"error": format!("task panicked: {}", e)}),
     }
 }
@@ -393,9 +397,9 @@ async fn handle_status(data_dir: Arc<PathBuf>, args: Value) -> Value {
 async fn handle_blame(data_dir: Arc<PathBuf>, args: Value) -> Value {
     let file = match args["file"].as_str() {
         Some(f) => f.to_string(),
-        None    => return json!({"error": "missing required parameter: file"}),
+        None => return json!({"error": "missing required parameter: file"}),
     };
-    let line       = args["line"].as_u64();
+    let line = args["line"].as_u64();
     let file_clone = file.clone();
 
     let result = task::spawn_blocking(move || {
@@ -412,14 +416,14 @@ async fn handle_blame(data_dir: Arc<PathBuf>, args: Value) -> Value {
             "total_matches": output.total_matches,
         }),
         Ok(Err(e)) => json!({"error": e.to_string()}),
-        Err(e)     => json!({"error": format!("task panicked: {}", e)}),
+        Err(e) => json!({"error": format!("task panicked: {}", e)}),
     }
 }
 
 async fn handle_file(data_dir: Arc<PathBuf>, args: Value) -> Value {
     let file = match args["file"].as_str() {
         Some(f) => f.to_string(),
-        None    => return json!({"error": "missing required parameter: file"}),
+        None => return json!({"error": "missing required parameter: file"}),
     };
     let file_clone = file.clone();
 
@@ -436,7 +440,7 @@ async fn handle_file(data_dir: Arc<PathBuf>, args: Value) -> Value {
             "total_matches": output.total_matches,
         }),
         Ok(Err(e)) => json!({"error": e.to_string()}),
-        Err(e)     => json!({"error": format!("task panicked: {}", e)}),
+        Err(e) => json!({"error": format!("task panicked: {}", e)}),
     }
 }
 
@@ -448,29 +452,29 @@ fn file_search_opts(
     snippet_length: usize,
 ) -> SearchOptions {
     SearchOptions {
-        query:           None,
-        error_pattern:   None,
-        code_query:      None,
-        code_lang:       None,
-        solution_only:   false,
-        like_session:    None,
-        session_id:      None,
-        agent:           vec![],
-        project:         None,
-        since:           None,
-        before:          None,
-        tag:             vec![],
-        outcome:         None,
+        query: None,
+        error_pattern: None,
+        code_query: None,
+        code_lang: None,
+        solution_only: false,
+        like_session: None,
+        session_id: None,
+        agent: vec![],
+        project: None,
+        since: None,
+        before: None,
+        tag: vec![],
+        outcome: None,
         doc_type_filter: None,
-        model:           None,
-        fuzzy:           false,
-        fuzzy_distance:  1,
+        model: None,
+        fuzzy: false,
+        fuzzy_distance: 1,
         max_results,
         snippet_length,
-        token_budget:    None,
-        offset:          0,
+        token_budget: None,
+        offset: 0,
         sort,
-        file_path:       Some(file_path),
+        file_path: Some(file_path),
     }
 }
 
@@ -509,7 +513,7 @@ async fn handle_connection(stream: tokio::net::UnixStream, data_dir: Arc<PathBuf
         }
 
         let req: Request = match serde_json::from_str(&line) {
-            Ok(r)  => r,
+            Ok(r) => r,
             Err(e) => {
                 let _ = write_half
                     .write_all(
@@ -524,7 +528,7 @@ async fn handle_connection(stream: tokio::net::UnixStream, data_dir: Arc<PathBuf
         // Notifications have no `id` — no response required.
         let id = match req.id {
             Some(ref v) => v.clone(),
-            None        => continue,
+            None => continue,
         };
 
         let empty_obj = Value::Object(Default::default());
@@ -630,7 +634,7 @@ pub async fn run_mcp_server(
     let _ = std::fs::remove_file(&socket_path);
 
     let listener = match UnixListener::bind(&socket_path) {
-        Ok(l)  => l,
+        Ok(l) => l,
         Err(e) => {
             tracing::error!(
                 path = %socket_path.display(),

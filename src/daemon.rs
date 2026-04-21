@@ -13,7 +13,6 @@ use chrono::{DateTime, Utc};
 use glob::Pattern as GlobPattern;
 use notify::{Config as NotifyConfig, RecommendedWatcher, RecursiveMode, Watcher};
 use serde::{Deserialize, Serialize};
-use shellexpand;
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::Write;
@@ -84,8 +83,9 @@ pub fn start(data_dir: &Path) -> Result<()> {
     }
 
     // Get the path to the current executable (unused now but needed for re-exec)
-    let _exe = std::env::current_exe()
-        .map_err(|e| AgentScribeError::Config(format!("Cannot determine executable path: {}", e)))?;
+    let _exe = std::env::current_exe().map_err(|e| {
+        AgentScribeError::Config(format!("Cannot determine executable path: {}", e))
+    })?;
 
     // Fork: double-fork to detach from terminal
     // SAFETY: These are standard POSIX fork calls
@@ -399,7 +399,11 @@ fn run_event_loop(log_file: &Path, pid_file: &Path, state_file: &Path, data_dir:
         debounce_secs,
         lock_timeout_secs,
         git_auto_commit,
-        if mcp_enabled { Some(mcp_socket_path) } else { None },
+        if mcp_enabled {
+            Some(mcp_socket_path)
+        } else {
+            None
+        },
     ));
 }
 
@@ -447,6 +451,7 @@ impl Debouncer {
             .collect()
     }
 
+    #[allow(dead_code)]
     fn pending_count(&self) -> usize {
         self.pending.len()
     }
@@ -458,9 +463,7 @@ impl Debouncer {
 /// path pattern, e.g. `~/.claude/projects/*/*.jsonl` → `~/.claude/projects`.
 fn base_dir_from_glob_pattern(pattern: &str) -> Option<PathBuf> {
     let expanded = shellexpand::tilde(pattern).into_owned();
-    let wildcard_pos = expanded
-        .find(|c: char| c == '*' || c == '?' || c == '[')
-        .unwrap_or(expanded.len());
+    let wildcard_pos = expanded.find(['*', '?', '[']).unwrap_or(expanded.len());
     let non_glob = &expanded[..wildcard_pos];
     let base = Path::new(non_glob);
     let dir = if non_glob.ends_with('/') || non_glob.ends_with('\\') {
@@ -596,7 +599,8 @@ async fn run_watch_loop(
 ) {
     // ── load plugins for path-pattern matching ────────────────────────
     let plugins: Vec<Plugin> = {
-        let mut scraper = match Scraper::new_with_lock_timeout(data_dir.clone(), lock_timeout_secs) {
+        let mut scraper = match Scraper::new_with_lock_timeout(data_dir.clone(), lock_timeout_secs)
+        {
             Ok(s) => s,
             Err(e) => {
                 tracing::error!("Failed to create scraper: {}", e);
@@ -651,12 +655,16 @@ async fn run_watch_loop(
     // ── optional MCP server ───────────────────────────────────────────
     // Spawned as a sibling task; receives a oneshot signal when the watch
     // loop exits so it can clean up its Unix socket before returning.
-    let mcp_shutdown_tx: Option<tokio::sync::oneshot::Sender<()>> =
+    let _mcp_shutdown_tx: Option<tokio::sync::oneshot::Sender<()>> =
         if let Some(ref socket_path) = mcp_socket_path {
             let (tx, rx) = tokio::sync::oneshot::channel::<()>();
             let data_dir_clone = data_dir.clone();
             let socket_path_clone = socket_path.clone();
-            tokio::spawn(crate::mcp::run_mcp_server(data_dir_clone, socket_path_clone, rx));
+            tokio::spawn(crate::mcp::run_mcp_server(
+                data_dir_clone,
+                socket_path_clone,
+                rx,
+            ));
             Some(tx)
         } else {
             None
@@ -697,7 +705,8 @@ async fn run_watch_loop(
         );
 
         // ── scrape one file at a time (I/O-bound, not CPU-bound) ──────
-        let mut scraper = match Scraper::new_with_lock_timeout(data_dir.clone(), lock_timeout_secs) {
+        let mut scraper = match Scraper::new_with_lock_timeout(data_dir.clone(), lock_timeout_secs)
+        {
             Ok(s) => s,
             Err(e) => {
                 tracing::error!("Failed to create scraper: {}", e);
@@ -758,7 +767,9 @@ async fn run_watch_loop(
         // Optionally commit newly scraped sessions to git
         if git_auto_commit && combined.sessions_scraped > 0 {
             match scraper_git_commit(&data_dir, &combined) {
-                Ok(true) => tracing::info!(sessions = combined.sessions_scraped, "git auto-committed"),
+                Ok(true) => {
+                    tracing::info!(sessions = combined.sessions_scraped, "git auto-committed")
+                }
                 Ok(false) => {}
                 Err(e) => tracing::warn!(error = %e, "git auto-commit failed"),
             }
@@ -791,11 +802,14 @@ fn init_file_logging(log_path: &Path) {
 
     let file_appender = tracing_appender::rolling::never(
         log_dir,
-        log_path.file_name().unwrap_or_default().to_str().unwrap_or("daemon.log"),
+        log_path
+            .file_name()
+            .unwrap_or_default()
+            .to_str()
+            .unwrap_or("daemon.log"),
     );
 
-    let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new("info"));
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
 
     let subscriber = tracing_subscriber::fmt()
         .with_writer(BoxMakeWriter::new(file_appender))
@@ -958,8 +972,9 @@ const SERVICE_NAME: &str = "agentscribe.service";
 /// current executable with `daemon run`, then prints instructions to
 /// enable and start it.
 pub fn install_service() -> Result<()> {
-    let exe = std::env::current_exe()
-        .map_err(|e| AgentScribeError::Config(format!("Cannot determine executable path: {}", e)))?;
+    let exe = std::env::current_exe().map_err(|e| {
+        AgentScribeError::Config(format!("Cannot determine executable path: {}", e))
+    })?;
     let exe_str = exe.to_string_lossy();
 
     let service_dir = service_unit_dir()?;
@@ -1073,7 +1088,7 @@ pub fn format_duration(secs: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::plugin::{LogFormat, Parser, Plugin, PluginMeta, Source, SessionDetection};
+    use crate::plugin::{LogFormat, Parser, Plugin, PluginMeta, SessionDetection, Source};
     use std::thread;
 
     // ── helpers ───────────────────────────────────────────────────────
@@ -1102,10 +1117,7 @@ mod tests {
     #[test]
     fn test_base_dir_simple_wildcard() {
         let dir = base_dir_from_glob_pattern("/home/user/.claude/projects/*/*.jsonl");
-        assert_eq!(
-            dir,
-            Some(PathBuf::from("/home/user/.claude/projects"))
-        );
+        assert_eq!(dir, Some(PathBuf::from("/home/user/.claude/projects")));
     }
 
     #[test]
@@ -1145,13 +1157,19 @@ mod tests {
     #[test]
     fn test_file_matches_plugin_exact_glob() {
         let plugin = make_plugin("claude", vec!["/tmp/test/*.jsonl"]);
-        assert!(file_matches_plugin(Path::new("/tmp/test/session.jsonl"), &plugin));
+        assert!(file_matches_plugin(
+            Path::new("/tmp/test/session.jsonl"),
+            &plugin
+        ));
     }
 
     #[test]
     fn test_file_matches_plugin_no_match() {
         let plugin = make_plugin("claude", vec!["/tmp/test/*.jsonl"]);
-        assert!(!file_matches_plugin(Path::new("/tmp/other/session.jsonl"), &plugin));
+        assert!(!file_matches_plugin(
+            Path::new("/tmp/other/session.jsonl"),
+            &plugin
+        ));
     }
 
     #[test]
@@ -1165,8 +1183,14 @@ mod tests {
     #[test]
     fn test_file_matches_plugin_double_star() {
         let plugin = make_plugin("deep", vec!["/tmp/**/*.jsonl"]);
-        assert!(file_matches_plugin(Path::new("/tmp/a/b/c/session.jsonl"), &plugin));
-        assert!(!file_matches_plugin(Path::new("/tmp/a/b/c/session.md"), &plugin));
+        assert!(file_matches_plugin(
+            Path::new("/tmp/a/b/c/session.jsonl"),
+            &plugin
+        ));
+        assert!(!file_matches_plugin(
+            Path::new("/tmp/a/b/c/session.md"),
+            &plugin
+        ));
     }
 
     // ── Debouncer ─────────────────────────────────────────────────────
@@ -1208,7 +1232,10 @@ mod tests {
         // Record a change that has effectively aged out.
         d.pending.insert(
             path.clone(),
-            ("plugin-a".to_string(), Instant::now() - Duration::from_secs(10)),
+            (
+                "plugin-a".to_string(),
+                Instant::now() - Duration::from_secs(10),
+            ),
         );
         assert_eq!(d.drain_ready(Duration::from_secs(5)).len(), 1);
 
@@ -1226,7 +1253,10 @@ mod tests {
         // path_a: artificially old (will be ready).
         d.pending.insert(
             path_a.clone(),
-            ("plugin-a".to_string(), Instant::now() - Duration::from_secs(10)),
+            (
+                "plugin-a".to_string(),
+                Instant::now() - Duration::from_secs(10),
+            ),
         );
         // path_b: just recorded (not ready for a long debounce).
         d.record(path_b.clone(), "plugin-b".to_string());

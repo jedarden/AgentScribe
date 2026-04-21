@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use regex::Regex;
 
 use crate::error::Result;
-use crate::event::{Event, Role};
+use crate::event::Role;
 use crate::scraper::Scraper;
 
 use std::sync::LazyLock;
@@ -110,10 +110,7 @@ impl OutputFormat {
 }
 
 /// Extract rules from all sessions matching a project path.
-pub fn extract_rules(
-    data_dir: &Path,
-    project_path: &Path,
-) -> Result<RulesOutput> {
+pub fn extract_rules(data_dir: &Path, project_path: &Path) -> Result<RulesOutput> {
     let mut scraper = Scraper::new(data_dir.to_path_buf())?;
     scraper.load_plugins()?;
 
@@ -198,7 +195,11 @@ pub fn extract_rules(
                 }
                 // Detect test directories
                 for component in fp.split('/') {
-                    if component == "tests" || component == "__tests__" || component == "spec" || component == "specs" {
+                    if component == "tests"
+                        || component == "__tests__"
+                        || component == "spec"
+                        || component == "specs"
+                    {
                         *test_dirs.entry(component.to_string()).or_insert(0) += 1;
                     }
                     if component.starts_with("test_") || component.ends_with("_test") {
@@ -249,7 +250,9 @@ pub fn extract_rules(
     }
 
     // 3. Build system detection
-    let build_tools = ["cargo", "make", "cmake", "npm", "pnpm", "yarn", "bun", "go", "gcc", "clang"];
+    let build_tools = [
+        "cargo", "make", "cmake", "npm", "pnpm", "yarn", "bun", "go", "gcc", "clang",
+    ];
     for tool in &build_tools {
         if let Some(count) = bash_cmd_counts.get(*tool) {
             if *count >= 2 {
@@ -260,7 +263,8 @@ pub fn extract_rules(
 
     // 4. Test patterns
     if !test_dirs.is_empty() {
-        let top_test: Vec<_> = test_dirs.iter()
+        let top_test: Vec<_> = test_dirs
+            .iter()
             .max_by_key(|(_, c)| *c)
             .map(|(k, _)| k.clone())
             .into_iter()
@@ -327,14 +331,13 @@ fn extract_corrections(content: &str, corrections: &mut Vec<String>) {
             // Build a readable correction string
             let full_match = caps.get(0).unwrap().as_str().trim();
             // Clean up: remove trailing punctuation, limit length
-            let cleaned = full_match
-                .trim_end_matches(|c: char| c == '.' || c == '!' || c == '?' || c == ',')
-                .trim();
+            let cleaned = full_match.trim_end_matches(['.', '!', '?', ',']).trim();
 
-            if cleaned.len() >= 5 && cleaned.len() <= 200 {
-                if !corrections.contains(&cleaned.to_string()) {
-                    corrections.push(cleaned.to_string());
-                }
+            if cleaned.len() >= 5
+                && cleaned.len() <= 200
+                && !corrections.contains(&cleaned.to_string())
+            {
+                corrections.push(cleaned.to_string());
             }
         }
     }
@@ -349,7 +352,11 @@ fn truncate_fp(fp: &str, max_len: usize) -> String {
         let prefix = &fp[..=colon_pos];
         let remaining = max_len.saturating_sub(prefix.len() + 4);
         if remaining > 10 {
-            return format!("{}{}...", prefix, &fp[colon_pos + 1..colon_pos + 1 + remaining]);
+            return format!(
+                "{}{}...",
+                prefix,
+                &fp[colon_pos + 1..colon_pos + 1 + remaining]
+            );
         }
     }
     format!("{}...", &fp[..max_len.saturating_sub(3)])
@@ -359,28 +366,36 @@ fn truncate_fp(fp: &str, max_len: usize) -> String {
 pub fn format_claude(output: &RulesOutput) -> String {
     let mut sections = Vec::new();
 
-    let corrections: Vec<_> = output.rules.iter()
+    let corrections: Vec<_> = output
+        .rules
+        .iter()
         .filter_map(|r| match r {
             Rule::Correction(s) => Some(s.as_str()),
             _ => None,
         })
         .collect();
 
-    let conventions: Vec<_> = output.rules.iter()
+    let conventions: Vec<_> = output
+        .rules
+        .iter()
         .filter_map(|r| match r {
             Rule::Convention(s) => Some(s.as_str()),
             _ => None,
         })
         .collect();
 
-    let warnings: Vec<_> = output.rules.iter()
+    let warnings: Vec<_> = output
+        .rules
+        .iter()
         .filter_map(|r| match r {
             Rule::Warning(s) => Some(s.as_str()),
             _ => None,
         })
         .collect();
 
-    let context: Vec<_> = output.rules.iter()
+    let context: Vec<_> = output
+        .rules
+        .iter()
         .filter_map(|r| match r {
             Rule::Context(s) => Some(s.as_str()),
             _ => None,
@@ -388,31 +403,47 @@ pub fn format_claude(output: &RulesOutput) -> String {
         .collect();
 
     if !corrections.is_empty() {
-        sections.push(format!("## User Corrections\n\n{}", corrections.iter()
-            .map(|c| format!("- {}", c))
-            .collect::<Vec<_>>()
-            .join("\n")));
+        sections.push(format!(
+            "## User Corrections\n\n{}",
+            corrections
+                .iter()
+                .map(|c| format!("- {}", c))
+                .collect::<Vec<_>>()
+                .join("\n")
+        ));
     }
 
     if !conventions.is_empty() {
-        sections.push(format!("## Conventions\n\n{}", conventions.iter()
-            .map(|c| format!("- {}", c))
-            .collect::<Vec<_>>()
-            .join("\n")));
+        sections.push(format!(
+            "## Conventions\n\n{}",
+            conventions
+                .iter()
+                .map(|c| format!("- {}", c))
+                .collect::<Vec<_>>()
+                .join("\n")
+        ));
     }
 
     if !context.is_empty() {
-        sections.push(format!("## Project Context\n\n{}", context.iter()
-            .map(|c| format!("- {}", c))
-            .collect::<Vec<_>>()
-            .join("\n")));
+        sections.push(format!(
+            "## Project Context\n\n{}",
+            context
+                .iter()
+                .map(|c| format!("- {}", c))
+                .collect::<Vec<_>>()
+                .join("\n")
+        ));
     }
 
     if !warnings.is_empty() {
-        sections.push(format!("## Known Issues\n\n{}", warnings.iter()
-            .map(|w| format!("- {}", w))
-            .collect::<Vec<_>>()
-            .join("\n")));
+        sections.push(format!(
+            "## Known Issues\n\n{}",
+            warnings
+                .iter()
+                .map(|w| format!("- {}", w))
+                .collect::<Vec<_>>()
+                .join("\n")
+        ));
     }
 
     if sections.is_empty() {
@@ -433,14 +464,14 @@ pub fn format_cursor(output: &RulesOutput) -> String {
         return String::new();
     }
 
-    let lines: Vec<String> = output.rules.iter()
-        .map(|r| {
-            match r {
-                Rule::Convention(s) => s.clone(),
-                Rule::Correction(s) => s.clone(),
-                Rule::Warning(s) => format!("Watch out: {}", s),
-                Rule::Context(s) => s.clone(),
-            }
+    let lines: Vec<String> = output
+        .rules
+        .iter()
+        .map(|r| match r {
+            Rule::Convention(s) => s.clone(),
+            Rule::Correction(s) => s.clone(),
+            Rule::Warning(s) => format!("Watch out: {}", s),
+            Rule::Context(s) => s.clone(),
         })
         .collect();
 
@@ -485,8 +516,7 @@ pub fn format_aider(output: &RulesOutput) -> String {
 
     format!(
         "# Auto-generated by AgentScribe rules ({} sessions analyzed)\n{}\n",
-        output.sessions_analyzed,
-        yaml
+        output.sessions_analyzed, yaml
     )
 }
 
@@ -548,7 +578,12 @@ fn replace_or_prepend(existing: &str, new_content: &str, format: OutputFormat) -
     // Find the end: first non-generated line after the marker.
     // Generated lines are those that belong to our output format's sections.
     let generated_sections: Vec<&str> = match format {
-        OutputFormat::Claude => vec!["User Corrections", "Conventions", "Project Context", "Known Issues"],
+        OutputFormat::Claude => vec![
+            "User Corrections",
+            "Conventions",
+            "Project Context",
+            "Known Issues",
+        ],
         OutputFormat::Cursor | OutputFormat::Aider => vec![],
     };
 
@@ -644,6 +679,7 @@ mod tests {
     use crate::event::Event;
     use chrono::Utc;
 
+    #[allow(dead_code)]
     fn make_event(role: Role, content: &str, project: &str) -> Event {
         Event::new(
             Utc::now(),
@@ -655,6 +691,7 @@ mod tests {
         .with_project(Some(project.into()))
     }
 
+    #[allow(dead_code)]
     fn make_tool_event(tool: &str, content: &str, project: &str) -> Event {
         Event::new(
             Utc::now(),
@@ -758,9 +795,7 @@ mod tests {
     #[test]
     fn test_format_aider() {
         let output = RulesOutput {
-            rules: vec![
-                Rule::Convention("Use pnpm".to_string()),
-            ],
+            rules: vec![Rule::Convention("Use pnpm".to_string())],
             project_path: PathBuf::from("/tmp/test"),
             sessions_analyzed: 1,
         };

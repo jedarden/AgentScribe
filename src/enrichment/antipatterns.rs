@@ -3,6 +3,8 @@
 //! Analyzes failed/abandoned sessions for rejection windows and
 //! links to successful alternatives via error fingerprint matching.
 
+#![allow(dead_code)]
+
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
@@ -59,7 +61,8 @@ pub fn detect_antipatterns(
         patterns.push(AntiPattern {
             pattern: format!(
                 "Rejection window: {} attempts over {} events without resolution",
-                window.attempts, window.end - window.start
+                window.attempts,
+                window.end - window.start
             ),
             error_fingerprints: fps,
             session_ids: vec![manifest.session_id.clone()],
@@ -83,7 +86,8 @@ pub fn detect_antipatterns(
         patterns.push(AntiPattern {
             pattern: format!(
                 "Error escalation: {} distinct error types in {} events",
-                escalation.error_types, escalation.end - escalation.start + 1
+                escalation.error_types,
+                escalation.end - escalation.start + 1
             ),
             error_fingerprints: fps,
             session_ids: vec![manifest.session_id.clone()],
@@ -147,9 +151,9 @@ fn find_rejection_window(events: &[Event]) -> Option<RejectionWindow> {
     }
 
     // Need at least 2 failed attempts to be an anti-pattern
-    if attempts >= 2 && start.is_some() {
-        Some(RejectionWindow {
-            start: start.unwrap(),
+    if attempts >= 2 {
+        start.map(|s| RejectionWindow {
+            start: s,
             end: end + 1,
             attempts,
         })
@@ -186,9 +190,9 @@ fn detect_escalation(events: &[Event]) -> Option<ErrorEscalation> {
     }
 
     // Escalation if we see 3+ distinct error types
-    if max_types >= 3 && start.is_some() {
-        Some(ErrorEscalation {
-            start: start.unwrap(),
+    if max_types >= 3 {
+        start.map(|s| ErrorEscalation {
+            start: s,
             end,
             error_types: max_types,
         })
@@ -242,11 +246,9 @@ fn find_alternatives(
                 }
                 if let Ok(events) = scraper.read_session(&session_id) {
                     // Check if this session has matching fingerprints AND a positive outcome
-                    let has_match = events.iter().any(|e| {
-                        e.error_fingerprints
-                            .iter()
-                            .any(|fp| error_fps.contains(fp))
-                    });
+                    let has_match = events
+                        .iter()
+                        .any(|e| e.error_fingerprints.iter().any(|fp| error_fps.contains(fp)));
 
                     // Check for success signal in the last few events
                     let has_success = events
@@ -305,11 +307,16 @@ use std::io::Write;
 mod tests {
     use super::*;
     use crate::event::Event;
-    use crate::config::Config;
     use chrono::Utc;
 
     fn make_event(role: Role, content: &str, tool: Option<&str>, fps: Vec<&str>) -> Event {
-        let mut e = Event::new(Utc::now(), "test/1".into(), "test".into(), role, content.into());
+        let mut e = Event::new(
+            Utc::now(),
+            "test/1".into(),
+            "test".into(),
+            role,
+            content.into(),
+        );
         e.tool = tool.map(|s| s.to_string());
         e.error_fingerprints = fps.iter().map(|s| s.to_string()).collect();
         e
@@ -342,11 +349,26 @@ mod tests {
             make_event(Role::User, "fix the build", None, vec![]),
             make_event(Role::Assistant, "trying fix 1", None, vec![]),
             make_event(Role::ToolCall, "cargo build", Some("Bash"), vec![]),
-            make_event(Role::ToolResult, "error: missing import", None, vec!["missing import"]),
+            make_event(
+                Role::ToolResult,
+                "error: missing import",
+                None,
+                vec!["missing import"],
+            ),
             make_event(Role::ToolCall, "cargo build", Some("Bash"), vec![]),
-            make_event(Role::ToolResult, "error: cannot find module", None, vec!["cannot find module"]),
+            make_event(
+                Role::ToolResult,
+                "error: cannot find module",
+                None,
+                vec!["cannot find module"],
+            ),
             make_event(Role::ToolCall, "cargo build", Some("Bash"), vec![]),
-            make_event(Role::ToolResult, "error: type mismatch", None, vec!["type mismatch"]),
+            make_event(
+                Role::ToolResult,
+                "error: type mismatch",
+                None,
+                vec!["type mismatch"],
+            ),
             make_event(Role::Assistant, "I couldn't fix this", None, vec![]),
         ];
         let manifest = make_manifest();
@@ -360,15 +382,27 @@ mod tests {
     #[test]
     fn test_escalation_detected() {
         let events = vec![
-            make_event(Role::ToolResult, "error: connection refused", None, vec!["connection refused"]),
+            make_event(
+                Role::ToolResult,
+                "error: connection refused",
+                None,
+                vec!["connection refused"],
+            ),
             make_event(Role::ToolResult, "error: timeout", None, vec!["timeout"]),
-            make_event(Role::ToolResult, "error: auth failed", None, vec!["auth failed"]),
+            make_event(
+                Role::ToolResult,
+                "error: auth failed",
+                None,
+                vec!["auth failed"],
+            ),
         ];
         let manifest = make_manifest();
         let temp = tempfile::tempdir().unwrap();
         let scraper = Scraper::new(temp.path().to_path_buf()).unwrap();
         let patterns = detect_antipatterns(&events, &manifest, Some("failure"), &scraper);
-        assert!(patterns.iter().any(|p| p.pattern.contains("Error escalation")));
+        assert!(patterns
+            .iter()
+            .any(|p| p.pattern.contains("Error escalation")));
     }
 
     #[test]

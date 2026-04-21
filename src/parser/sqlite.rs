@@ -7,9 +7,9 @@
 //! - `parser.query`: SQL SELECT query (e.g. `SELECT key, value FROM cursorDiskKV`)
 //! - `parser.key_filter`: optional regex to filter on the first column (key)
 //! - `parser.content_path`: optional JSON dot-path within the value blob to reach
-//!    the message array (e.g. `"messages"`)
+//!   the message array (e.g. `"messages"`)
 //! - `parser.role`, `parser.content`, `parser.timestamp`: JSON paths within each
-//!    message object
+//!   message object
 //!
 //! Memory notes:
 //! - Opens the DB with SQLITE_OPEN_READ_ONLY — never modifies the source
@@ -163,7 +163,12 @@ impl SqliteParser {
         };
 
         // Role is required; skip messages without one.
-        let role_str = match plugin.parser.role.as_ref().and_then(|f| extract_string(msg, f)) {
+        let role_str = match plugin
+            .parser
+            .role
+            .as_ref()
+            .and_then(|f| extract_string(msg, f))
+        {
             Some(r) => r,
             None => return Ok(None),
         };
@@ -213,11 +218,9 @@ impl super::FormatParser for SqliteParser {
     fn parse(&self, source_path: &Path, plugin: &Plugin) -> Result<Vec<Event>> {
         let conn = Self::open_db(source_path)?;
 
-        let query_str = plugin
-            .parser
-            .query
-            .as_deref()
-            .ok_or_else(|| AgentScribeError::InvalidPlugin("SQLite format requires query".into()))?;
+        let query_str = plugin.parser.query.as_deref().ok_or_else(|| {
+            AgentScribeError::InvalidPlugin("SQLite format requires query".into())
+        })?;
 
         // Compile the key-filter regex once.
         let key_re: Option<Regex> = plugin
@@ -238,10 +241,7 @@ impl super::FormatParser for SqliteParser {
             .as_deref()
             .map(|pat| {
                 Regex::new(pat).map_err(|e| {
-                    AgentScribeError::InvalidPlugin(format!(
-                        "invalid key_session_id_regex: {}",
-                        e
-                    ))
+                    AgentScribeError::InvalidPlugin(format!("invalid key_session_id_regex: {}", e))
                 })
             })
             .transpose()?;
@@ -253,11 +253,13 @@ impl super::FormatParser for SqliteParser {
             source_path.display().to_string(),
         );
 
-        let mut stmt = conn.prepare(query_str).map_err(|e| AgentScribeError::Parse {
-            file: source_path.display().to_string(),
-            line: None,
-            message: format!("cannot prepare query: {}", e),
-        })?;
+        let mut stmt = conn
+            .prepare(query_str)
+            .map_err(|e| AgentScribeError::Parse {
+                file: source_path.display().to_string(),
+                line: None,
+                message: format!("cannot prepare query: {}", e),
+            })?;
 
         let col_count = stmt.column_count();
 
@@ -339,34 +341,31 @@ impl super::FormatParser for SqliteParser {
         // session IDs so the scraper can route events to separate output files.
         if let Some(ref regex_str) = plugin.parser.key_session_id_regex {
             let re = Regex::new(regex_str).map_err(|e| {
-                AgentScribeError::InvalidPlugin(format!(
-                    "invalid key_session_id_regex: {}",
-                    e
-                ))
+                AgentScribeError::InvalidPlugin(format!("invalid key_session_id_regex: {}", e))
             })?;
 
             let key_re: Option<Regex> = plugin
                 .parser
                 .key_filter
                 .as_deref()
-                .map(|pat| Regex::new(pat))
+                .map(Regex::new)
                 .transpose()
                 .map_err(|e| {
                     AgentScribeError::InvalidPlugin(format!("invalid key_filter regex: {}", e))
                 })?;
 
-            let query_str = plugin
-                .parser
-                .query
-                .as_deref()
-                .ok_or_else(|| AgentScribeError::InvalidPlugin("SQLite format requires query".into()))?;
+            let query_str = plugin.parser.query.as_deref().ok_or_else(|| {
+                AgentScribeError::InvalidPlugin("SQLite format requires query".into())
+            })?;
 
             let conn = Self::open_db(source_path)?;
-            let mut stmt = conn.prepare(query_str).map_err(|e| AgentScribeError::Parse {
-                file: source_path.display().to_string(),
-                line: None,
-                message: format!("cannot prepare query: {}", e),
-            })?;
+            let mut stmt = conn
+                .prepare(query_str)
+                .map_err(|e| AgentScribeError::Parse {
+                    file: source_path.display().to_string(),
+                    line: None,
+                    message: format!("cannot prepare query: {}", e),
+                })?;
 
             let col_count = stmt.column_count();
             let mut rows = stmt.query([]).map_err(|e| AgentScribeError::Parse {
@@ -443,7 +442,9 @@ impl super::FormatParser for SqliteParser {
 mod tests {
     use super::*;
     use crate::parser::FormatParser;
-    use crate::plugin::{LogFormat, Parser, Plugin, PluginMeta, SessionDetection, SessionIdSource, Source};
+    use crate::plugin::{
+        LogFormat, Parser, Plugin, PluginMeta, SessionDetection, SessionIdSource, Source,
+    };
     use rusqlite::Connection;
     use std::collections::HashMap;
     use tempfile::NamedTempFile;
@@ -483,10 +484,8 @@ mod tests {
     fn create_test_db(messages_json: &str) -> NamedTempFile {
         let tmp = NamedTempFile::new().unwrap();
         let conn = Connection::open(tmp.path()).unwrap();
-        conn.execute_batch(
-            "CREATE TABLE cursorDiskKV (key TEXT, value TEXT);",
-        )
-        .unwrap();
+        conn.execute_batch("CREATE TABLE cursorDiskKV (key TEXT, value TEXT);")
+            .unwrap();
         conn.execute(
             "INSERT INTO cursorDiskKV (key, value) VALUES (?1, ?2)",
             rusqlite::params!["history.session1", messages_json],
@@ -513,10 +512,7 @@ mod tests {
     fn test_parse_with_content_path() {
         let blob = r#"{"messages":[{"role":"user","text":"hi"},{"role":"AI","text":"hello"}]}"#;
         let db = create_test_db(blob);
-        let plugin = make_plugin(
-            "SELECT key, value FROM cursorDiskKV",
-            Some("messages"),
-        );
+        let plugin = make_plugin("SELECT key, value FROM cursorDiskKV", Some("messages"));
 
         let parser = SqliteParser;
         let events = parser.parse(db.path(), &plugin).unwrap();
@@ -528,21 +524,16 @@ mod tests {
     fn test_key_filter_skips_non_matching() {
         let tmp = NamedTempFile::new().unwrap();
         let conn = Connection::open(tmp.path()).unwrap();
-        conn.execute_batch("CREATE TABLE cursorDiskKV (key TEXT, value TEXT);").unwrap();
+        conn.execute_batch("CREATE TABLE cursorDiskKV (key TEXT, value TEXT);")
+            .unwrap();
         conn.execute(
             "INSERT INTO cursorDiskKV VALUES (?1, ?2)",
-            rusqlite::params![
-                "history.session1",
-                r#"[{"role":"user","text":"keep"}]"#
-            ],
+            rusqlite::params!["history.session1", r#"[{"role":"user","text":"keep"}]"#],
         )
         .unwrap();
         conn.execute(
             "INSERT INTO cursorDiskKV VALUES (?1, ?2)",
-            rusqlite::params![
-                "settings.foo",
-                r#"[{"role":"user","text":"discard"}]"#
-            ],
+            rusqlite::params!["settings.foo", r#"[{"role":"user","text":"discard"}]"#],
         )
         .unwrap();
 
@@ -560,7 +551,10 @@ mod tests {
         let plugin = make_plugin("SELECT key, value FROM cursorDiskKV", None);
         let sessions = SqliteParser.detect_sessions(db.path(), &plugin).unwrap();
         assert_eq!(sessions.len(), 1);
-        assert_eq!(sessions[0].session_id, db.path().file_stem().unwrap().to_str().unwrap());
+        assert_eq!(
+            sessions[0].session_id,
+            db.path().file_stem().unwrap().to_str().unwrap()
+        );
     }
 
     #[test]
@@ -577,14 +571,18 @@ mod tests {
         let meta_after = std::fs::metadata(db.path()).unwrap();
         let mtime_after = meta_after.modified().unwrap();
 
-        assert_eq!(mtime_before, mtime_after, "parser must not modify source DB");
+        assert_eq!(
+            mtime_before, mtime_after,
+            "parser must not modify source DB"
+        );
     }
 
     #[test]
     fn test_key_session_id_regex_extracts_session_id() {
         let tmp = NamedTempFile::new().unwrap();
         let conn = Connection::open(tmp.path()).unwrap();
-        conn.execute_batch("CREATE TABLE cursorDiskKV (key TEXT, value TEXT);").unwrap();
+        conn.execute_batch("CREATE TABLE cursorDiskKV (key TEXT, value TEXT);")
+            .unwrap();
 
         // Insert multiple sessions using bubbleId pattern (like Cursor/Windsurf)
         conn.execute(
@@ -620,7 +618,8 @@ mod tests {
     fn test_key_session_id_regex_filters_non_matching_keys() {
         let tmp = NamedTempFile::new().unwrap();
         let conn = Connection::open(tmp.path()).unwrap();
-        conn.execute_batch("CREATE TABLE cursorDiskKV (key TEXT, value TEXT);").unwrap();
+        conn.execute_batch("CREATE TABLE cursorDiskKV (key TEXT, value TEXT);")
+            .unwrap();
 
         // Mix of bubbleId keys (should match) and other keys (should be filtered)
         conn.execute(
@@ -633,10 +632,7 @@ mod tests {
         .unwrap();
         conn.execute(
             "INSERT INTO cursorDiskKV VALUES (?1, ?2)",
-            rusqlite::params![
-                "composerData:session-1",
-                r#"{"title":"Session Metadata"}"#
-            ],
+            rusqlite::params!["composerData:session-1", r#"{"title":"Session Metadata"}"#],
         )
         .unwrap();
 
@@ -655,7 +651,8 @@ mod tests {
     fn test_parse_cursor_disk_kv_pattern() {
         let tmp = NamedTempFile::new().unwrap();
         let conn = Connection::open(tmp.path()).unwrap();
-        conn.execute_batch("CREATE TABLE cursorDiskKV (key TEXT, value TEXT);").unwrap();
+        conn.execute_batch("CREATE TABLE cursorDiskKV (key TEXT, value TEXT);")
+            .unwrap();
 
         // Simulate Cursor/Windsurf bubbleId pattern
         conn.execute(
@@ -673,8 +670,14 @@ mod tests {
         plugin.parser.role = Some("type".to_string());
         plugin.parser.content = Some("text".to_string());
         // Add role mappings for integer type codes (like Cursor/Windsurf)
-        plugin.parser.role_map.insert("1".to_string(), "user".to_string());
-        plugin.parser.role_map.insert("2".to_string(), "assistant".to_string());
+        plugin
+            .parser
+            .role_map
+            .insert("1".to_string(), "user".to_string());
+        plugin
+            .parser
+            .role_map
+            .insert("2".to_string(), "assistant".to_string());
 
         let parser = SqliteParser;
         let events = parser.parse(tmp.path(), &plugin).unwrap();
@@ -690,15 +693,13 @@ mod tests {
     fn test_detect_sessions_with_no_matching_keys_returns_placeholder() {
         let tmp = NamedTempFile::new().unwrap();
         let conn = Connection::open(tmp.path()).unwrap();
-        conn.execute_batch("CREATE TABLE cursorDiskKV (key TEXT, value TEXT);").unwrap();
+        conn.execute_batch("CREATE TABLE cursorDiskKV (key TEXT, value TEXT);")
+            .unwrap();
 
         // Insert keys that don't match the filter
         conn.execute(
             "INSERT INTO cursorDiskKV VALUES (?1, ?2)",
-            rusqlite::params![
-                "otherKey:data",
-                r#"[]"#
-            ],
+            rusqlite::params!["otherKey:data", r#"[]"#],
         )
         .unwrap();
 

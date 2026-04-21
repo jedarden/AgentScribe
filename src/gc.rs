@@ -25,10 +25,7 @@ pub struct GcResult {
 }
 
 /// Sidecar file suffixes to clean up alongside session files.
-const SIDECAR_SUFFIXES: &[&str] = &[
-    ".anti-patterns.jsonl",
-    ".summary.jsonl",
-];
+const SIDECAR_SUFFIXES: &[&str] = &[".anti-patterns.jsonl", ".summary.jsonl"];
 
 /// Parse a human-readable duration string (e.g., "30d", "12w", "6mo").
 ///
@@ -39,7 +36,8 @@ pub fn parse_duration(s: &str) -> Result<Duration> {
         s.find(|c: char| !c.is_ascii_digit())
             .ok_or_else(|| AgentScribeError::Config(format!("invalid duration: {}", s)))?,
     );
-    let num: i64 = num_str.parse()
+    let num: i64 = num_str
+        .parse()
         .map_err(|_| AgentScribeError::Config(format!("invalid duration number: {}", num_str)))?;
 
     let duration = match unit {
@@ -50,7 +48,12 @@ pub fn parse_duration(s: &str) -> Result<Duration> {
             Duration::days(num * 30)
         }
         "h" | "hours" => Duration::hours(num),
-        _ => return Err(AgentScribeError::Config(format!("unknown duration unit: {}", unit))),
+        _ => {
+            return Err(AgentScribeError::Config(format!(
+                "unknown duration unit: {}",
+                unit
+            )))
+        }
     };
 
     Ok(duration)
@@ -100,10 +103,8 @@ fn compute_file_size(paths: &[std::path::PathBuf]) -> u64 {
 fn delete_files(paths: &[std::path::PathBuf]) -> usize {
     let mut deleted = 0;
     for path in paths {
-        if path.exists() {
-            if fs::remove_file(path).is_ok() {
-                deleted += 1;
-            }
+        if path.exists() && fs::remove_file(path).is_ok() {
+            deleted += 1;
         }
     }
     deleted
@@ -116,11 +117,7 @@ fn delete_files(paths: &[std::path::PathBuf]) -> usize {
 ///
 /// `max_age` is the duration threshold — sessions whose first event timestamp is
 /// older than `now - max_age` will be collected.
-pub fn run_gc(
-    data_dir: &Path,
-    max_age: Duration,
-    dry_run: bool,
-) -> Result<GcResult> {
+pub fn run_gc(data_dir: &Path, max_age: Duration, dry_run: bool) -> Result<GcResult> {
     let mut scraper = Scraper::new(data_dir.to_path_buf())?;
     scraper.load_plugins()?;
 
@@ -176,7 +173,10 @@ pub fn run_gc(
 
         // Delete from Tantivy index
         if let Err(e) = index_manager.delete_session(session_id) {
-            eprintln!("Warning: failed to delete session {} from index: {}", session_id, e);
+            eprintln!(
+                "Warning: failed to delete session {} from index: {}",
+                session_id, e
+            );
         }
 
         sessions_deleted += 1;
@@ -292,9 +292,18 @@ mod tests {
         let paths = session_file_paths(sessions_dir, "claude-code/20250322-123456");
 
         assert_eq!(paths.len(), 3);
-        assert!(paths[0].to_str().unwrap().ends_with("20250322-123456.jsonl"));
-        assert!(paths[1].to_str().unwrap().ends_with("20250322-123456.anti-patterns.jsonl"));
-        assert!(paths[2].to_str().unwrap().ends_with("20250322-123456.summary.jsonl"));
+        assert!(paths[0]
+            .to_str()
+            .unwrap()
+            .ends_with("20250322-123456.jsonl"));
+        assert!(paths[1]
+            .to_str()
+            .unwrap()
+            .ends_with("20250322-123456.anti-patterns.jsonl"));
+        assert!(paths[2]
+            .to_str()
+            .unwrap()
+            .ends_with("20250322-123456.summary.jsonl"));
     }
 
     #[test]

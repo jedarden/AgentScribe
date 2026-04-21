@@ -18,8 +18,10 @@ pub struct DigestOptions {
     /// Only include sessions after this timestamp
     pub since: DateTime<Utc>,
     /// Path to write output (stdout if None)
+    #[allow(dead_code)]
     pub output: Option<String>,
     /// JSON output mode
+    #[allow(dead_code)]
     pub json: bool,
 }
 
@@ -66,7 +68,11 @@ pub struct DigestOutput {
 }
 
 /// Generate the digest report
-pub fn generate_digest(data_dir: &Path, opts: &DigestOptions, config: &Config) -> Result<DigestOutput> {
+pub fn generate_digest(
+    data_dir: &Path,
+    opts: &DigestOptions,
+    config: &Config,
+) -> Result<DigestOutput> {
     // Compute analytics for the period
     let analytics_opts = AnalyticsOptions {
         agent: None,
@@ -83,8 +89,15 @@ pub fn generate_digest(data_dir: &Path, opts: &DigestOptions, config: &Config) -
     let recurring_output = recurring::detect_recurring(data_dir, &recurring_opts)?;
 
     // Extract additional digest data from the analytics session data
-    let (sessions_by_agent, sessions_by_project, most_touched_files, new_error_patterns, model_costs, total_tokens, total_cost) =
-        extract_digest_data(data_dir, &opts.since, config)?;
+    let (
+        sessions_by_agent,
+        sessions_by_project,
+        most_touched_files,
+        new_error_patterns,
+        model_costs,
+        total_tokens,
+        total_cost,
+    ) = extract_digest_data(data_dir, &opts.since, config)?;
 
     let period_start = opts.since;
     let period_end = Utc::now();
@@ -106,12 +119,7 @@ pub fn generate_digest(data_dir: &Path, opts: &DigestOptions, config: &Config) -
     })
 }
 
-/// Extract digest-specific data by scanning the Tantivy index
-fn extract_digest_data(
-    data_dir: &Path,
-    since: &DateTime<Utc>,
-    config: &Config,
-) -> Result<(
+type DigestDataTuple = (
     HashMap<String, usize>,
     HashMap<String, usize>,
     Vec<TouchedFile>,
@@ -119,7 +127,14 @@ fn extract_digest_data(
     Vec<ModelCostEntry>,
     f64,
     f64,
-)> {
+);
+
+/// Extract digest-specific data by scanning the Tantivy index
+fn extract_digest_data(
+    data_dir: &Path,
+    since: &DateTime<Utc>,
+    config: &Config,
+) -> Result<DigestDataTuple> {
     use crate::analytics::{estimate_cost, estimate_tokens};
     use crate::index::build_schema;
     use crate::search::open_index;
@@ -172,7 +187,9 @@ fn extract_digest_data(
         }
 
         // Sessions by agent
-        *sessions_by_agent.entry(data.source_agent.clone()).or_insert(0) += 1;
+        *sessions_by_agent
+            .entry(data.source_agent.clone())
+            .or_insert(0) += 1;
 
         // Sessions by project
         if let Some(ref project) = data.project {
@@ -213,7 +230,10 @@ fn extract_digest_data(
     // Build most-touched files (top 20)
     let mut touched_files: Vec<TouchedFile> = file_counts
         .into_iter()
-        .map(|(path, session_count)| TouchedFile { path, session_count })
+        .map(|(path, session_count)| TouchedFile {
+            path,
+            session_count,
+        })
         .collect();
     touched_files.sort_by(|a, b| b.session_count.cmp(&a.session_count));
     touched_files.truncate(20);
@@ -339,7 +359,11 @@ pub fn format_markdown(output: &DigestOutput) -> String {
             let mut spec: Vec<_> = agent.specialization.iter().collect();
             spec.sort_by(|a, b| b.1.cmp(a.1));
             if !spec.is_empty() {
-                let top: Vec<String> = spec.iter().take(3).map(|(t, c)| format!("{}:{}", t, c)).collect();
+                let top: Vec<String> = spec
+                    .iter()
+                    .take(3)
+                    .map(|(t, c)| format!("{}:{}", t, c))
+                    .collect();
                 md.push_str(&format!(
                     "- **{}** specializes in: {}\n",
                     agent.agent,
@@ -463,7 +487,11 @@ fn truncate_fingerprint(fp: &str, max_len: usize) -> String {
         let prefix = &fp[..=colon_pos];
         let remaining = max_len.saturating_sub(prefix.len() + 4);
         if remaining > 10 {
-            return format!("{}{}...", prefix, &fp[colon_pos + 1..colon_pos + 1 + remaining]);
+            return format!(
+                "{}{}...",
+                prefix,
+                &fp[colon_pos + 1..colon_pos + 1 + remaining]
+            );
         }
     }
     format!("{}...", &fp[..max_len.saturating_sub(3)])
@@ -565,12 +593,10 @@ mod tests {
                 computed_at: Utc::now(),
             },
             recurring_problems: vec![],
-            most_touched_files: vec![
-                TouchedFile {
-                    path: "src/main.rs".to_string(),
-                    session_count: 5,
-                },
-            ],
+            most_touched_files: vec![TouchedFile {
+                path: "src/main.rs".to_string(),
+                session_count: 5,
+            }],
             new_error_patterns: vec![],
             model_costs: vec![ModelCostEntry {
                 model: "claude-sonnet-4".to_string(),
