@@ -125,7 +125,9 @@ pub fn build_file_knowledge(
     let mut error_map: HashMap<String, (usize, DateTime<Utc>)> = HashMap::new();
     for session in &sessions {
         for fp in &session.error_fingerprints {
-            let entry = error_map.entry(fp.clone()).or_insert((0, session.timestamp));
+            let entry = error_map
+                .entry(fp.clone())
+                .or_insert((0, session.timestamp));
             entry.0 += 1;
             if session.timestamp > entry.1 {
                 entry.1 = session.timestamp;
@@ -180,10 +182,7 @@ struct FileSessionData {
 }
 
 /// Find all sessions that touch a specific file path.
-fn find_sessions_for_file(
-    data_dir: &Path,
-    file_path: &str,
-) -> Result<Vec<FileSessionData>> {
+fn find_sessions_for_file(data_dir: &Path, file_path: &str) -> Result<Vec<FileSessionData>> {
     let index = open_index(data_dir)?;
     let reader = index.reader().map_err(|e| {
         crate::error::AgentScribeError::DataDir(format!("Failed to create index reader: {}", e))
@@ -221,14 +220,10 @@ fn find_sessions_for_file(
 
     let all_docs: Vec<_> = searcher
         .search(&combined, &TopDocs::with_limit(total_docs as usize))
-        .map_err(|e| {
-            crate::error::AgentScribeError::DataDir(format!("Search failed: {}", e))
-        })?;
+        .map_err(|e| crate::error::AgentScribeError::DataDir(format!("Search failed: {}", e)))?;
 
     for (_score, doc_addr) in all_docs {
-        if let Some(data) =
-            analytics::extract_session_data(&searcher, doc_addr, &fields)
-        {
+        if let Some(data) = analytics::extract_session_data(&searcher, doc_addr, &fields) {
             sessions.push(FileSessionData {
                 session_id: data.session_id,
                 source_agent: data.source_agent,
@@ -245,10 +240,7 @@ fn find_sessions_for_file(
 }
 
 /// Load gotchas from anti-pattern sidecar files for the given sessions.
-fn load_gotchas_for_sessions(
-    data_dir: &Path,
-    session_ids: &[String],
-) -> Result<Vec<KnownGotcha>> {
+fn load_gotchas_for_sessions(data_dir: &Path, session_ids: &[String]) -> Result<Vec<KnownGotcha>> {
     let sessions_dir = data_dir.join("sessions");
     let mut gotchas = Vec::new();
 
@@ -276,10 +268,11 @@ fn load_gotchas_for_sessions(
                 continue;
             }
 
-            let pattern: crate::enrichment::antipatterns::AntiPattern = match serde_json::from_str(line) {
-                Ok(p) => p,
-                Err(_) => continue,
-            };
+            let pattern: crate::enrichment::antipatterns::AntiPattern =
+                match serde_json::from_str(line) {
+                    Ok(p) => p,
+                    Err(_) => continue,
+                };
 
             gotchas.push(KnownGotcha {
                 pattern: pattern.pattern,
@@ -301,10 +294,7 @@ fn load_gotchas_for_sessions(
 pub fn format_human(knowledge: &FileKnowledge) -> String {
     let mut lines = Vec::new();
 
-    lines.push(format!(
-        "File Knowledge: {}\n",
-        knowledge.file_path
-    ));
+    lines.push(format!("File Knowledge: {}\n", knowledge.file_path));
 
     if knowledge.session_count == 0 {
         lines.push("No sessions found touching this file.".to_string());
@@ -324,10 +314,7 @@ pub fn format_human(knowledge: &FileKnowledge) -> String {
     if !knowledge.problem_types.is_empty() {
         let mut types: Vec<_> = knowledge.problem_types.iter().collect();
         types.sort_by(|a, b| b.1.cmp(a.1));
-        let type_str: Vec<String> = types
-            .iter()
-            .map(|(t, c)| format!("{}:{}", t, c))
-            .collect();
+        let type_str: Vec<String> = types.iter().map(|(t, c)| format!("{}:{}", t, c)).collect();
         lines.push(format!("  Problem types: {}", type_str.join(", ")));
     }
 
@@ -338,13 +325,14 @@ pub fn format_human(knowledge: &FileKnowledge) -> String {
         lines.push("Known Gotchas".to_string());
         lines.push("-------------".to_string());
         for (i, gotcha) in knowledge.gotchas.iter().enumerate() {
-            lines.push(format!(
-                "{}. {}",
-                i + 1,
-                gotcha.pattern
-            ));
+            lines.push(format!("{}. {}", i + 1, gotcha.pattern));
             if !gotcha.error_fingerprints.is_empty() {
-                let fps: Vec<&str> = gotcha.error_fingerprints.iter().map(|s| s.as_str()).take(3).collect();
+                let fps: Vec<&str> = gotcha
+                    .error_fingerprints
+                    .iter()
+                    .map(|s| s.as_str())
+                    .take(3)
+                    .collect();
                 lines.push(format!("   Errors: {}", fps.join(", ")));
             }
             if !gotcha.resolution_sessions.is_empty() {
@@ -410,7 +398,10 @@ mod tests {
 
     #[test]
     fn test_truncate_fingerprint() {
-        assert_eq!(truncate_fingerprint("ErrorType:short", 80), "ErrorType:short");
+        assert_eq!(
+            truncate_fingerprint("ErrorType:short", 80),
+            "ErrorType:short"
+        );
         assert!(truncate_fingerprint(
             "SomeVeryLongErrorType:this is a very long message that should be truncated",
             40
@@ -443,10 +434,7 @@ mod tests {
             file_path: "src/main.rs".to_string(),
             session_count: 10,
             success_rate: 80.0,
-            problem_types: HashMap::from([
-                ("debug".to_string(), 5),
-                ("feature".to_string(), 3),
-            ]),
+            problem_types: HashMap::from([("debug".to_string(), 5), ("feature".to_string(), 3)]),
             gotchas: vec![KnownGotcha {
                 pattern: "Rejection window: 3 attempts without resolution".to_string(),
                 error_fingerprints: vec!["CompileError:missing import".to_string()],
@@ -514,7 +502,8 @@ mod tests {
         let now = Utc::now();
 
         // Session 1: debug session touching src/auth.rs
-        let mut manifest1 = SessionManifest::new("claude-code/s1".to_string(), "claude-code".to_string());
+        let mut manifest1 =
+            SessionManifest::new("claude-code/s1".to_string(), "claude-code".to_string());
         manifest1.project = Some("/proj".to_string());
         manifest1.started = now;
         manifest1.turns = 10;
@@ -522,37 +511,59 @@ mod tests {
         manifest1.model = Some("claude-sonnet-4".to_string());
 
         let events1 = vec![
-            Event::new(now, "claude-code/s1".into(), "claude-code".into(), Role::User, "fix the auth bug".into())
-                .with_file_paths(vec!["src/auth.rs".to_string()])
-                .with_error_fingerprints(vec!["AuthError:invalid token".to_string()]),
-            Event::new(now, "claude-code/s1".into(), "claude-code".into(), Role::Assistant, "fixed it".into())
-                .with_file_paths(vec!["src/auth.rs".to_string()]),
+            Event::new(
+                now,
+                "claude-code/s1".into(),
+                "claude-code".into(),
+                Role::User,
+                "fix the auth bug".into(),
+            )
+            .with_file_paths(vec!["src/auth.rs".to_string()])
+            .with_error_fingerprints(vec!["AuthError:invalid token".to_string()]),
+            Event::new(
+                now,
+                "claude-code/s1".into(),
+                "claude-code".into(),
+                Role::Assistant,
+                "fixed it".into(),
+            )
+            .with_file_paths(vec!["src/auth.rs".to_string()]),
         ];
 
         // Session 2: another debug session touching src/auth.rs
-        let mut manifest2 = SessionManifest::new("claude-code/s2".to_string(), "claude-code".to_string());
+        let mut manifest2 =
+            SessionManifest::new("claude-code/s2".to_string(), "claude-code".to_string());
         manifest2.project = Some("/proj".to_string());
         manifest2.started = now;
         manifest2.turns = 5;
         manifest2.outcome = Some("failure".to_string());
 
-        let events2 = vec![
-            Event::new(now, "claude-code/s2".into(), "claude-code".into(), Role::User, "fix auth again".into())
-                .with_file_paths(vec!["src/auth.rs".to_string()])
-                .with_error_fingerprints(vec!["AuthError:invalid token".to_string()]),
-        ];
+        let events2 = vec![Event::new(
+            now,
+            "claude-code/s2".into(),
+            "claude-code".into(),
+            Role::User,
+            "fix auth again".into(),
+        )
+        .with_file_paths(vec!["src/auth.rs".to_string()])
+        .with_error_fingerprints(vec!["AuthError:invalid token".to_string()])];
 
         // Session 3: session touching a different file (should not appear)
-        let mut manifest3 = SessionManifest::new("claude-code/s3".to_string(), "claude-code".to_string());
+        let mut manifest3 =
+            SessionManifest::new("claude-code/s3".to_string(), "claude-code".to_string());
         manifest3.project = Some("/proj".to_string());
         manifest3.started = now;
         manifest3.turns = 3;
         manifest3.outcome = Some("success".to_string());
 
-        let events3 = vec![
-            Event::new(now, "claude-code/s3".into(), "claude-code".into(), Role::User, "add feature".into())
-                .with_file_paths(vec!["src/utils.rs".to_string()]),
-        ];
+        let events3 = vec![Event::new(
+            now,
+            "claude-code/s3".into(),
+            "claude-code".into(),
+            Role::User,
+            "add feature".into(),
+        )
+        .with_file_paths(vec!["src/utils.rs".to_string()])];
 
         // Build index with all sessions
         let mut manager = IndexManager::open(data_dir).unwrap();
@@ -569,7 +580,10 @@ mod tests {
         assert_eq!(knowledge.session_count, 2); // s1 and s2, not s3
         assert_eq!(knowledge.agents, vec!["claude-code"]);
         assert_eq!(knowledge.error_patterns.len(), 1);
-        assert_eq!(knowledge.error_patterns[0].fingerprint, "AuthError:invalid token");
+        assert_eq!(
+            knowledge.error_patterns[0].fingerprint,
+            "AuthError:invalid token"
+        );
         assert_eq!(knowledge.error_patterns[0].session_count, 2);
 
         // Success rate: 1 success out of 2 = 50%
@@ -596,17 +610,22 @@ mod tests {
         let now = Utc::now();
 
         // Create a session
-        let mut manifest = SessionManifest::new("claude-code/s1".to_string(), "claude-code".to_string());
+        let mut manifest =
+            SessionManifest::new("claude-code/s1".to_string(), "claude-code".to_string());
         manifest.project = Some("/proj".to_string());
         manifest.started = now;
         manifest.turns = 5;
         manifest.outcome = Some("failure".to_string());
 
-        let events = vec![
-            Event::new(now, "claude-code/s1".into(), "claude-code".into(), Role::User, "fix bug".into())
-                .with_file_paths(vec!["src/db.rs".to_string()])
-                .with_error_fingerprints(vec!["DBError:connection pool exhausted".to_string()]),
-        ];
+        let events = vec![Event::new(
+            now,
+            "claude-code/s1".into(),
+            "claude-code".into(),
+            Role::User,
+            "fix bug".into(),
+        )
+        .with_file_paths(vec!["src/db.rs".to_string()])
+        .with_error_fingerprints(vec!["DBError:connection pool exhausted".to_string()])];
 
         // Build index
         let mut manager = IndexManager::open(data_dir).unwrap();
@@ -634,7 +653,9 @@ mod tests {
         assert_eq!(knowledge.session_count, 1);
         assert_eq!(knowledge.gotchas.len(), 1);
         assert!(knowledge.gotchas[0].pattern.contains("Rejection window"));
-        assert!(knowledge.gotchas[0].error_fingerprints.contains(&"DBError:connection pool exhausted".to_string()));
+        assert!(knowledge.gotchas[0]
+            .error_fingerprints
+            .contains(&"DBError:connection pool exhausted".to_string()));
     }
 
     #[test]
@@ -655,10 +676,14 @@ mod tests {
         manifest.started = now;
         manifest.turns = 3;
 
-        let events = vec![
-            Event::new(now, "test/s1".into(), "test".into(), Role::User, "fix bug".into())
-                .with_file_paths(vec!["src/main.rs".to_string()]),
-        ];
+        let events = vec![Event::new(
+            now,
+            "test/s1".into(),
+            "test".into(),
+            Role::User,
+            "fix bug".into(),
+        )
+        .with_file_paths(vec!["src/main.rs".to_string()])];
 
         let mut manager = IndexManager::open(data_dir).unwrap();
         manager.begin_write().unwrap();

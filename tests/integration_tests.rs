@@ -13,12 +13,12 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use agentscribe::enrichment::{detect_outcome, enrich_events, extract_solution, generate_summary};
 use agentscribe::enrichment::outcome::OutcomeConfig;
+use agentscribe::enrichment::{detect_outcome, enrich_events, extract_solution, generate_summary};
 use agentscribe::event::{Event, Role, SessionManifest};
 use agentscribe::plugin::{
-    FilePathExtraction, LogFormat, ModelDetection, Parser, Plugin, PluginMeta,
-    ProjectDetection, SessionDetection, SessionIdSource, Source, TreeConfig,
+    FilePathExtraction, LogFormat, ModelDetection, Parser, Plugin, PluginMeta, ProjectDetection,
+    SessionDetection, SessionIdSource, Source, TreeConfig,
 };
 use agentscribe::scraper::Scraper;
 use agentscribe::search::{execute_search, SearchOptions, SortOrder};
@@ -309,7 +309,11 @@ fn test_scrape_claude_code_sessions() {
         result.sessions_scraped, result.errors
     );
     assert_eq!(result.files_processed, 5);
-    assert!(result.errors.is_empty(), "unexpected scrape errors: {:?}", result.errors);
+    assert!(
+        result.errors.is_empty(),
+        "unexpected scrape errors: {:?}",
+        result.errors
+    );
 }
 
 /// Verify each Claude Code session is written with the expected events.
@@ -331,12 +335,10 @@ fn test_claude_code_session_event_counts() {
 
     // Each session should have at least one event
     for session_id in &sessions {
-        let events = scraper.read_session(session_id).expect("read session failed");
-        assert!(
-            !events.is_empty(),
-            "session {} has no events",
-            session_id
-        );
+        let events = scraper
+            .read_session(session_id)
+            .expect("read session failed");
+        assert!(!events.is_empty(), "session {} has no events", session_id);
     }
 }
 
@@ -363,7 +365,8 @@ fn test_scrape_aider_sessions() {
     assert!(
         result.sessions_scraped >= 1,
         "expected at least 1 aider session, got {} (errors: {:?})",
-        result.sessions_scraped, result.errors
+        result.sessions_scraped,
+        result.errors
     );
     assert_eq!(result.files_processed, 2);
 }
@@ -387,7 +390,11 @@ fn test_scrape_codex_sessions() {
         "expected 2 codex sessions, got {} (errors: {:?})",
         result.sessions_scraped, result.errors
     );
-    assert!(result.errors.is_empty(), "unexpected errors: {:?}", result.errors);
+    assert!(
+        result.errors.is_empty(),
+        "unexpected errors: {:?}",
+        result.errors
+    );
 }
 
 /// OpenCode JSON-tree parser correctly loads sessions from the tree structure.
@@ -407,8 +414,7 @@ fn test_scrape_opencode_sessions() {
     let config = plugin.source.tree.as_ref().expect("tree config required");
 
     // Load sessions directly from the tree structure
-    let sessions = JsonTreeParser::load_tree(&fixtures, config)
-        .expect("failed to load tree");
+    let sessions = JsonTreeParser::load_tree(&fixtures, config).expect("failed to load tree");
 
     // Should find session1 and session2
     assert!(
@@ -418,7 +424,8 @@ fn test_scrape_opencode_sessions() {
     );
 
     // Parse events to verify the full tree is wired correctly
-    let events = JsonTreeParser.parse(&fixtures, &plugin)
+    let events = JsonTreeParser
+        .parse(&fixtures, &plugin)
         .expect("failed to parse tree");
     assert!(
         !events.is_empty(),
@@ -582,8 +589,12 @@ fn test_search_agent_filter() {
     let aider_glob = format!("{}/*.md", fixtures.join("aider").display());
 
     let mut scraper = Scraper::new(data_dir.path().to_path_buf()).expect("scraper init");
-    scraper.plugin_manager_mut().add_plugin(jsonl_plugin("claude-code", &cc_glob));
-    scraper.plugin_manager_mut().add_plugin(aider_plugin(&aider_glob));
+    scraper
+        .plugin_manager_mut()
+        .add_plugin(jsonl_plugin("claude-code", &cc_glob));
+    scraper
+        .plugin_manager_mut()
+        .add_plugin(aider_plugin(&aider_glob));
     scraper.scrape_all().expect("scrape_all failed");
 
     let opts = SearchOptions {
@@ -663,7 +674,11 @@ fn test_search_outcome_filter() {
     let output = execute_search(data_dir.path(), &opts).expect("search failed");
     for result in &output.results {
         if let Some(ref outcome) = result.outcome {
-            assert_eq!(outcome, "success", "outcome filter returned non-success: {}", outcome);
+            assert_eq!(
+                outcome, "success",
+                "outcome filter returned non-success: {}",
+                outcome
+            );
         }
     }
 }
@@ -687,7 +702,10 @@ fn test_outcome_detection_success_session() {
         outcome,
         agentscribe::enrichment::outcome::Outcome::Success,
         "postgres-debug session should be Success (events: {:?})",
-        events.iter().map(|e| (e.role, &e.content)).collect::<Vec<_>>()
+        events
+            .iter()
+            .map(|e| (e.role, &e.content))
+            .collect::<Vec<_>>()
     );
 }
 
@@ -718,7 +736,10 @@ fn test_outcome_detection_abandoned_session() {
         .join("claude-code")
         .join("session-abandoned.jsonl");
     let events = load_events_from_jsonl(&path);
-    assert!(!events.is_empty(), "no events loaded from abandoned session");
+    assert!(
+        !events.is_empty(),
+        "no events loaded from abandoned session"
+    );
 
     let manifest = make_manifest("claude-code/session-abandoned", "claude-code", &events);
     let config = OutcomeConfig::default();
@@ -749,11 +770,7 @@ fn test_summary_generation_not_empty() {
     let summary = generate_summary(&events, &manifest);
     assert!(!summary.is_empty(), "summary should not be empty");
     // Summary should contain something from the first user prompt
-    assert!(
-        summary.len() >= 10,
-        "summary too short: {:?}",
-        summary
-    );
+    assert!(summary.len() >= 10, "summary too short: {:?}", summary);
 }
 
 /// Successful session with tools → solution extraction runs without panic.
@@ -775,7 +792,13 @@ fn test_solution_extraction_success_session() {
 
     // Debug: print events to understand what's loaded
     for (i, e) in events.iter().enumerate() {
-        eprintln!("event[{}]: role={:?} tool={:?} content={:?}", i, e.role, e.tool, &e.content[..e.content.len().min(60)]);
+        eprintln!(
+            "event[{}]: role={:?} tool={:?} content={:?}",
+            i,
+            e.role,
+            e.tool,
+            &e.content[..e.content.len().min(60)]
+        );
     }
 
     let solution = extract_solution(&events);
@@ -800,7 +823,8 @@ fn test_error_fingerprinting_normalization() {
             "test/1".to_string(),
             "test".to_string(),
             Role::ToolResult,
-            "error[E0425]: cannot find value `CONFIG_PATH` in this scope\n --> src/main.rs:42:15".to_string(),
+            "error[E0425]: cannot find value `CONFIG_PATH` in this scope\n --> src/main.rs:42:15"
+                .to_string(),
         ),
         Event::new(
             Utc::now(),
@@ -822,7 +846,10 @@ fn test_error_fingerprinting_normalization() {
 
     // Events with error content should have fingerprints
     let has_fingerprints = enriched.iter().any(|e| !e.error_fingerprints.is_empty());
-    assert!(has_fingerprints, "no error fingerprints extracted from error events");
+    assert!(
+        has_fingerprints,
+        "no error fingerprints extracted from error events"
+    );
 
     // Verify fingerprints are stable (no path/host variables leak through)
     for event in &enriched {
@@ -1143,7 +1170,9 @@ fn test_unicode_session_round_trip() {
     let all_content: String = events.iter().map(|e| e.content.as_str()).collect();
 
     assert!(
-        all_content.contains("日本語") || all_content.contains("Arabic") || all_content.contains("中文"),
+        all_content.contains("日本語")
+            || all_content.contains("Arabic")
+            || all_content.contains("中文"),
         "Unicode content not preserved in round-trip: {:?}",
         &all_content[..all_content.len().min(200)]
     );
@@ -1163,7 +1192,11 @@ fn test_truncated_file_does_not_panic() {
 
     // Must not panic — result may have errors for the truncated line, but should not crash
     let result = scraper.scrape_plugin(&plugin);
-    assert!(result.is_ok(), "scraper panicked on truncated file: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "scraper panicked on truncated file: {:?}",
+        result.err()
+    );
 
     // The 2 valid lines before the truncation should produce a session
     if let Ok(r) = result {
@@ -1187,7 +1220,9 @@ fn test_empty_session_skipped() {
     let plugin = jsonl_plugin("claude-code", &glob);
     scraper.plugin_manager_mut().add_plugin(plugin.clone());
 
-    let result = scraper.scrape_plugin(&plugin).expect("scraper should not fail on empty file");
+    let result = scraper
+        .scrape_plugin(&plugin)
+        .expect("scraper should not fail on empty file");
     assert_eq!(
         result.sessions_scraped, 0,
         "empty file should produce 0 sessions, got {}",
@@ -1227,11 +1262,19 @@ fn test_incremental_no_duplicate_sessions() {
 
     // First scrape
     let result1 = scraper.scrape_plugin(&plugin).expect("first scrape failed");
-    assert_eq!(result1.sessions_scraped, 1, "first scrape should find 1 session");
+    assert_eq!(
+        result1.sessions_scraped, 1,
+        "first scrape should find 1 session"
+    );
 
     // Second scrape of same file — offset unchanged, should skip
-    let result2 = scraper.scrape_plugin(&plugin).expect("second scrape failed");
-    assert_eq!(result2.sessions_scraped, 0, "second scrape should find 0 new sessions (incremental)");
+    let result2 = scraper
+        .scrape_plugin(&plugin)
+        .expect("second scrape failed");
+    assert_eq!(
+        result2.sessions_scraped, 0,
+        "second scrape should find 0 new sessions (incremental)"
+    );
     assert_eq!(result2.files_skipped, 1, "unchanged file should be skipped");
 }
 
@@ -1280,11 +1323,14 @@ fn test_incremental_append_detected() {
     file.write_all(line2.as_bytes()).unwrap();
 
     // Second scrape should detect the modification and re-scrape
-    let result2 = scraper.scrape_plugin(&plugin).expect("second scrape failed");
+    let result2 = scraper
+        .scrape_plugin(&plugin)
+        .expect("second scrape failed");
     assert!(
         result2.sessions_scraped >= 1 || result2.files_processed >= 1,
         "appended file should be re-processed (scraped={}, processed={})",
-        result2.sessions_scraped, result2.files_processed
+        result2.sessions_scraped,
+        result2.files_processed
     );
 }
 
@@ -1306,7 +1352,11 @@ fn test_codex_session_content_preserved() {
     assert!(!sessions.is_empty());
 
     let events = scraper.read_session(&sessions[0]).expect("read session");
-    let all_content: String = events.iter().map(|e| e.content.as_str()).collect::<Vec<_>>().join(" ");
+    let all_content: String = events
+        .iter()
+        .map(|e| e.content.as_str())
+        .collect::<Vec<_>>()
+        .join(" ");
 
     // The rollout-success fixture has "pagination" as a key topic
     assert!(
@@ -1335,7 +1385,10 @@ fn test_aider_session_project_path_set() {
 
     // At least one event should have a project path set
     let has_project = events.iter().any(|e| e.project.is_some());
-    assert!(has_project, "aider sessions should have project path from parent dir");
+    assert!(
+        has_project,
+        "aider sessions should have project path from parent dir"
+    );
 }
 
 /// Scrape result events count equals sum across sessions.

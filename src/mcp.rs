@@ -740,28 +740,17 @@ mod tests {
     #[test]
     fn test_mcp_initialize() {
         with_mcp_server(|stream| {
-            let resp = rpc_call(
-                &mut stream.try_clone().unwrap(),
-                "initialize",
-                json!({}),
-            );
+            let resp = rpc_call(&mut stream.try_clone().unwrap(), "initialize", json!({}));
             assert_eq!(resp["jsonrpc"], "2.0");
             assert_eq!(resp["result"]["serverInfo"]["name"], "agentscribe");
-            assert_eq!(
-                resp["result"]["protocolVersion"],
-                "2024-11-05"
-            );
+            assert_eq!(resp["result"]["protocolVersion"], "2024-11-05");
         });
     }
 
     #[test]
     fn test_mcp_tools_list() {
         with_mcp_server(|stream| {
-            let resp = rpc_call(
-                &mut stream.try_clone().unwrap(),
-                "tools/list",
-                json!({}),
-            );
+            let resp = rpc_call(&mut stream.try_clone().unwrap(), "tools/list", json!({}));
             let tools = resp["result"]["tools"].as_array().unwrap();
             let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
             assert!(names.contains(&"agentscribe_search"));
@@ -876,11 +865,17 @@ mod tests {
             tokio::spawn(run_mcp_server(data_dir, sp, shutdown_rx));
             // Wait for server to start
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-            assert!(socket_path.exists(), "socket should exist while server is running");
+            assert!(
+                socket_path.exists(),
+                "socket should exist while server is running"
+            );
             // Trigger shutdown
             shutdown_tx.send(()).unwrap();
             tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-            assert!(!socket_path.exists(), "socket should be removed after shutdown");
+            assert!(
+                !socket_path.exists(),
+                "socket should be removed after shutdown"
+            );
         });
     }
 
