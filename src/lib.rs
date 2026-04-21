@@ -16,6 +16,7 @@ pub mod index;
 pub mod mcp;
 pub mod parser;
 pub mod plugin;
+pub mod pulse_report;
 pub mod recurring;
 pub mod rules;
 pub mod scraper;

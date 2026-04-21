@@ -1519,11 +1519,7 @@ fn test_fuzzy_search_finds_misspelled_term() {
 
     // The top result should mention postgres-related content
     let top = &output.results[0];
-    let content = top
-        .snippet
-        .as_deref()
-        .unwrap_or("")
-        .to_lowercase();
+    let content = top.snippet.as_deref().unwrap_or("").to_lowercase();
     assert!(
         content.contains("postgres") || content.contains("connection"),
         "top result should relate to postgres debugging, got: {:?}",
@@ -1634,7 +1630,8 @@ fn test_token_budget_respects_limit() {
     assert!(
         total_tokens <= budget,
         "total tokens ({}) exceeds budget ({})",
-        total_tokens, budget
+        total_tokens,
+        budget
     );
 
     // Each result should have a token_count > 0
