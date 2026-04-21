@@ -550,16 +550,16 @@ fn test_daemon_graceful_shutdown_sigterm() {
 
     // stop() should fail gracefully when no daemon is running
     let result = daemon::stop(&data_dir);
-    assert!(result.is_err(), "stop should fail when no daemon is running");
+    assert!(
+        result.is_err(),
+        "stop should fail when no daemon is running"
+    );
 
     // Write a PID for a process that doesn't exist → stop cleans up stale PID
     let pid_file = data_dir.join("agentscribe.pid");
     fs::write(&pid_file, "999999").unwrap();
     let result = daemon::stop(&data_dir);
-    assert!(
-        result.is_err(),
-        "stop should fail for non-existent process"
-    );
+    assert!(result.is_err(), "stop should fail for non-existent process");
     assert!(
         !pid_file.exists(),
         "stale PID file should be cleaned up by stop"
@@ -579,7 +579,10 @@ fn test_daemon_pid_file_management() {
     let my_pid = std::process::id();
     fs::write(&pid_file, my_pid.to_string()).unwrap();
     let info = daemon::status(dir.path()).unwrap();
-    assert!(info.running, "our own process should be detectable as running");
+    assert!(
+        info.running,
+        "our own process should be detectable as running"
+    );
     assert_eq!(info.pid, Some(my_pid));
 
     // Corrupted PID file → not running

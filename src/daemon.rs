@@ -1516,7 +1516,10 @@ mod tests {
         // Record once, artificially age it
         d.pending.insert(
             path.clone(),
-            ("agent".to_string(), Instant::now() - Duration::from_secs(10)),
+            (
+                "agent".to_string(),
+                Instant::now() - Duration::from_secs(10),
+            ),
         );
 
         // Should be ready with a 5s debounce

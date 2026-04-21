@@ -10,11 +10,56 @@ use regex::Regex;
 
 /// Known file extensions that suggest a file path
 static FILE_EXTENSIONS: &[&str] = &[
-    "rs", "py", "js", "ts", "tsx", "jsx", "go", "java", "c", "cpp", "h", "hpp", "cs", "php",
-    "rb", "swift", "kt", "scala", "sh", "bash", "zsh", "fish", "toml", "yaml", "yml", "json",
-    "xml", "html", "css", "scss", "sass", "md", "txt", "rst", "adoc", "sql", "db", "sqlite",
-    "db3", "lock", "sum", "mod", "gitignore", "dockerignore", "env", "dockerfile", "makefile",
-    "cmakelists", "gradle", "pom",
+    "rs",
+    "py",
+    "js",
+    "ts",
+    "tsx",
+    "jsx",
+    "go",
+    "java",
+    "c",
+    "cpp",
+    "h",
+    "hpp",
+    "cs",
+    "php",
+    "rb",
+    "swift",
+    "kt",
+    "scala",
+    "sh",
+    "bash",
+    "zsh",
+    "fish",
+    "toml",
+    "yaml",
+    "yml",
+    "json",
+    "xml",
+    "html",
+    "css",
+    "scss",
+    "sass",
+    "md",
+    "txt",
+    "rst",
+    "adoc",
+    "sql",
+    "db",
+    "sqlite",
+    "db3",
+    "lock",
+    "sum",
+    "mod",
+    "gitignore",
+    "dockerignore",
+    "env",
+    "dockerfile",
+    "makefile",
+    "cmakelists",
+    "gradle",
+    "pom",
 ];
 
 // Compiled-once regex patterns
@@ -35,8 +80,9 @@ static PATH_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?:^|\s)([~/][^\s,\)]+|/\S+)").unwrap());
 
 // Relative path: e.g. "src/db/pool.rs", "tests/fixtures/foo.json"
-static REL_PATH_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?:^|\s)((?:\w[\w\-]*/)+[\w\-]+\.[a-z]{1,8})(?:\s|$|,|\))").unwrap());
+static REL_PATH_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?:^|\s)((?:\w[\w\-]*/)+[\w\-]+\.[a-z]{1,8})(?:\s|$|,|\))").unwrap()
+});
 
 /// File path extractor
 pub struct FilePathExtractor;
@@ -116,10 +162,7 @@ impl FilePathExtractor {
 
     /// Extract file paths from structured tool_call JSON
     #[allow(dead_code)]
-    pub fn extract_from_tool_call(
-        tool_call: &serde_json::Value,
-        field_path: &str,
-    ) -> Vec<String> {
+    pub fn extract_from_tool_call(tool_call: &serde_json::Value, field_path: &str) -> Vec<String> {
         use crate::parser::extract_field;
         let mut paths = Vec::new();
 
@@ -157,7 +200,9 @@ impl FilePathExtractor {
         if s.starts_with("~/")
             || s.starts_with("./")
             || s.starts_with("../")
-            || (s.starts_with('/') && s.len() > 1 && s.chars().nth(1).is_some_and(|c| c.is_alphanumeric()))
+            || (s.starts_with('/')
+                && s.len() > 1
+                && s.chars().nth(1).is_some_and(|c| c.is_alphanumeric()))
         {
             return true;
         }
@@ -223,11 +268,17 @@ Use ./scripts/setup.sh to run."#;
     #[test]
     fn test_looks_like_file_path() {
         assert!(FilePathExtractor::looks_like_file_path("src/main.rs"));
-        assert!(FilePathExtractor::looks_like_file_path("/home/user/file.py"));
-        assert!(FilePathExtractor::looks_like_file_path("~/project/config.toml"));
+        assert!(FilePathExtractor::looks_like_file_path(
+            "/home/user/file.py"
+        ));
+        assert!(FilePathExtractor::looks_like_file_path(
+            "~/project/config.toml"
+        ));
         assert!(FilePathExtractor::looks_like_file_path("./script.sh"));
 
-        assert!(!FilePathExtractor::looks_like_file_path("https://example.com"));
+        assert!(!FilePathExtractor::looks_like_file_path(
+            "https://example.com"
+        ));
         assert!(!FilePathExtractor::looks_like_file_path("not a path"));
     }
 
@@ -246,7 +297,11 @@ Use ./scripts/setup.sh to run."#;
         // Bare paths like "src/db/pool.rs" should be extracted
         let paths = FilePathExtractor::extract_from_content("src/db/pool.rs");
         let has_pool = paths.iter().any(|p| p.contains("pool.rs"));
-        assert!(has_pool, "expected pool.rs in extracted paths, got: {:?}", paths);
+        assert!(
+            has_pool,
+            "expected pool.rs in extracted paths, got: {:?}",
+            paths
+        );
     }
 
     #[test]
