@@ -80,6 +80,7 @@ fn make_event(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn make_test_session(
     session_id: &str,
     agent: &str,
@@ -556,7 +557,7 @@ fn test_rules_generates_claude_md() {
     // Write sessions with tool usage patterns
     for i in 0..5 {
         let session_id = format!("test-agent/s{}", i);
-        let events = vec![
+        let events = [
             Event::new(now, session_id.clone(), "test-agent".into(), Role::User, "fix this".into())
                 .with_project(Some(project_path.clone())),
             Event::new(now, session_id.clone(), "test-agent".into(), Role::ToolCall, "cargo build".into())
@@ -1008,7 +1009,7 @@ fn test_file_knowledge_with_gotchas() {
     assert_eq!(knowledge.session_count, 1);
     assert_eq!(knowledge.gotchas.len(), 1);
     assert!(knowledge.gotchas[0].pattern.contains("Rejection window"));
-    assert!(knowledge.error_patterns.len() >= 1);
+    assert!(!knowledge.error_patterns.is_empty());
 
     let human = agentscribe::file_knowledge::format_human(&knowledge);
     assert!(human.contains("Known Gotchas"));
