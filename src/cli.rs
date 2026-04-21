@@ -995,7 +995,7 @@ fn run_index(action: IndexAction) -> Result<()> {
 fn run_index_rebuild(
     data_dir: &std::path::Path,
     plugin_filter: Option<&str>,
-    _heap_size: usize,
+    heap_size: usize,
 ) -> Result<()> {
     let sessions_dir = data_dir.join("sessions");
 
@@ -1012,6 +1012,7 @@ fn run_index_rebuild(
     }
 
     let mut manager = IndexManager::open(data_dir)?;
+    manager.set_heap_size(heap_size);
     manager.begin_write()?;
 
     let mut total_docs = 0usize;
@@ -1415,7 +1416,7 @@ fn run_status(json: bool, plugin_filter: Option<String>) -> Result<()> {
                 format_bytes(index_stats.size_bytes)
             );
         } else {
-            println!("\nIndex: not built (run 'agentscribe index build')");
+            println!("\nIndex: not built (run 'agentscribe index rebuild')");
         }
 
         // Scrape state

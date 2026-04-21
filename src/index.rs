@@ -261,6 +261,132 @@ fn build_content(events: &[Event]) -> String {
     trim_middle(concatenated)
 }
 
+/// Classify a session into a type based on content signals.
+///
+/// Uses keyword matching on the concatenated content to assign one of:
+/// debug, feature, refactor, investigation, configuration, documentation.
+fn classify_session_type(events: &[Event], manifest: &SessionManifest) -> &'static str {
+    let content = build_content(events);
+    let lower = content.to_lowercase();
+    let lower_slice = lower.as_str();
+
+    let debug_signals = [
+        "error",
+        "bug",
+        "fix",
+        "crash",
+        "exception",
+        "traceback",
+        "panic",
+        "segfault",
+        "stack trace",
+        "debug",
+    ];
+    let feature_signals = [
+        "implement",
+        "add feature",
+        "create new",
+        "build ",
+        "new module",
+        "new function",
+        "new endpoint",
+    ];
+    let refactor_signals = [
+        "refactor",
+        "cleanup",
+        "clean up",
+        "rename",
+        "reorganize",
+        "simplify",
+        "extract method",
+    ];
+    let config_signals = [
+        "config",
+        "settings",
+        "docker-compose",
+        "yaml",
+        "kubernetes",
+        "deployment",
+        "ci/cd",
+        "github actions",
+    ];
+    let docs_signals = [
+        "readme",
+        "documentation",
+        "docs",
+        "comment",
+        "docstring",
+        "changelog",
+    ];
+    let investigate_signals = [
+        "investigate",
+        "explore",
+        "understand",
+        "why does",
+        "what causes",
+        "how does",
+    ];
+
+    let mut scores: [usize; 6] = [0; 6]; // debug, feature, refactor, config, docs, investigate
+
+    for s in &debug_signals {
+        if lower_slice.contains(s) {
+            scores[0] += 2;
+        }
+    }
+    for s in &feature_signals {
+        if lower_slice.contains(s) {
+            scores[1] += 1;
+        }
+    }
+    for s in &refactor_signals {
+        if lower_slice.contains(s) {
+            scores[2] += 1;
+        }
+    }
+    for s in &config_signals {
+        if lower_slice.contains(s) {
+            scores[3] += 1;
+        }
+    }
+    for s in &docs_signals {
+        if lower_slice.contains(s) {
+            scores[4] += 1;
+        }
+    }
+    for s in &investigate_signals {
+        if lower_slice.contains(s) {
+            scores[5] += 1;
+        }
+    }
+
+    // Outcome-based heuristics: unresolved errors → debug
+    if manifest.outcome.as_deref() == Some("unresolved") {
+        scores[0] += 5;
+    }
+
+    let types = [
+        "debug",
+        "feature",
+        "refactor",
+        "configuration",
+        "documentation",
+        "investigation",
+    ];
+    let max_idx = scores
+        .iter()
+        .enumerate()
+        .max_by_key(|(_, &s)| s)
+        .map(|(i, _)| i)
+        .unwrap_or(0);
+
+    if scores[max_idx] == 0 {
+        "investigation"
+    } else {
+        types[max_idx]
+    }
+}
+
 /// Build a Tantivy document for a session.
 ///
 /// Takes a list of events belonging to the session and the session manifest,
@@ -327,6 +453,10 @@ pub fn build_session_document(
 
     // Doc type
     doc.add_text(fields.doc_type, "session");
+
+    // Session type classification
+    let session_type = classify_session_type(events, manifest);
+    doc.add_text(fields.session_type, session_type);
 
     // Model
     if let Some(ref model) = manifest.model {
@@ -444,6 +574,7 @@ pub struct IndexManager {
     index: tantivy::Index,
     fields: IndexFields,
     writer: Option<tantivy::IndexWriter>,
+    heap_size: usize,
 }
 
 impl IndexManager {
@@ -470,7 +601,13 @@ impl IndexManager {
             index,
             fields,
             writer: None,
+            heap_size: 50_000_000,
         })
+    }
+
+    /// Set the Tantivy writer heap size in bytes.
+    pub fn set_heap_size(&mut self, mb: usize) {
+        self.heap_size = mb * 1_000_000;
     }
 
     /// Begin a write session. Idempotent — no-op if writer is already active.
@@ -483,7 +620,7 @@ impl IndexManager {
             return Ok(());
         }
 
-        let writer = self.index.writer(50_000_000).map_err(|e| {
+        let writer = self.index.writer(self.heap_size).map_err(|e| {
             AgentScribeError::DataDir(format!("Failed to create index writer: {}", e))
         })?;
         self.writer = Some(writer);
