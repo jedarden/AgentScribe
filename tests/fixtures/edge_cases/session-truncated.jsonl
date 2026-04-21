@@ -1,0 +1,3 @@
+{"type": "user", "uuid": "u1", "sessionId": "session-truncated", "timestamp": "2024-03-10T09:00:00Z", "cwd": "/home/user/project", "version": "1.3.0", "message": {"role": "user", "content": "Fix the memory leak in the event loop"}}
+{"type": "assistant", "uuid": "u2", "sessionId": "session-truncated", "timestamp": "2024-03-10T09:00:30Z", "cwd": "/home/user/project", "message": {"role": "assistant", "content": "I'll investigate the event loop for memory leaks."}}
+{"type": "tool_call", "uuid": "u3", "sessionId": "session-truncated", "timestamp": "2024-03-10T09:00:45Z", "cwd": "/home/user/project", "message": {"role": "tool_call", "content": "src/event_loop.rs", "tool": "Read", "input": {"file_path": "src/eve

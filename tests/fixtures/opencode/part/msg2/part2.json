@@ -1,0 +1,1 @@
+{"id": "part2", "messageId": "msg2", "type": "text", "text": "For binary files, use git checkout --ours or --theirs to choose a version, then git add the file to mark it resolved."}

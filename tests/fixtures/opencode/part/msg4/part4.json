@@ -1,0 +1,1 @@
+{"id": "part4", "messageId": "msg4", "type": "text", "text": "I'll help you add Redis caching. Use the redis crate with connection pooling via deadpool-redis. Here's a basic cache wrapper:\n\n```rust\npub async fn get_cached<T>(cache: &Cache, key: &str) -> Option<T> {\n    cache.get(key).await.ok().flatten()\n}\n```"}

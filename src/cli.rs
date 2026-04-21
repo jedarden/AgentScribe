@@ -239,6 +239,15 @@ enum Commands {
         /// Shell to generate snippet for (bash, zsh, fish)
         shell: String,
     },
+    /// Show known gotchas, error patterns, and statistics for a file
+    FileKnowledge {
+        /// File path to analyze
+        file_path: String,
+
+        /// JSON output
+        #[arg(long)]
+        json: bool,
+    },
     /// Generate an activity digest summary
     Digest {
         /// Only include sessions after this timestamp (ISO 8601, or relative like 7d, 30d)
@@ -454,6 +463,7 @@ pub fn run() -> Result<()> {
             json,
         } => run_gc(older_than, dry_run, json),
         Commands::ShellHook { shell } => run_shell_hook(&shell),
+        Commands::FileKnowledge { file_path, json } => run_file_knowledge(&file_path, json),
         Commands::Digest {
             since,
             output,
@@ -1735,6 +1745,27 @@ fn run_gc(older_than: Option<String>, dry_run: bool, json: bool) -> Result<()> {
         println!("{}", serde_json::to_string_pretty(&result).unwrap());
     } else {
         print!("{}", crate::gc::format_human(&result));
+    }
+
+    Ok(())
+}
+
+/// Run file knowledge command
+fn run_file_knowledge(file_path: &str, json: bool) -> Result<()> {
+    let config = load_config()?;
+    let data_dir = config.data_dir()?;
+
+    if !data_dir.exists() {
+        eprintln!("AgentScribe not initialized. Run 'agentscribe config init' to set up.");
+        std::process::exit(1);
+    }
+
+    let knowledge = crate::file_knowledge::build_file_knowledge(&data_dir, file_path, &config)?;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&knowledge).unwrap());
+    } else {
+        print!("{}", crate::file_knowledge::format_human(&knowledge));
     }
 
     Ok(())
