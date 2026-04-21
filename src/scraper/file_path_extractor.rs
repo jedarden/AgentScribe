@@ -3,81 +3,40 @@
 //! Extracts file paths from both structured tool_call fields and content strings.
 
 use crate::event::Event;
-use crate::parser::extract_field;
 use crate::plugin::Plugin;
+use std::sync::LazyLock;
+
 use regex::Regex;
-use serde_json::Value;
-use std::path::{Path, PathBuf};
 
 /// Known file extensions that suggest a file path
 static FILE_EXTENSIONS: &[&str] = &[
-    "rs",
-    "py",
-    "js",
-    "ts",
-    "tsx",
-    "jsx",
-    "go",
-    "java",
-    "c",
-    "cpp",
-    "h",
-    "hpp",
-    "cs",
-    "php",
-    "rb",
-    "swift",
-    "kt",
-    "scala",
-    "sh",
-    "bash",
-    "zsh",
-    "fish",
-    "toml",
-    "yaml",
-    "yml",
-    "json",
-    "xml",
-    "html",
-    "css",
-    "scss",
-    "sass",
-    "md",
-    "txt",
-    "rst",
-    "adoc",
-    "sql",
-    "db",
-    "sqlite",
-    "db3",
-    "lock",
-    "sum",
-    "mod",
-    "gitignore",
-    "dockerignore",
-    "env",
-    "dockerfile",
-    "makefile",
-    "cmakelists",
-    "gradle",
-    "pom",
+    "rs", "py", "js", "ts", "tsx", "jsx", "go", "java", "c", "cpp", "h", "hpp", "cs", "php",
+    "rb", "swift", "kt", "scala", "sh", "bash", "zsh", "fish", "toml", "yaml", "yml", "json",
+    "xml", "html", "css", "scss", "sass", "md", "txt", "rst", "adoc", "sql", "db", "sqlite",
+    "db3", "lock", "sum", "mod", "gitignore", "dockerignore", "env", "dockerfile", "makefile",
+    "cmakelists", "gradle", "pom",
 ];
 
-/// Patterns that suggest a path component
-static PATH_PATTERNS: &[&str] = &[
-    r"^~/",               // Home directory
-    r"^/\w",              // Absolute path
-    r"^\./",              // Relative current dir
-    r"^\.\./",            // Relative parent dir
-    r"\.(?:[a-z]{1,6})$", // File extension
-];
+// Compiled-once regex patterns
+static QUOTED_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"["']([^"']+\.[a-z]{1,6})["']"#).unwrap());
 
-/// Patterns that are NOT file paths (false positives)
-static EXCLUSION_PATTERNS: &[&str] = &[
-    r"https?://",      // URLs
-    r"ftp://",         // FTP URLs
-    r"\x1b\[[0-9;]*m", // ANSI escape sequences
-];
+static COMMAND_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?:edit|cat|less|vim|nano|open|read|write|create|delete|modify)\s+([^\s]+\.[a-z]{1,6})",
+    )
+    .unwrap()
+});
+
+static BACKTICK_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"`([^`]+\.[a-z]{1,6})`").unwrap());
+
+static PATH_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?:^|\s)([~/][^\s,\)]+|/\S+)").unwrap());
+
+// Relative path: e.g. "src/db/pool.rs", "tests/fixtures/foo.json"
+static REL_PATH_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?:^|\s)((?:\w[\w\-]*/)+[\w\-]+\.[a-z]{1,8})(?:\s|$|,|\))").unwrap());
 
 /// File path extractor
 pub struct FilePathExtractor;
@@ -87,12 +46,14 @@ impl FilePathExtractor {
     pub fn extract_from_event(event: &Event, plugin: &Plugin) -> Vec<String> {
         let mut paths = Vec::new();
 
-        // 1. Structured extraction from tool_call fields (if available in source)
+        // 1. For ToolCall events, check if content itself is a file path
         if event.role == crate::event::Role::ToolCall {
             if let Some(ref config) = plugin.parser.file_paths {
                 if config.tool_call_field.is_some() {
-                    // This would need access to the original JSON source
-                    // For now, we'll rely on content regex extraction
+                    let trimmed = event.content.trim();
+                    if Self::looks_like_file_path(trimmed) {
+                        paths.push(trimmed.to_string());
+                    }
                 }
             }
         }
@@ -120,38 +81,31 @@ impl FilePathExtractor {
     pub fn extract_from_content(content: &str) -> Vec<String> {
         let mut paths = Vec::new();
 
-        // Pattern for quoted paths: "path/to/file.ext" or 'path/to/file.ext'
-        let quoted_re = Regex::new(r#"["']([^"']+\.[a-z]{1,6})["']"#).unwrap();
-
-        // Pattern for unquoted paths after common commands
-        // e.g., "edit file.rs", "cat /path/to/file"
-        let command_re = Regex::new(r"(?:edit|cat|less|vim|nano|open|read|write|create|delete|modify)\s+([^\s]+\.[a-z]{1,6})").unwrap();
-
-        // Pattern for paths in backticks
-        let backtick_re = Regex::new(r"`([^`]+\.[a-z]{1,6})`").unwrap();
-
-        // Pattern for bare paths starting with ./, ~/ or /
-        let path_re = Regex::new(r"(?:^|\s)([~/][^\s,\)]+|/\S+)").unwrap();
-
-        for captures in quoted_re.captures_iter(content) {
+        for captures in QUOTED_RE.captures_iter(content) {
             if let Some(path) = captures.get(1) {
                 paths.push(path.as_str().to_string());
             }
         }
 
-        for captures in command_re.captures_iter(content) {
+        for captures in COMMAND_RE.captures_iter(content) {
             if let Some(path) = captures.get(1) {
                 paths.push(path.as_str().to_string());
             }
         }
 
-        for captures in backtick_re.captures_iter(content) {
+        for captures in BACKTICK_RE.captures_iter(content) {
             if let Some(path) = captures.get(1) {
                 paths.push(path.as_str().to_string());
             }
         }
 
-        for captures in path_re.captures_iter(content) {
+        for captures in PATH_RE.captures_iter(content) {
+            if let Some(path) = captures.get(1) {
+                paths.push(path.as_str().to_string());
+            }
+        }
+
+        for captures in REL_PATH_RE.captures_iter(content) {
             if let Some(path) = captures.get(1) {
                 paths.push(path.as_str().to_string());
             }
@@ -162,7 +116,11 @@ impl FilePathExtractor {
 
     /// Extract file paths from structured tool_call JSON
     #[allow(dead_code)]
-    pub fn extract_from_tool_call(tool_call: &Value, field_path: &str) -> Vec<String> {
+    pub fn extract_from_tool_call(
+        tool_call: &serde_json::Value,
+        field_path: &str,
+    ) -> Vec<String> {
+        use crate::parser::extract_field;
         let mut paths = Vec::new();
 
         if let Some(field) = extract_field(tool_call, field_path) {
@@ -180,27 +138,31 @@ impl FilePathExtractor {
         paths
     }
 
-    /// Check if a string looks like a file path
+    /// Check if a string looks like a file path (no regex compilation).
     pub fn looks_like_file_path(s: &str) -> bool {
-        // Check exclusions first
-        for pattern in EXCLUSION_PATTERNS {
-            if let Ok(re) = Regex::new(pattern) {
-                if re.is_match(s) {
-                    return false;
-                }
-            }
+        if s.is_empty() {
+            return false;
         }
 
-        // Check if it looks like a path
-        for pattern in PATH_PATTERNS {
-            if let Ok(re) = Regex::new(pattern) {
-                if re.is_match(s) {
-                    return true;
-                }
-            }
+        // Exclusions — check with simple string ops (no regex)
+        if s.starts_with("http://")
+            || s.starts_with("https://")
+            || s.starts_with("ftp://")
+            || s.contains('\x1b')
+        {
+            return false;
         }
 
-        // Check for known file extensions
+        // Path-prefix indicators
+        if s.starts_with("~/")
+            || s.starts_with("./")
+            || s.starts_with("../")
+            || (s.starts_with('/') && s.len() > 1 && s.chars().nth(1).map_or(false, |c| c.is_alphanumeric()))
+        {
+            return true;
+        }
+
+        // Known file extensions
         for ext in FILE_EXTENSIONS {
             if s.ends_with(&format!(".{}", ext)) {
                 return true;
@@ -213,6 +175,8 @@ impl FilePathExtractor {
     /// Resolve a relative path against a project directory
     #[allow(dead_code)]
     pub fn resolve_path(path: &str, project_dir: Option<&str>) -> String {
+        use std::path::{Path, PathBuf};
+
         let path_buf = PathBuf::from(path);
 
         if path_buf.is_absolute() {
@@ -259,17 +223,11 @@ Use ./scripts/setup.sh to run."#;
     #[test]
     fn test_looks_like_file_path() {
         assert!(FilePathExtractor::looks_like_file_path("src/main.rs"));
-        assert!(FilePathExtractor::looks_like_file_path(
-            "/home/user/file.py"
-        ));
-        assert!(FilePathExtractor::looks_like_file_path(
-            "~/project/config.toml"
-        ));
+        assert!(FilePathExtractor::looks_like_file_path("/home/user/file.py"));
+        assert!(FilePathExtractor::looks_like_file_path("~/project/config.toml"));
         assert!(FilePathExtractor::looks_like_file_path("./script.sh"));
 
-        assert!(!FilePathExtractor::looks_like_file_path(
-            "https://example.com"
-        ));
+        assert!(!FilePathExtractor::looks_like_file_path("https://example.com"));
         assert!(!FilePathExtractor::looks_like_file_path("not a path"));
     }
 
@@ -281,5 +239,66 @@ Use ./scripts/setup.sh to run."#;
         // Absolute path should stay absolute
         let resolved = FilePathExtractor::resolve_path("/etc/config", Some("/home/user/project"));
         assert_eq!(resolved, "/etc/config");
+    }
+
+    #[test]
+    fn test_bare_relative_path_in_content() {
+        // Bare paths like "src/db/pool.rs" should be extracted
+        let paths = FilePathExtractor::extract_from_content("src/db/pool.rs");
+        let has_pool = paths.iter().any(|p| p.contains("pool.rs"));
+        assert!(has_pool, "expected pool.rs in extracted paths, got: {:?}", paths);
+    }
+
+    #[test]
+    fn test_tool_call_content_is_file_path() {
+        use crate::event::{Event, Role};
+        use crate::plugin::{
+            FilePathExtraction, LogFormat, ModelDetection, Parser, Plugin, PluginMeta,
+            ProjectDetection, SessionDetection, SessionIdSource, Source,
+        };
+        use chrono::Utc;
+
+        let plugin = Plugin {
+            plugin: PluginMeta {
+                name: "test".to_string(),
+                version: "1.0".to_string(),
+            },
+            source: Source {
+                paths: vec![],
+                exclude: vec![],
+                format: LogFormat::Jsonl,
+                session_detection: SessionDetection::OneFilePerSession {
+                    session_id_from: SessionIdSource::Filename,
+                },
+                tree: None,
+                truncation_limit: None,
+            },
+            parser: Parser {
+                file_paths: Some(FilePathExtraction {
+                    tool_call_field: Some("input.file_path".to_string()),
+                    content_regex: Some(true),
+                }),
+                project: Some(ProjectDetection::ParentDir),
+                model: Some(ModelDetection::None),
+                ..Default::default()
+            },
+            metadata: None,
+        };
+
+        let mut event = Event::new(
+            Utc::now(),
+            "test/1".into(),
+            "test".into(),
+            Role::ToolCall,
+            "src/db/pool.rs".into(),
+        );
+        event.tool = Some("Read".to_string());
+
+        let paths = FilePathExtractor::extract_from_event(&event, &plugin);
+        assert!(
+            paths.iter().any(|p| p.contains("pool.rs")),
+            "expected pool.rs in file_paths from ToolCall content, got: {:?}",
+            paths
+        );
     }
 }
