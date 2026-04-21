@@ -1468,3 +1468,181 @@ fn test_file_path_extraction_from_tool_calls() {
         tool_names
     );
 }
+
+// ─── Phase 2 feature integration tests ─────────────────────────────────────────
+
+/// Fuzzy search: a misspelled query still finds the relevant session.
+#[test]
+fn test_fuzzy_search_finds_misspelled_term() {
+    let data_dir = make_data_dir();
+    let fixtures = fixtures_dir().join("claude-code");
+    let glob = format!("{}/*.jsonl", fixtures.display());
+
+    let mut scraper = Scraper::new(data_dir.path().to_path_buf()).expect("scraper init");
+    let plugin = jsonl_plugin("claude-code", &glob);
+    scraper.plugin_manager_mut().add_plugin(plugin.clone());
+    scraper.scrape_plugin(&plugin).expect("scrape failed");
+
+    // "postgrs" is a misspelling of "postgres" — fuzzy should still find it
+    let opts = SearchOptions {
+        query: Some("postgrs".to_string()),
+        fuzzy: true,
+        fuzzy_distance: 2,
+        error_pattern: None,
+        code_query: None,
+        code_lang: None,
+        solution_only: false,
+        like_session: None,
+        session_id: None,
+        agent: vec![],
+        project: None,
+        since: None,
+        before: None,
+        tag: vec![],
+        outcome: None,
+        doc_type_filter: None,
+        model: None,
+        max_results: 10,
+        snippet_length: 200,
+        token_budget: None,
+        offset: 0,
+        sort: SortOrder::Relevance,
+        file_path: None,
+    };
+
+    let output = execute_search(data_dir.path(), &opts).expect("search failed");
+    assert!(
+        output.total_matches >= 1,
+        "fuzzy search for 'postgrs' should find postgres session, got {} matches",
+        output.total_matches
+    );
+
+    // The top result should mention postgres-related content
+    let top = &output.results[0];
+    let content = top
+        .snippet
+        .as_deref()
+        .unwrap_or("")
+        .to_lowercase();
+    assert!(
+        content.contains("postgres") || content.contains("connection"),
+        "top result should relate to postgres debugging, got: {:?}",
+        top.snippet
+    );
+}
+
+/// MoreLikeThis: given a session ID, finds sessions with similar content.
+#[test]
+fn test_more_like_this_finds_similar_sessions() {
+    let data_dir = make_data_dir();
+    let fixtures = fixtures_dir().join("claude-code");
+    let glob = format!("{}/*.jsonl", fixtures.display());
+
+    let mut scraper = Scraper::new(data_dir.path().to_path_buf()).expect("scraper init");
+    let plugin = jsonl_plugin("claude-code", &glob);
+    scraper.plugin_manager_mut().add_plugin(plugin.clone());
+    scraper.scrape_plugin(&plugin).expect("scrape failed");
+
+    // Use the postgres debug session as the reference
+    let opts = SearchOptions {
+        like_session: Some("claude-code/session-postgres-debug".to_string()),
+        query: None,
+        error_pattern: None,
+        code_query: None,
+        code_lang: None,
+        solution_only: false,
+        session_id: None,
+        agent: vec![],
+        project: None,
+        since: None,
+        before: None,
+        tag: vec![],
+        outcome: None,
+        doc_type_filter: None,
+        model: None,
+        fuzzy: false,
+        fuzzy_distance: 1,
+        max_results: 10,
+        snippet_length: 200,
+        token_budget: None,
+        offset: 0,
+        sort: SortOrder::Relevance,
+        file_path: None,
+    };
+
+    let output = execute_search(data_dir.path(), &opts).expect("search failed");
+
+    // Should find at least one similar session (excluding the source session itself)
+    assert!(
+        output.total_matches >= 1,
+        "MLT should find at least 1 similar session, got {}",
+        output.total_matches
+    );
+
+    // The source session should be excluded from results
+    for result in &output.results {
+        assert_ne!(
+            result.session_id, "claude-code/session-postgres-debug",
+            "MLT should exclude the source session"
+        );
+    }
+}
+
+/// Token-budget knapsack: results fit within the specified token budget.
+#[test]
+fn test_token_budget_respects_limit() {
+    let data_dir = make_data_dir();
+    let fixtures = fixtures_dir().join("claude-code");
+    let glob = format!("{}/*.jsonl", fixtures.display());
+
+    let mut scraper = Scraper::new(data_dir.path().to_path_buf()).expect("scraper init");
+    let plugin = jsonl_plugin("claude-code", &glob);
+    scraper.plugin_manager_mut().add_plugin(plugin.clone());
+    scraper.scrape_plugin(&plugin).expect("scrape failed");
+
+    let budget = 200;
+    let opts = SearchOptions {
+        query: Some("session".to_string()),
+        token_budget: Some(budget),
+        error_pattern: None,
+        code_query: None,
+        code_lang: None,
+        solution_only: false,
+        like_session: None,
+        session_id: None,
+        agent: vec![],
+        project: None,
+        since: None,
+        before: None,
+        tag: vec![],
+        outcome: None,
+        doc_type_filter: None,
+        model: None,
+        fuzzy: false,
+        fuzzy_distance: 1,
+        max_results: 50,
+        snippet_length: 200,
+        offset: 0,
+        sort: SortOrder::Relevance,
+        file_path: None,
+    };
+
+    let output = execute_search(data_dir.path(), &opts).expect("search failed");
+
+    // Total tokens across all results should not exceed the budget
+    let total_tokens: usize = output.results.iter().map(|r| r.token_count).sum();
+    assert!(
+        total_tokens <= budget,
+        "total tokens ({}) exceeds budget ({})",
+        total_tokens, budget
+    );
+
+    // Each result should have a token_count > 0
+    for result in &output.results {
+        assert!(
+            result.token_count > 0,
+            "result {} has zero token_count",
+            result.session_id
+        );
+    }
+}
