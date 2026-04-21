@@ -121,7 +121,7 @@ fn rpc_call(stream: &mut UnixStream, method: &str, params: Value) -> Value {
     let mut reader = BufReader::new(stream.try_clone().unwrap());
     let mut response_line = String::new();
     reader.read_line(&mut response_line).unwrap();
-    serde_json::from_str(&response_line.trim()).unwrap()
+    serde_json::from_str(response_line.trim()).unwrap()
 }
 
 /// Spin up an MCP server on a temp socket, run a test, then shut down.
@@ -262,7 +262,6 @@ fn test_debounce_coalesces_rapid_writes() {
     // Simulate 5 rapid writes (like an active coding session)
     for i in 0..5u64 {
         let mut f = fs::OpenOptions::new()
-            .write(true)
             .create(true)
             .append(true)
             .open(&session_file)

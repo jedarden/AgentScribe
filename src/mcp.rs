@@ -698,7 +698,7 @@ mod tests {
         let mut reader = BufReader::new(stream.try_clone().unwrap());
         let mut response_line = String::new();
         reader.read_line(&mut response_line).unwrap();
-        serde_json::from_str(&response_line.trim()).unwrap()
+        serde_json::from_str(response_line.trim()).unwrap()
     }
 
     /// Spin up the MCP server on a temp socket, run a test, then shut down.
