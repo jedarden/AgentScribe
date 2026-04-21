@@ -86,6 +86,36 @@ pub struct SearchOptions {
     pub file_path: Option<String>,
 }
 
+impl Default for SearchOptions {
+    fn default() -> Self {
+        SearchOptions {
+            query: None,
+            error_pattern: None,
+            code_query: None,
+            code_lang: None,
+            solution_only: false,
+            like_session: None,
+            session_id: None,
+            agent: vec![],
+            project: None,
+            since: None,
+            before: None,
+            tag: vec![],
+            outcome: None,
+            doc_type_filter: None,
+            model: None,
+            fuzzy: false,
+            fuzzy_distance: 1,
+            max_results: 10,
+            snippet_length: 200,
+            token_budget: None,
+            offset: 0,
+            sort: SortOrder::default(),
+            file_path: None,
+        }
+    }
+}
+
 /// Sort order for results
 #[derive(Debug, Clone, Copy, Default)]
 pub enum SortOrder {

@@ -10,6 +10,7 @@ pub mod digest;
 pub mod enrichment;
 pub mod error;
 pub mod event;
+pub mod file_knowledge;
 pub mod gc;
 pub mod index;
 pub mod mcp;
