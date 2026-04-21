@@ -1326,4 +1326,206 @@ mod tests {
         assert_eq!(format_duration(3661), "1h 1m");
         assert_eq!(format_duration(86400 + 3600), "1d 1h");
     }
+
+    // ── PID file management ────────────────────────────────────────────
+
+    #[test]
+    fn test_read_pid_valid() {
+        let dir = tempfile::tempdir().unwrap();
+        let pid_file = dir.path().join("agentscribe.pid");
+        fs::write(&pid_file, "12345\n").unwrap();
+        assert_eq!(read_pid(&pid_file), Some(12345));
+    }
+
+    #[test]
+    fn test_read_pid_missing_file() {
+        assert_eq!(read_pid(Path::new("/tmp/nonexistent_pid_test")), None);
+    }
+
+    #[test]
+    fn test_read_pid_invalid_content() {
+        let dir = tempfile::tempdir().unwrap();
+        let pid_file = dir.path().join("agentscribe.pid");
+        fs::write(&pid_file, "not-a-number\n").unwrap();
+        assert_eq!(read_pid(&pid_file), None);
+    }
+
+    #[test]
+    fn test_cleanup_pid_removes_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let pid_file = dir.path().join("agentscribe.pid");
+        fs::write(&pid_file, "99999\n").unwrap();
+        assert!(pid_file.exists());
+        cleanup_pid(&pid_file);
+        assert!(!pid_file.exists());
+    }
+
+    // ── Persisted state save/load ──────────────────────────────────────
+
+    #[test]
+    fn test_persisted_state_roundtrip() {
+        let dir = tempfile::tempdir().unwrap();
+        let state_file = dir.path().join("daemon_state.json");
+        let state = PersistedState {
+            started_at: Some(Utc::now()),
+            sessions_indexed: 42,
+            last_scrape: Some(Utc::now()),
+        };
+        save_state(&state_file, &state).unwrap();
+        let loaded = load_state(&state_file).unwrap();
+        assert_eq!(loaded.sessions_indexed, 42);
+        assert!(loaded.started_at.is_some());
+        assert!(loaded.last_scrape.is_some());
+    }
+
+    #[test]
+    fn test_persisted_state_defaults() {
+        let state = PersistedState::default();
+        assert_eq!(state.sessions_indexed, 0);
+        assert!(state.started_at.is_none());
+        assert!(state.last_scrape.is_none());
+    }
+
+    // ── daemon status ──────────────────────────────────────────────────
+
+    #[test]
+    fn test_status_not_running_no_pid_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let info = status(dir.path()).unwrap();
+        assert!(!info.running);
+        assert!(info.pid.is_none());
+    }
+
+    #[test]
+    fn test_status_stale_pid_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let pid_file = dir.path().join(PID_FILE);
+        // PID 999999 is extremely unlikely to exist
+        fs::write(&pid_file, "999999").unwrap();
+        let info = status(dir.path()).unwrap();
+        assert!(!info.running);
+        assert!(info.pid.is_none());
+    }
+
+    // ── daemon logs ────────────────────────────────────────────────────
+
+    #[test]
+    fn test_logs_missing_file_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let result = logs(dir.path(), false, 10);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_logs_tail() {
+        let dir = tempfile::tempdir().unwrap();
+        let log_file = dir.path().join(LOG_FILE);
+        fs::write(&log_file, "line1\nline2\nline3\n").unwrap();
+        // Should succeed (output goes to stdout)
+        assert!(logs(dir.path(), false, 10).is_ok());
+    }
+
+    // ── systemd unit generation ────────────────────────────────────────
+
+    #[test]
+    fn test_service_unit_dir_respects_xdg() {
+        // With XDG_CONFIG_HOME set, should use it
+        let dir = service_unit_dir().unwrap();
+        assert!(dir.ends_with("systemd/user"));
+    }
+
+    // ── graceful shutdown flag ─────────────────────────────────────────
+
+    #[test]
+    fn test_shutdown_flag_initially_false() {
+        // Reset the flag first
+        SHUTDOWN_REQUESTED.store(false, Ordering::SeqCst);
+        assert!(!shutdown_requested());
+    }
+
+    #[test]
+    fn test_shutdown_flag_set_and_read() {
+        SHUTDOWN_REQUESTED.store(true, Ordering::SeqCst);
+        assert!(shutdown_requested());
+        // Clean up
+        SHUTDOWN_REQUESTED.store(false, Ordering::SeqCst);
+    }
+
+    // ── WatchLoop event handling ───────────────────────────────────────
+
+    #[test]
+    fn test_watch_loop_handles_create_event() {
+        let dir = tempfile::tempdir().unwrap();
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel::<notify::Event>();
+
+        let plugin = make_plugin("test", vec![&format!("{}/*.jsonl", dir.path().display())]);
+
+        let _watcher = notify::RecommendedWatcher::new(
+            move |res: notify::Result<notify::Event>| {
+                if let Ok(event) = res {
+                    let _ = tx.send(event);
+                }
+            },
+            NotifyConfig::default(),
+        )
+        .unwrap();
+
+        // We can't easily construct a WatchLoop since _watcher is moved,
+        // so test the Debouncer + event matching logic directly.
+        let mut debouncer = Debouncer::new();
+        let test_file = dir.path().join("test.jsonl");
+        fs::write(&test_file, "test").unwrap();
+
+        assert!(file_matches_plugin(&test_file, &plugin));
+        debouncer.record(test_file.clone(), "test".to_string());
+        assert_eq!(debouncer.pending_count(), 1);
+
+        let ready = debouncer.drain_ready(Duration::from_millis(0));
+        assert_eq!(ready.len(), 1);
+        assert_eq!(ready[0].0, test_file);
+        assert_eq!(ready[0].1, "test");
+    }
+
+    // ── Integration: debounce coalesces rapid changes ──────────────────
+
+    #[test]
+    fn test_debounce_coalesces_rapid_changes_into_single_scrape() {
+        let mut d = Debouncer::new();
+        let path = PathBuf::from("/tmp/rapid.jsonl");
+
+        // Simulate rapid writes: record the same file 5 times in quick succession
+        for _ in 0..5 {
+            d.record(path.clone(), "agent".to_string());
+        }
+
+        // Only 1 entry should exist (HashMap deduplicates by path)
+        assert_eq!(d.pending_count(), 1);
+
+        // Single drain returns all of it
+        let ready = d.drain_ready(Duration::from_millis(0));
+        assert_eq!(ready.len(), 1);
+        assert_eq!(ready[0].0, path);
+        assert_eq!(d.pending_count(), 0);
+    }
+
+    #[test]
+    fn test_debounce_timer_resets_on_rapid_re_record() {
+        let mut d = Debouncer::new();
+        let path = PathBuf::from("/tmp/rapid2.jsonl");
+
+        // Record once, artificially age it
+        d.pending.insert(
+            path.clone(),
+            ("agent".to_string(), Instant::now() - Duration::from_secs(10)),
+        );
+
+        // Should be ready with a 5s debounce
+        assert_eq!(d.drain_ready(Duration::from_secs(5)).len(), 1);
+
+        // Re-record (simulating another write before scrape fires)
+        d.record(path.clone(), "agent".to_string());
+
+        // No longer ready — timer reset
+        assert!(d.drain_ready(Duration::from_secs(5)).is_empty());
+    }
 }

@@ -674,3 +674,250 @@ pub async fn run_mcp_server(
     let _ = std::fs::remove_file(&socket_path);
     tracing::info!("MCP server stopped, socket removed");
 }
+
+// ── Tests ─────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::{BufRead, BufReader, Write};
+    use std::os::unix::net::UnixStream;
+
+    /// Send a JSON-RPC request and read the response line.
+    fn rpc_call(stream: &mut UnixStream, method: &str, params: Value) -> Value {
+        let request = json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": method,
+            "params": params,
+        });
+        let mut line = serde_json::to_string(&request).unwrap();
+        line.push('\n');
+        stream.write_all(line.as_bytes()).unwrap();
+
+        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        let mut response_line = String::new();
+        reader.read_line(&mut response_line).unwrap();
+        serde_json::from_str(&response_line.trim()).unwrap()
+    }
+
+    /// Spin up the MCP server on a temp socket, run a test, then shut down.
+    fn with_mcp_server<F>(test_fn: F)
+    where
+        F: FnOnce(&UnixStream),
+    {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let data_dir = dir.path().to_path_buf();
+        let socket_path = dir.path().join("mcp.sock");
+
+        // Create minimal data directory structure
+        std::fs::create_dir_all(data_dir.join("plugins")).unwrap();
+        std::fs::create_dir_all(data_dir.join("sessions")).unwrap();
+        std::fs::create_dir_all(data_dir.join("index")).unwrap();
+        std::fs::create_dir_all(data_dir.join("state")).unwrap();
+
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+        let socket_path_clone = socket_path.clone();
+        let data_dir_clone = data_dir.clone();
+
+        rt.spawn(async move {
+            run_mcp_server(data_dir_clone, socket_path_clone, shutdown_rx).await;
+        });
+
+        // Give the server a moment to bind
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        let stream = UnixStream::connect(&socket_path).unwrap();
+        test_fn(&stream);
+        drop(stream);
+
+        // Shutdown the server
+        let _ = shutdown_tx.send(());
+        rt.shutdown_background();
+    }
+
+    #[test]
+    fn test_mcp_initialize() {
+        with_mcp_server(|stream| {
+            let resp = rpc_call(
+                &mut stream.try_clone().unwrap(),
+                "initialize",
+                json!({}),
+            );
+            assert_eq!(resp["jsonrpc"], "2.0");
+            assert_eq!(resp["result"]["serverInfo"]["name"], "agentscribe");
+            assert_eq!(
+                resp["result"]["protocolVersion"],
+                "2024-11-05"
+            );
+        });
+    }
+
+    #[test]
+    fn test_mcp_tools_list() {
+        with_mcp_server(|stream| {
+            let resp = rpc_call(
+                &mut stream.try_clone().unwrap(),
+                "tools/list",
+                json!({}),
+            );
+            let tools = resp["result"]["tools"].as_array().unwrap();
+            let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
+            assert!(names.contains(&"agentscribe_search"));
+            assert!(names.contains(&"agentscribe_status"));
+            assert!(names.contains(&"agentscribe_blame"));
+            assert!(names.contains(&"agentscribe_file"));
+        });
+    }
+
+    #[test]
+    fn test_mcp_status_tool() {
+        with_mcp_server(|stream| {
+            let resp = rpc_call(
+                &mut stream.try_clone().unwrap(),
+                "tools/call",
+                json!({
+                    "name": "agentscribe_status",
+                    "arguments": {}
+                }),
+            );
+            assert_eq!(resp["jsonrpc"], "2.0");
+            let content = resp["result"]["content"].as_array().unwrap();
+            assert!(!content.is_empty());
+            assert_eq!(content[0]["type"], "text");
+            // Should be valid JSON containing version
+            let text = content[0]["text"].as_str().unwrap();
+            let parsed: Value = serde_json::from_str(text).unwrap();
+            assert!(parsed["version"].is_string());
+        });
+    }
+
+    #[test]
+    fn test_mcp_search_tool_no_index() {
+        with_mcp_server(|stream| {
+            let resp = rpc_call(
+                &mut stream.try_clone().unwrap(),
+                "tools/call",
+                json!({
+                    "name": "agentscribe_search",
+                    "arguments": {
+                        "query": "test"
+                    }
+                }),
+            );
+            // Search on empty index should return error (no index) but not crash
+            let content = resp["result"]["content"].as_array().unwrap();
+            assert!(!content.is_empty());
+        });
+    }
+
+    #[test]
+    fn test_mcp_blame_tool_missing_param() {
+        with_mcp_server(|stream| {
+            let resp = rpc_call(
+                &mut stream.try_clone().unwrap(),
+                "tools/call",
+                json!({
+                    "name": "agentscribe_blame",
+                    "arguments": {}
+                }),
+            );
+            let content = resp["result"]["content"].as_array().unwrap();
+            assert_eq!(content[0]["type"], "text");
+            // Should report missing required parameter
+            let text = content[0]["text"].as_str().unwrap();
+            assert!(text.contains("missing"));
+        });
+    }
+
+    #[test]
+    fn test_mcp_unknown_method() {
+        with_mcp_server(|stream| {
+            let resp = rpc_call(
+                &mut stream.try_clone().unwrap(),
+                "nonexistent/method",
+                json!({}),
+            );
+            assert!(resp["error"].is_object());
+            assert_eq!(resp["error"]["code"], -32601);
+        });
+    }
+
+    #[test]
+    fn test_mcp_unknown_tool() {
+        with_mcp_server(|stream| {
+            let resp = rpc_call(
+                &mut stream.try_clone().unwrap(),
+                "tools/call",
+                json!({
+                    "name": "agentscribe_nonexistent",
+                    "arguments": {}
+                }),
+            );
+            let content = resp["result"]["content"].as_array().unwrap();
+            assert_eq!(content[0]["type"], "text");
+            assert!(resp["result"]["isError"].as_bool().unwrap());
+        });
+    }
+
+    #[test]
+    fn test_mcp_socket_cleanup_on_shutdown() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let socket_path = dir.path().join("mcp.sock");
+        let data_dir = dir.path().to_path_buf();
+        std::fs::create_dir_all(data_dir.join("plugins")).unwrap();
+
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+
+        rt.block_on(async {
+            let sp = socket_path.clone();
+            tokio::spawn(run_mcp_server(data_dir, sp, shutdown_rx));
+            // Wait for server to start
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            assert!(socket_path.exists(), "socket should exist while server is running");
+            // Trigger shutdown
+            shutdown_tx.send(()).unwrap();
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            assert!(!socket_path.exists(), "socket should be removed after shutdown");
+        });
+    }
+
+    #[test]
+    fn test_file_search_opts_builder() {
+        let opts = file_search_opts("/src/main.rs".to_string(), SortOrder::Newest, 20, 200);
+        assert_eq!(opts.file_path, Some("/src/main.rs".to_string()));
+        assert_eq!(opts.max_results, 20);
+        assert_eq!(opts.snippet_length, 200);
+        assert!(opts.query.is_none());
+    }
+
+    #[test]
+    fn test_jsonrpc_response_format() {
+        let resp = ok_response(json!(1), json!({"status": "ok"}));
+        let parsed: Value = serde_json::from_str(&resp).unwrap();
+        assert_eq!(parsed["jsonrpc"], "2.0");
+        assert_eq!(parsed["id"], 1);
+        assert_eq!(parsed["result"]["status"], "ok");
+        assert!(resp.ends_with('\n'));
+    }
+
+    #[test]
+    fn test_jsonrpc_error_format() {
+        let resp = err_response(json!(2), -32600, "invalid request");
+        let parsed: Value = serde_json::from_str(&resp).unwrap();
+        assert_eq!(parsed["error"]["code"], -32600);
+        assert_eq!(parsed["error"]["message"], "invalid request");
+    }
+
+    #[test]
+    fn test_dir_size_sync() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), "hello").unwrap();
+        std::fs::create_dir_all(dir.path().join("sub")).unwrap();
+        std::fs::write(dir.path().join("sub").join("b.txt"), "world").unwrap();
+        let size = dir_size_sync(dir.path());
+        assert_eq!(size, 5 + 5); // "hello" + "world"
+    }
+}
