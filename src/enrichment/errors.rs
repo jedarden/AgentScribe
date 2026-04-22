@@ -36,6 +36,11 @@ static ERROR_EXTRACT_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
         r"(?:cannot find module|undefined symbol|undefined reference).+",
         // Network errors
         r"(?:ECONNREFUSED|ECONNRESET|ETIMEDOUT|ENOTFOUND|Connection refused|Connection timed out).+",
+        // OAuth / authentication errors — covers Claude Code token refresh failures,
+        // 401/403 API responses, and expired credential messages from any agent.
+        r"(?i)(?:token[_ ]refresh[_ ]fail(?:ed|ing|ure)|oauth[_ ]error|authentication[_ ]fail(?:ed|ure)|authorization[_ ]fail(?:ed|ure)).+",
+        r"(?i)(?:invalid[_ ](?:token|credentials?|api[_ ]key)|expired[_ ](?:token|session|credentials?)|access[_ ]token[_ ](?:expired|invalid|revoked)).+",
+        r"(?i)(?:401 Unauthorized|403 Forbidden|re-?authenticate|session[_ ]expired|login[_ ]required).+",
         // General error patterns
         r"(?:error|Error|ERROR): .+",
         // Permission errors
@@ -84,6 +89,12 @@ static NORMALIZATION_RULES: LazyLock<Vec<(Regex, &'static str)>> = LazyLock::new
         (Regex::new(r"\bpid\s+\d+\b").unwrap(), "pid <PID>"),
         // Large numbers that might be sizes/offsets (6+ digits)
         (Regex::new(r"\b\d{6,}\b").unwrap(), "<NUM>"),
+        // Bearer tokens and API keys — strip the credential value while keeping context.
+        // Matches "Bearer <token>", "token=<value>", "api_key=<value>", etc.
+        (
+            Regex::new(r"(?i)(?:bearer\s+|(?:token|api[_-]?key|access[_-]?token|refresh[_-]?token)\s*[=:]\s*)[\w\-\.]+").unwrap(),
+            "<CREDENTIAL>",
+        ),
     ]
 });
 
@@ -304,5 +315,101 @@ mod tests {
         let fps = extract_error_fingerprints(content);
         assert!(!fps.is_empty());
         assert!(fps.iter().any(|f| f.contains("panic")));
+    }
+
+    // ── OAuth / authentication error tests ───────────────────────────────────
+
+    #[test]
+    fn test_oauth_token_refresh_failing() {
+        // Matches the exact error label from Claude Code token_refresh_failing events.
+        let content =
+            "token_refresh_failing: OAuth token refresh failed — re-authenticate with claude login";
+        let fps = extract_error_fingerprints(content);
+        assert!(!fps.is_empty(), "should detect token refresh failure");
+        assert!(
+            fps.iter().any(|f| f.to_lowercase().contains("token")),
+            "fingerprint should mention token"
+        );
+    }
+
+    #[test]
+    fn test_oauth_error_pattern() {
+        let content = "OAuth error: authorization_failed — session has expired";
+        let fps = extract_error_fingerprints(content);
+        assert!(!fps.is_empty(), "should detect OAuth error");
+        assert!(fps.iter().any(|f| f.to_lowercase().contains("oauth")));
+    }
+
+    #[test]
+    fn test_authentication_failed() {
+        let content = "authentication_failure: invalid credentials provided";
+        let fps = extract_error_fingerprints(content);
+        assert!(!fps.is_empty(), "should detect authentication failure");
+    }
+
+    #[test]
+    fn test_401_unauthorized() {
+        let content = "API request failed: 401 Unauthorized — token may be expired";
+        let fps = extract_error_fingerprints(content);
+        assert!(!fps.is_empty(), "should detect 401 Unauthorized");
+        assert!(fps.iter().any(|f| f.contains("401")));
+    }
+
+    #[test]
+    fn test_expired_token() {
+        let content = "access_token_expired: please run claude login to refresh your credentials";
+        let fps = extract_error_fingerprints(content);
+        assert!(!fps.is_empty(), "should detect expired token");
+    }
+
+    #[test]
+    fn test_invalid_api_key() {
+        let content = "invalid_api_key: the provided API key is not valid";
+        let fps = extract_error_fingerprints(content);
+        assert!(!fps.is_empty(), "should detect invalid API key");
+    }
+
+    #[test]
+    fn test_bearer_token_stripped_from_fingerprint() {
+        let content =
+            "Authorization failed: Bearer eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ1c2VyMTIzIn0.sig";
+        let normalized = normalize_error(content);
+        assert!(
+            !normalized.contains("eyJhbGciOiJSUzI1NiJ9"),
+            "bearer token value should be stripped"
+        );
+        assert!(
+            normalized.contains("<CREDENTIAL>"),
+            "credential placeholder should appear"
+        );
+    }
+
+    #[test]
+    fn test_api_key_stripped_from_fingerprint() {
+        let content = "error: token=sk-ant-api03-abcdef1234567890 is invalid or revoked";
+        let normalized = normalize_error(content);
+        assert!(
+            !normalized.contains("sk-ant-api03"),
+            "API key value should be stripped"
+        );
+        assert!(
+            normalized.contains("<CREDENTIAL>"),
+            "credential placeholder should appear"
+        );
+    }
+
+    #[test]
+    fn test_oauth_fingerprints_stable_across_sessions() {
+        // Two different token refresh errors should produce the same base fingerprint
+        // once UUID session IDs and timestamps are stripped.
+        let err1 = "token_refresh_failing: OAuth token refresh failed — session 550e8400-e29b-41d4-a716-446655440000 at 2026-03-20T10:30:00Z";
+        let err2 = "token_refresh_failing: OAuth token refresh failed — session 660f9511-f3ac-52e5-b827-557766551111 at 2026-04-21T09:00:00Z";
+        let norm1 = normalize_error(err1);
+        let norm2 = normalize_error(err2);
+        // Both should have identical fingerprints after stripping UUIDs and timestamps
+        assert_eq!(
+            norm1, norm2,
+            "fingerprints should be stable across UUID session IDs and timestamps"
+        );
     }
 }
