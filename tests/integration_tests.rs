@@ -517,6 +517,7 @@ fn test_full_pipeline_end_to_end() {
         offset: 0,
         sort: SortOrder::Relevance,
         file_path: None,
+        git_commit: None,
     };
 
     let output = execute_search(data_dir.path(), &opts).expect("search failed");
@@ -569,6 +570,7 @@ fn test_pipeline_aider_search() {
         offset: 0,
         sort: SortOrder::Relevance,
         file_path: None,
+        git_commit: None,
     };
 
     let output = execute_search(data_dir.path(), &opts).expect("search failed");
@@ -621,6 +623,7 @@ fn test_search_agent_filter() {
         offset: 0,
         sort: SortOrder::Relevance,
         file_path: None,
+        git_commit: None,
     };
 
     let output = execute_search(data_dir.path(), &opts).expect("search failed");
@@ -669,6 +672,7 @@ fn test_search_outcome_filter() {
         offset: 0,
         sort: SortOrder::Relevance,
         file_path: None,
+        git_commit: None,
     };
 
     let output = execute_search(data_dir.path(), &opts).expect("search failed");
@@ -1027,6 +1031,7 @@ fn test_search_latency_under_50ms() {
         offset: 0,
         sort: SortOrder::Relevance,
         file_path: None,
+        git_commit: None,
     };
 
     // Warm up the index reader
@@ -1090,6 +1095,7 @@ fn test_search_output_reports_latency() {
         offset: 0,
         sort: SortOrder::Relevance,
         file_path: None,
+        git_commit: None,
     };
 
     let output = execute_search(data_dir.path(), &opts).expect("search failed");
@@ -1508,6 +1514,7 @@ fn test_fuzzy_search_finds_misspelled_term() {
         offset: 0,
         sort: SortOrder::Relevance,
         file_path: None,
+        git_commit: None,
     };
 
     let output = execute_search(data_dir.path(), &opts).expect("search failed");
@@ -1564,6 +1571,7 @@ fn test_more_like_this_finds_similar_sessions() {
         offset: 0,
         sort: SortOrder::Relevance,
         file_path: None,
+        git_commit: None,
     };
 
     let output = execute_search(data_dir.path(), &opts).expect("search failed");
@@ -1621,6 +1629,7 @@ fn test_token_budget_respects_limit() {
         offset: 0,
         sort: SortOrder::Relevance,
         file_path: None,
+        git_commit: None,
     };
 
     let output = execute_search(data_dir.path(), &opts).expect("search failed");
