@@ -122,29 +122,25 @@ fn find_rejection_window(events: &[Event]) -> Option<RejectionWindow> {
                 if has_error_signal(&event.content) {
                     consecutive_errors += 1;
                     if start.is_none() {
-                        start = Some(i.saturating_sub(5).max(0));
+                        start = Some(i.saturating_sub(5));
                     }
                     end = i;
                 } else {
                     consecutive_errors = 0;
                 }
             }
-            Role::ToolCall => {
-                if consecutive_errors > 0 {
-                    attempts += 1;
-                }
+            Role::ToolCall if consecutive_errors > 0 => {
+                attempts += 1;
             }
-            Role::User => {
+            Role::User if has_positive_signal(&event.content) => {
                 // User saying something positive resets the window
-                if has_positive_signal(&event.content) {
-                    if attempts >= 2 {
-                        // End of a successful recovery - not an anti-pattern
-                        return None;
-                    }
-                    start = None;
-                    attempts = 0;
-                    consecutive_errors = 0;
+                if attempts >= 2 {
+                    // End of a successful recovery - not an anti-pattern
+                    return None;
                 }
+                start = None;
+                attempts = 0;
+                consecutive_errors = 0;
             }
             _ => {}
         }

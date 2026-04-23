@@ -64,6 +64,18 @@ pub enum AgentScribeError {
     /// Rules extraction errors
     #[error("Rules error: {0}")]
     Rules(String),
+
+    /// Project registry errors
+    #[error("Projects error: {0}")]
+    Projects(String),
+
+    /// Transcription errors
+    #[error("Transcription error: {0}")]
+    Transcription(String),
+
+    /// Redaction errors
+    #[error("Redaction error: {0}")]
+    Redaction(String),
 }
 
 impl AgentScribeError {

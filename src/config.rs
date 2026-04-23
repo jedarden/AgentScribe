@@ -80,6 +80,141 @@ impl Default for DaemonConfig {
     }
 }
 
+/// A single user-defined normalization rule: strips a variable part from error strings.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NormalizerRule {
+    /// Regex pattern to match (e.g. `r"request_id=\w+"`)
+    pub pattern: String,
+    /// Replacement string (e.g. `"request_id={id}"`)
+    pub replacement: String,
+}
+
+/// User-extensible error pattern configuration.
+///
+/// Maps to `[error_patterns.custom]` in `config.toml`.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ErrorPatternsConfig {
+    /// Additional regex patterns that identify error lines (appended to built-ins).
+    #[serde(default)]
+    pub matchers: Vec<String>,
+    /// Additional normalization rules applied after the built-in normalizers.
+    #[serde(default)]
+    pub normalizers: Vec<NormalizerRule>,
+}
+
+/// Whisper transcription configuration.
+///
+/// Maps to `[whisper]` in `config.toml`. The whisper executable must be in
+/// PATH or configured explicitly. Supports whisper.cpp and OpenAI Whisper CLI.
+///
+/// Example (whisper.cpp):
+/// ```toml
+/// [whisper]
+/// enabled = true
+/// model_path = "~/.agentscribe/models/ggml-base.bin"
+/// backend = "whisper_cpp"
+/// word_timestamps = true
+/// language = "en"
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WhisperConfig {
+    /// Enable transcription support (default: false).
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// Path to the Whisper model file (required for whisper.cpp).
+    pub model_path: Option<String>,
+
+    /// Path or name of the whisper executable (default: "whisper").
+    pub executable: Option<String>,
+
+    /// Backend style: "whisper_cpp", "openai_whisper", or "auto" (default).
+    /// "auto" detects the backend from the output JSON structure.
+    pub backend: Option<String>,
+
+    /// Maximum retry attempts on transcription failure (default: 3).
+    #[serde(default = "default_whisper_max_retries")]
+    pub max_retries: u32,
+
+    /// Per-attempt timeout in seconds (default: 300).
+    #[serde(default = "default_whisper_timeout")]
+    pub timeout_seconds: u64,
+
+    /// Request word-level timestamps (default: true).
+    /// Falls back to utterance-level if the backend does not support it.
+    #[serde(default = "default_true")]
+    pub word_timestamps: bool,
+
+    /// Language code passed to Whisper (e.g. "en"). Auto-detected if unset.
+    pub language: Option<String>,
+}
+
+fn default_whisper_max_retries() -> u32 {
+    3
+}
+fn default_whisper_timeout() -> u64 {
+    300
+}
+
+impl Default for WhisperConfig {
+    fn default() -> Self {
+        WhisperConfig {
+            enabled: false,
+            model_path: None,
+            executable: None,
+            backend: None,
+            max_retries: 3,
+            timeout_seconds: 300,
+            word_timestamps: true,
+            language: None,
+        }
+    }
+}
+
+/// Privacy redaction configuration.
+///
+/// Transcripts are scanned for PII before storage and indexing.
+/// Maps to `[redaction]` in `config.toml`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RedactionConfig {
+    /// Enable redaction scanning (default: true).
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+
+    /// Redact email addresses (default: true).
+    #[serde(default = "default_true")]
+    pub redact_emails: bool,
+
+    /// Redact phone numbers (default: true).
+    #[serde(default = "default_true")]
+    pub redact_phones: bool,
+
+    /// Redact credit card numbers (default: true).
+    #[serde(default = "default_true")]
+    pub redact_credit_cards: bool,
+
+    /// Redact US Social Security Numbers (default: true).
+    #[serde(default = "default_true")]
+    pub redact_ssn: bool,
+
+    /// Additional user-defined regex patterns to redact (replaced with [REDACTED]).
+    #[serde(default)]
+    pub custom_patterns: Vec<String>,
+}
+
+impl Default for RedactionConfig {
+    fn default() -> Self {
+        RedactionConfig {
+            enabled: true,
+            redact_emails: true,
+            redact_phones: true,
+            redact_credit_cards: true,
+            redact_ssn: true,
+            custom_patterns: Vec::new(),
+        }
+    }
+}
+
 /// Global configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
@@ -94,6 +229,12 @@ pub struct Config {
     pub shell_hook: ShellHookConfig,
     #[serde(default)]
     pub daemon: DaemonConfig,
+    #[serde(default)]
+    pub error_patterns: ErrorPatternsConfig,
+    #[serde(default)]
+    pub whisper: WhisperConfig,
+    #[serde(default)]
+    pub redaction: RedactionConfig,
 }
 
 /// General configuration
@@ -167,6 +308,9 @@ impl Default for Config {
             cost: CostConfig::default(),
             shell_hook: ShellHookConfig::default(),
             daemon: DaemonConfig::default(),
+            error_patterns: ErrorPatternsConfig::default(),
+            whisper: WhisperConfig::default(),
+            redaction: RedactionConfig::default(),
         }
     }
 }

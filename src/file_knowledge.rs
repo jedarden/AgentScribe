@@ -143,14 +143,14 @@ pub fn build_file_knowledge(
             last_seen,
         })
         .collect();
-    error_patterns.sort_by(|a, b| b.session_count.cmp(&a.session_count));
+    error_patterns.sort_by_key(|b| std::cmp::Reverse(b.session_count));
 
     // Step 5: Load anti-pattern gotchas from sidecar files
     let gotchas = load_gotchas_for_sessions(data_dir, &session_ids)?;
 
     // Step 6: Sample sessions (last 5 by timestamp)
     let mut sorted_sessions = sessions;
-    sorted_sessions.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+    sorted_sessions.sort_by_key(|b| std::cmp::Reverse(b.timestamp));
     let sample_sessions: Vec<String> = sorted_sessions
         .iter()
         .take(5)

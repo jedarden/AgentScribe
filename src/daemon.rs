@@ -277,10 +277,9 @@ pub fn status(data_dir: &Path) -> Result<DaemonInfo> {
                 }
                 if let Ok(start_ticks) = fields[19].parse::<u64>() {
                     let hz = unsafe { libc::sysconf(libc::_SC_CLK_TCK) } as u64;
-                    if hz > 0 {
-                        let uptime_ticks = read_uptime_ticks();
-                        if uptime_ticks > start_ticks {
-                            let elapsed_secs = (uptime_ticks - start_ticks) / hz;
+                    let uptime_ticks = read_uptime_ticks();
+                    if uptime_ticks > start_ticks {
+                        if let Some(elapsed_secs) = (uptime_ticks - start_ticks).checked_div(hz) {
                             info.uptime_secs = Some(elapsed_secs);
                         }
                     }
