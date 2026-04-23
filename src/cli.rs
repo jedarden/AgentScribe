@@ -234,6 +234,58 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
+    /// Bidirectional git commit ↔ session linking
+    Blame {
+        /// File path with optional line number (e.g., src/auth.rs or src/auth.rs:42)
+        spec: String,
+
+        /// Maximum number of results (default: 10)
+        #[arg(short = 'n', long, default_value = "10")]
+        max_results: usize,
+
+        /// JSON output
+        #[arg(long)]
+        json: bool,
+    },
+    /// Show all sessions that touched a file (chronological)
+    File {
+        /// File path or glob pattern (e.g., src/auth.rs or "src/auth/**")
+        path: String,
+
+        /// Maximum number of results (default: 50)
+        #[arg(short = 'n', long, default_value = "50")]
+        max_results: usize,
+
+        /// JSON output
+        #[arg(long)]
+        json: bool,
+    },
+    /// Generate Markdown summaries for sessions
+    Summarize {
+        /// Show summary for a specific session ID
+        #[arg(long)]
+        session: Option<String>,
+
+        /// Only include sessions after this timestamp (ISO 8601, or relative like 7d)
+        #[arg(long)]
+        since: Option<String>,
+
+        /// Filter by project path
+        #[arg(long)]
+        project: Option<String>,
+
+        /// Maximum number of sessions to summarize (default: 20)
+        #[arg(short = 'n', long, default_value = "20")]
+        max_results: usize,
+
+        /// Write summaries to .md files alongside session JSONL files
+        #[arg(long)]
+        write: bool,
+
+        /// JSON output
+        #[arg(long)]
+        json: bool,
+    },
     /// Generate shell integration snippet for auto-querying on error
     ShellHook {
         /// Shell to generate snippet for (bash, zsh, fish)
@@ -507,6 +559,24 @@ pub fn run() -> Result<()> {
             dry_run,
             json,
         } => run_gc(older_than, dry_run, json),
+        Commands::Blame {
+            spec,
+            max_results,
+            json,
+        } => run_blame(spec, max_results, json),
+        Commands::File {
+            path,
+            max_results,
+            json,
+        } => run_file(path, max_results, json),
+        Commands::Summarize {
+            session,
+            since,
+            project,
+            max_results,
+            write,
+            json,
+        } => run_summarize(session, since, project, max_results, write, json),
         Commands::ShellHook { shell } => run_shell_hook(&shell),
         Commands::FileKnowledge { file_path, json } => run_file_knowledge(&file_path, json),
         Commands::Digest {
@@ -987,6 +1057,7 @@ fn run_search(
         doc_type_filter,
         model,
         file_path: None,
+        git_commit: None,
         fuzzy,
         fuzzy_distance: edit_distance.unwrap_or(config.search.fuzzy_edit_distance),
         max_results,
@@ -1809,6 +1880,413 @@ fn run_gc(older_than: Option<String>, dry_run: bool, json: bool) -> Result<()> {
         print!("{}", crate::gc::format_human(&result));
     }
 
+    Ok(())
+}
+
+/// Run blame command: show sessions associated with a file/line via git blame.
+fn run_blame(spec: String, max_results: usize, json: bool) -> Result<()> {
+    let config = load_config()?;
+    let data_dir = config.data_dir()?;
+
+    if !data_dir.exists() {
+        eprintln!("AgentScribe not initialized. Run 'agentscribe config init' to set up.");
+        std::process::exit(1);
+    }
+
+    let (file, line) = parse_blame_spec(&spec);
+
+    // If a line number was given, try to resolve the commit hash via git blame.
+    let commit_hash = if let Some(ln) = line {
+        git_blame_commit(&file, ln)
+    } else {
+        None
+    };
+
+    let opts = if let Some(hash) = commit_hash {
+        search::SearchOptions {
+            git_commit: Some(hash),
+            max_results,
+            sort: search::SortOrder::Newest,
+            ..Default::default()
+        }
+    } else {
+        search::SearchOptions {
+            file_path: Some(file.clone()),
+            max_results,
+            sort: search::SortOrder::Newest,
+            ..Default::default()
+        }
+    };
+
+    let output = match search::execute_search(&data_dir, &opts) {
+        Ok(o) => o,
+        Err(e) => {
+            eprintln!("Search error: {}", e);
+            std::process::exit(1);
+        }
+    };
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&output).unwrap());
+    } else {
+        if let Some(ln) = line {
+            println!("Sessions related to {}:{}", file, ln);
+        } else {
+            println!("Sessions that touched: {}", file);
+        }
+        println!("{}", search::format_human(&output, 200));
+    }
+
+    Ok(())
+}
+
+/// Run file command: show all sessions that touched a file, chronologically.
+fn run_file(path: String, max_results: usize, json: bool) -> Result<()> {
+    let config = load_config()?;
+    let data_dir = config.data_dir()?;
+
+    if !data_dir.exists() {
+        eprintln!("AgentScribe not initialized. Run 'agentscribe config init' to set up.");
+        std::process::exit(1);
+    }
+
+    let opts = search::SearchOptions {
+        file_path: Some(path.clone()),
+        max_results,
+        sort: search::SortOrder::Oldest,
+        ..Default::default()
+    };
+
+    let output = match search::execute_search(&data_dir, &opts) {
+        Ok(o) => o,
+        Err(e) => {
+            eprintln!("Search error: {}", e);
+            std::process::exit(1);
+        }
+    };
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&output).unwrap());
+    } else {
+        println!("Sessions that touched: {}", path);
+        println!("{}", search::format_human(&output, 200));
+    }
+
+    Ok(())
+}
+
+/// A summary entry for a single session (used in run_summarize).
+#[derive(serde::Serialize)]
+struct SummaryEntry {
+    session_id: String,
+    summary: String,
+    project: Option<String>,
+    started: chrono::DateTime<chrono::Utc>,
+    outcome: Option<String>,
+    files_touched: Vec<String>,
+}
+
+/// Run summarize command: generate Markdown summaries for sessions.
+fn run_summarize(
+    session: Option<String>,
+    since: Option<String>,
+    project: Option<String>,
+    max_results: usize,
+    write: bool,
+    json: bool,
+) -> Result<()> {
+    let config = load_config()?;
+    let data_dir = config.data_dir()?;
+
+    if !data_dir.exists() {
+        eprintln!("AgentScribe not initialized. Run 'agentscribe config init' to set up.");
+        std::process::exit(1);
+    }
+
+    let sessions_dir = data_dir.join("sessions");
+    if !sessions_dir.exists() {
+        println!("No sessions found. Run 'agentscribe scrape' first.");
+        return Ok(());
+    }
+
+    let since_dt = since.as_deref().map(search::parse_datetime).transpose()?;
+
+    let mut entries: Vec<SummaryEntry> = Vec::new();
+
+    if let Some(ref sid) = session {
+        // Specific session
+        let events = read_session_events(&sessions_dir, sid)?;
+        if events.is_empty() {
+            eprintln!("Session '{}' not found or has no events", sid);
+            std::process::exit(1);
+        }
+        let agent = sid.split('/').next().unwrap_or("unknown");
+        let manifest = crate::index::build_manifest_from_events(
+            &events,
+            sid,
+            agent,
+            events.first().and_then(|e| e.project.as_deref()),
+            events.first().and_then(|e| e.model.as_deref()),
+        );
+        let summary = crate::enrichment::generate_summary(&events, &manifest);
+
+        if write {
+            write_summary_file(&sessions_dir, sid, &summary, &manifest)?;
+        }
+
+        entries.push(SummaryEntry {
+            session_id: sid.clone(),
+            summary,
+            project: manifest.project,
+            started: manifest.started,
+            outcome: manifest.outcome,
+            files_touched: manifest.files_touched,
+        });
+    } else {
+        // Walk sessions directory
+        let session_ids = collect_all_session_ids(&sessions_dir);
+        let mut count = 0;
+
+        for sid in session_ids {
+            if count >= max_results {
+                break;
+            }
+
+            let events = match read_session_events(&sessions_dir, &sid) {
+                Ok(e) if !e.is_empty() => e,
+                _ => continue,
+            };
+
+            let agent = sid.split('/').next().unwrap_or("unknown");
+            let manifest = crate::index::build_manifest_from_events(
+                &events,
+                &sid,
+                agent,
+                events.first().and_then(|e| e.project.as_deref()),
+                events.first().and_then(|e| e.model.as_deref()),
+            );
+
+            // Apply filters
+            if let Some(ref proj) = project {
+                if manifest.project.as_deref() != Some(proj.as_str()) {
+                    continue;
+                }
+            }
+            if let Some(since) = since_dt {
+                if manifest.started < since {
+                    continue;
+                }
+            }
+
+            let summary = crate::enrichment::generate_summary(&events, &manifest);
+
+            if write {
+                write_summary_file(&sessions_dir, &sid, &summary, &manifest)?;
+            }
+
+            entries.push(SummaryEntry {
+                session_id: sid.clone(),
+                summary,
+                project: manifest.project,
+                started: manifest.started,
+                outcome: manifest.outcome,
+                files_touched: manifest.files_touched,
+            });
+
+            count += 1;
+        }
+    }
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&entries).unwrap());
+    } else if write {
+        println!(
+            "Wrote {} summary file(s) to {}",
+            entries.len(),
+            sessions_dir.display()
+        );
+    } else {
+        for entry in &entries {
+            println!("# Session: {}", entry.session_id);
+            println!();
+            println!("**Summary:** {}", entry.summary);
+            println!();
+            if let Some(ref outcome) = entry.outcome {
+                println!("- **Outcome:** {}", outcome);
+            }
+            println!("- **Started:** {}", entry.started.to_rfc3339());
+            if let Some(ref proj) = entry.project {
+                println!("- **Project:** {}", proj);
+            }
+            if !entry.files_touched.is_empty() {
+                let files: Vec<&str> = entry
+                    .files_touched
+                    .iter()
+                    .take(5)
+                    .map(|s| s.as_str())
+                    .collect();
+                println!("- **Files touched:** {}", files.join(", "));
+            }
+            println!();
+            println!("---");
+            println!();
+        }
+        if entries.is_empty() {
+            println!("No sessions found.");
+        }
+    }
+
+    Ok(())
+}
+
+/// Parse a blame spec: "file.rs" or "file.rs:42"
+fn parse_blame_spec(spec: &str) -> (String, Option<u32>) {
+    if let Some(colon_pos) = spec.rfind(':') {
+        let file = spec[..colon_pos].to_string();
+        let line_str = &spec[colon_pos + 1..];
+        if let Ok(line) = line_str.parse::<u32>() {
+            return (file, Some(line));
+        }
+    }
+    (spec.to_string(), None)
+}
+
+/// Run git blame to find the commit hash for a specific file/line.
+/// Returns None if git is unavailable or the line is uncommitted.
+fn git_blame_commit(file: &str, line: u32) -> Option<String> {
+    let output = std::process::Command::new("git")
+        .args([
+            "blame",
+            "-L",
+            &format!("{},{}", line, line),
+            "--porcelain",
+            file,
+        ])
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let hash = stdout.lines().next()?.split_whitespace().next()?;
+
+    // All-zeros means the line is not yet committed
+    if hash.chars().all(|c| c == '0') {
+        return None;
+    }
+
+    Some(hash.to_string())
+}
+
+/// Read session events from the normalized sessions directory.
+fn read_session_events(
+    sessions_dir: &std::path::Path,
+    session_id: &str,
+) -> Result<Vec<crate::event::Event>> {
+    let parts: Vec<&str> = session_id.splitn(2, '/').collect();
+    if parts.len() != 2 {
+        return Ok(Vec::new());
+    }
+    let path = sessions_dir
+        .join(parts[0])
+        .join(format!("{}.jsonl", parts[1]));
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+
+    use std::io::BufRead;
+    let file = std::fs::File::open(&path)?;
+    let reader = std::io::BufReader::new(file);
+    let mut events = Vec::new();
+
+    for line in reader.lines() {
+        let l = line?;
+        if l.trim().is_empty() {
+            continue;
+        }
+        if let Ok(event) = crate::event::Event::from_jsonl(&l) {
+            events.push(event);
+        }
+    }
+
+    Ok(events)
+}
+
+/// Collect all session IDs by walking the sessions directory.
+fn collect_all_session_ids(sessions_dir: &std::path::Path) -> Vec<String> {
+    let mut ids = Vec::new();
+
+    let Ok(agents) = std::fs::read_dir(sessions_dir) else {
+        return ids;
+    };
+
+    for agent_entry in agents.filter_map(|e| e.ok()) {
+        let agent_path = agent_entry.path();
+        if !agent_path.is_dir() {
+            continue;
+        }
+        let Some(agent_name) = agent_path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+
+        let Ok(sessions) = std::fs::read_dir(&agent_path) else {
+            continue;
+        };
+
+        for session_entry in sessions.filter_map(|e| e.ok()) {
+            let session_path = session_entry.path();
+            if session_path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
+                continue;
+            }
+            if let Some(stem) = session_path.file_stem().and_then(|s| s.to_str()) {
+                ids.push(format!("{}/{}", agent_name, stem));
+            }
+        }
+    }
+
+    ids
+}
+
+/// Write a Markdown summary file alongside the session JSONL.
+fn write_summary_file(
+    sessions_dir: &std::path::Path,
+    session_id: &str,
+    summary: &str,
+    manifest: &crate::event::SessionManifest,
+) -> Result<()> {
+    let parts: Vec<&str> = session_id.splitn(2, '/').collect();
+    if parts.len() != 2 {
+        return Ok(());
+    }
+    let md_path = sessions_dir.join(parts[0]).join(format!("{}.md", parts[1]));
+
+    let mut content = format!("# Session: {}\n\n", session_id);
+    content.push_str(&format!("**Summary:** {}\n\n", summary));
+
+    if let Some(ref outcome) = manifest.outcome {
+        content.push_str(&format!("- **Outcome:** {}\n", outcome));
+    }
+    content.push_str(&format!(
+        "- **Started:** {}\n",
+        manifest.started.to_rfc3339()
+    ));
+    if let Some(ref proj) = manifest.project {
+        content.push_str(&format!("- **Project:** {}\n", proj));
+    }
+    if !manifest.files_touched.is_empty() {
+        let files: Vec<&str> = manifest
+            .files_touched
+            .iter()
+            .take(10)
+            .map(|s| s.as_str())
+            .collect();
+        content.push_str(&format!("- **Files touched:** {}\n", files.join(", ")));
+    }
+    content.push('\n');
+
+    std::fs::write(&md_path, content)?;
     Ok(())
 }
 

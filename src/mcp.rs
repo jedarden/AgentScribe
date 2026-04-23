@@ -287,6 +287,7 @@ async fn handle_search(data_dir: Arc<PathBuf>, args: Value) -> Value {
             offset,
             sort,
             file_path,
+            git_commit: None,
         };
 
         execute_search(&data_dir, &opts)
@@ -475,6 +476,7 @@ fn file_search_opts(
         offset: 0,
         sort,
         file_path: Some(file_path),
+        git_commit: None,
     }
 }
 

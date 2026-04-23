@@ -84,6 +84,8 @@ pub struct SearchOptions {
     pub sort: SortOrder,
     /// Filter to sessions that touched this exact file path.
     pub file_path: Option<String>,
+    /// Filter to sessions associated with this exact git commit hash.
+    pub git_commit: Option<String>,
 }
 
 impl Default for SearchOptions {
@@ -112,6 +114,7 @@ impl Default for SearchOptions {
             offset: 0,
             sort: SortOrder::default(),
             file_path: None,
+            git_commit: None,
         }
     }
 }
@@ -207,6 +210,7 @@ pub fn execute_search(data_dir: &Path, opts: &SearchOptions) -> Result<SearchOut
             doc_type_filter: opts.doc_type_filter.clone(),
             model: opts.model.clone(),
             file_path: opts.file_path.clone(),
+            git_commit: opts.git_commit.clone(),
             max_results: opts.max_results,
             snippet_length: opts.snippet_length,
             token_budget: opts.token_budget,
@@ -281,14 +285,17 @@ fn build_query(
     opts: &SearchOptions,
     _schema: &tantivy::schema::Schema,
 ) -> Result<Box<dyn Query>> {
-    // Validate that at least one search mode is specified
+    // Validate that at least one search mode or filter is specified
     if opts.query.is_none()
         && opts.error_pattern.is_none()
         && opts.code_query.is_none()
         && opts.like_session.is_none()
+        && opts.file_path.is_none()
+        && opts.git_commit.is_none()
     {
         return Err(AgentScribeError::DataDir(
-            "No search query provided. Use <query>, --error, --code, or --like.".to_string(),
+            "No search query provided. Use <query>, --error, --code, --like, or a filter."
+                .to_string(),
         ));
     }
 
@@ -481,6 +488,18 @@ fn build_query(
     // File path filter (exact term match on stored file_paths values)
     if let Some(ref fp) = opts.file_path {
         let term = tantivy::schema::Term::from_field_text(fields.file_paths, fp);
+        clauses.push((
+            Occur::Must,
+            Box::new(TermQuery::new(
+                term,
+                tantivy::schema::IndexRecordOption::Basic,
+            )),
+        ));
+    }
+
+    // Git commit filter (exact term match on stored git_commits values)
+    if let Some(ref commit) = opts.git_commit {
+        let term = tantivy::schema::Term::from_field_text(fields.git_commits, commit);
         clauses.push((
             Occur::Must,
             Box::new(TermQuery::new(
@@ -894,6 +913,7 @@ fn lookup_session(
             doc_type_filter: None,
             model: None,
             file_path: None,
+            git_commit: None,
             fuzzy: false,
             fuzzy_distance: 1,
             max_results: 1,
@@ -1518,6 +1538,7 @@ mod tests {
             doc_type_filter: None,
             model: None,
             file_path: None,
+            git_commit: None,
             fuzzy: false,
             fuzzy_distance: 1,
             max_results: 10,
@@ -1861,6 +1882,7 @@ mod tests {
             doc_type_filter: None,
             model: None,
             file_path: None,
+            git_commit: None,
             fuzzy: false,
             fuzzy_distance: 1,
             max_results: 10,
@@ -2383,6 +2405,7 @@ mod tests {
             doc_type_filter: None,
             model: None,
             file_path: None,
+            git_commit: None,
             fuzzy: false,
             fuzzy_distance: 1,
             max_results: 10,
