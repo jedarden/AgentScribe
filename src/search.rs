@@ -945,7 +945,7 @@ fn apply_sort(results: &mut [SearchResult], sort: SortOrder) {
             });
         }
         SortOrder::Turns => {
-            results.sort_by(|a, b| b.turns.unwrap_or(0).cmp(&a.turns.unwrap_or(0)));
+            results.sort_by_key(|b| std::cmp::Reverse(b.turns.unwrap_or(0)));
         }
     }
 }

@@ -483,7 +483,7 @@ fn compute_monthly_and_model_data(
             },
         })
         .collect();
-    model_usage.sort_by(|a, b| b.sessions.cmp(&a.sessions));
+    model_usage.sort_by_key(|b| std::cmp::Reverse(b.sessions));
 
     Ok((monthly_breakdown, model_usage))
 }

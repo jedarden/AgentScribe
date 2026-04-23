@@ -276,10 +276,41 @@ enum Commands {
         #[arg(long, default_value = "markdown")]
         format: String,
     },
+    /// Show per-account Claude Code utilization (5h and 7d rolling windows)
+    Capacity {
+        /// Claude config directories to scan, one per account (default: ~/.claude + auto-discovered ~/.claude-* dirs)
+        #[arg(long)]
+        account_dir: Vec<PathBuf>,
+
+        /// Maximum age of cached usage data in seconds before falling back to JSONL (default: 600)
+        #[arg(long, default_value = "600")]
+        cache_max_age: u64,
+
+        /// JSON output
+        #[arg(long)]
+        json: bool,
+    },
     /// Generate shell completion script
     Completions {
         /// Shell to generate completions for
         shell: Shell,
+    },
+    /// Transcribe an audio file using the configured local Whisper model
+    Transcribe {
+        /// Audio file to transcribe (wav, mp3, or m4a)
+        input: PathBuf,
+
+        /// Wait for the job to complete and print the transcript (default: true)
+        #[arg(long, default_value_t = true)]
+        wait: bool,
+
+        /// Maximum seconds to wait for completion (default: 600)
+        #[arg(long, default_value_t = 600)]
+        timeout: u64,
+
+        /// JSON output (includes timestamps and metadata)
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -488,6 +519,17 @@ pub fn run() -> Result<()> {
             output,
             format,
         } => run_pulse_report(quarter, output, format),
+        Commands::Capacity {
+            account_dir,
+            cache_max_age,
+            json,
+        } => run_capacity(account_dir, cache_max_age, json),
+        Commands::Transcribe {
+            input,
+            wait,
+            timeout,
+            json,
+        } => run_transcribe(input, wait, timeout, json),
         Commands::Completions { shell } => {
             let mut cmd = Args::command();
             generate(shell, &mut cmd, "agentscribe", &mut io::stdout());
@@ -1830,6 +1872,226 @@ fn run_pulse_report(quarter: String, output: Option<String>, format: String) -> 
         eprintln!("Pulse Report ({}) written to {}", report.quarter, path);
     } else {
         print!("{}", content);
+    }
+
+    Ok(())
+}
+
+/// Run capacity command
+fn run_capacity(account_dirs: Vec<PathBuf>, cache_max_age: u64, json: bool) -> Result<()> {
+    use crate::capacity::{CapacityMeter, CapacityMeterConfig};
+
+    let config = if account_dirs.is_empty() {
+        CapacityMeterConfig::default()
+    } else {
+        CapacityMeterConfig {
+            account_dirs,
+            cache_max_age_secs: cache_max_age,
+            cache_base_dir: None,
+        }
+    };
+
+    let meter = CapacityMeter::new(config);
+    let accounts = meter.compute();
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&accounts).unwrap());
+        return Ok(());
+    }
+
+    if accounts.is_empty() {
+        println!("No Claude accounts found.");
+        println!("Expected: ~/.claude/.credentials.json (or ~/.claude-*/.credentials.json)");
+        return Ok(());
+    }
+
+    println!("Claude Code Capacity\n");
+
+    for acct in &accounts {
+        println!(
+            "Account: {} ({} / {})",
+            acct.account_id, acct.plan_type, acct.rate_limit_tier
+        );
+        println!("  Source: {}", acct.source);
+
+        let bar_5h = util_bar(acct.utilization_5h);
+        let reset_5h = acct
+            .resets_at_5h
+            .map(|dt| format!("  resets {}", format_resets_at(dt)))
+            .unwrap_or_default();
+        println!(
+            "  5h window:  {:5.1}%  {}{}",
+            acct.utilization_5h, bar_5h, reset_5h
+        );
+
+        let bar_7d = util_bar(acct.utilization_7d);
+        let reset_7d = acct
+            .resets_at_7d
+            .map(|dt| format!("  resets {}", format_resets_at(dt)))
+            .unwrap_or_default();
+        println!(
+            "  7d window:  {:5.1}%  {}{}",
+            acct.utilization_7d, bar_7d, reset_7d
+        );
+
+        if !acct.model_windows_7d.is_empty() {
+            for mw in &acct.model_windows_7d {
+                let bar = util_bar(mw.utilization);
+                println!("    {:10} {:5.1}%  {}", mw.model, mw.utilization, bar);
+            }
+        }
+
+        if acct.burn_rate_per_min > 0.0 {
+            println!("  Burn rate:  {:.0} tokens/min", acct.burn_rate_per_min);
+            if let Some(mins) = acct.forecast_full_5h_min {
+                if mins > 0.0 {
+                    println!("  Forecast:   5h full in {}", format_minutes(mins));
+                } else {
+                    println!("  Forecast:   5h window full");
+                }
+            }
+        }
+
+        println!(
+            "  Turns:      {} (5h)  {} (7d)",
+            acct.turns_5h, acct.turns_7d
+        );
+        println!();
+    }
+
+    Ok(())
+}
+
+fn util_bar(util: f64) -> String {
+    let filled = ((util / 100.0) * 20.0).round() as usize;
+    let filled = filled.min(20);
+    let empty = 20 - filled;
+    format!("[{}{}]", "█".repeat(filled), "░".repeat(empty))
+}
+
+fn format_resets_at(dt: chrono::DateTime<chrono::Utc>) -> String {
+    use chrono::Utc;
+    let now = Utc::now();
+    let delta = dt - now;
+    let total_secs = delta.num_seconds();
+    if total_secs <= 0 {
+        return "now".to_string();
+    }
+    let hours = total_secs / 3600;
+    let mins = (total_secs % 3600) / 60;
+    if hours > 0 {
+        format!("in {}h {}m", hours, mins)
+    } else {
+        format!("in {}m", mins)
+    }
+}
+
+fn format_minutes(mins: f64) -> String {
+    if mins < 60.0 {
+        format!("{:.0}m", mins)
+    } else {
+        format!("{:.1}h", mins / 60.0)
+    }
+}
+
+/// Run transcribe command
+fn run_transcribe(input: PathBuf, wait: bool, timeout: u64, json: bool) -> Result<()> {
+    let config = load_config()?;
+
+    if !config.whisper.enabled {
+        eprintln!(
+            "Whisper transcription is disabled.\n\
+             Enable it in config.toml:\n\n\
+             [whisper]\n\
+             enabled = true\n\
+             model_path = \"~/.agentscribe/models/ggml-base.bin\"\n\
+             backend = \"whisper_cpp\""
+        );
+        std::process::exit(1);
+    }
+
+    if !input.exists() {
+        eprintln!("File not found: {}", input.display());
+        std::process::exit(1);
+    }
+
+    let rt = tokio::runtime::Runtime::new().map_err(|e| {
+        crate::error::AgentScribeError::Transcription(format!(
+            "failed to create async runtime: {}",
+            e
+        ))
+    })?;
+
+    // For fire-and-forget (--no-wait), submit to the queue and print job ID.
+    if !wait {
+        let job_id = rt.block_on(async {
+            let queue = crate::transcription::TranscriptionQueue::new(
+                config.whisper.clone(),
+                config.redaction.clone(),
+            );
+            queue.submit(input, config.whisper.max_retries).await
+        })?;
+        println!("Transcription job submitted: {}", job_id);
+        return Ok(());
+    }
+
+    // Synchronous path: run transcription and wait for the result.
+    let job = rt.block_on(async {
+        let queue = crate::transcription::TranscriptionQueue::new(
+            config.whisper.clone(),
+            config.redaction.clone(),
+        );
+        let job_id = queue.submit(input, config.whisper.max_retries).await?;
+        queue
+            .wait_for_job(&job_id, std::time::Duration::from_secs(timeout))
+            .await
+    })?;
+
+    let result = match job.result {
+        Some(r) => r,
+        None => {
+            eprintln!(
+                "Transcription failed: {}",
+                job.error.as_deref().unwrap_or("unknown error")
+            );
+            std::process::exit(1);
+        }
+    };
+
+    // ── Output ───────────────────────────────────────────────────────────────
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&result).map_err(|e| {
+                crate::error::AgentScribeError::Transcription(format!(
+                    "JSON serialization failed: {}",
+                    e
+                ))
+            })?
+        );
+    } else {
+        // Warning card for degraded results.
+        if result.has_warnings {
+            eprintln!("┌─ TRANSCRIPTION WARNINGS ─────────────────────────────────────┐");
+            for w in &result.warnings {
+                eprintln!("│  {}", w);
+            }
+            eprintln!("└──────────────────────────────────────────────────────────────┘");
+        }
+
+        println!("{}", result.full_text);
+
+        // Summary line with timestamp granularity info.
+        let level = match result.timestamp_level {
+            crate::transcription::TimestampLevel::Word => "word-level",
+            crate::transcription::TimestampLevel::Utterance => "utterance-level (fallback)",
+        };
+        eprintln!(
+            "[{} segments, {}, transcribed at {}]",
+            result.segment_count(),
+            level,
+            result.transcribed_at.to_rfc3339(),
+        );
     }
 
     Ok(())

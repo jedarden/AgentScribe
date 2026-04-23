@@ -235,7 +235,7 @@ fn extract_digest_data(
             session_count,
         })
         .collect();
-    touched_files.sort_by(|a, b| b.session_count.cmp(&a.session_count));
+    touched_files.sort_by_key(|b| std::cmp::Reverse(b.session_count));
     touched_files.truncate(20);
 
     // Build new error patterns (errors first seen in this period)
@@ -254,7 +254,7 @@ fn extract_digest_data(
             }
         })
         .collect();
-    new_errors.sort_by(|a, b| b.occurrences.cmp(&a.occurrences));
+    new_errors.sort_by_key(|b| std::cmp::Reverse(b.occurrences));
 
     // Build model cost entries
     let mut model_costs: Vec<ModelCostEntry> = model_tokens

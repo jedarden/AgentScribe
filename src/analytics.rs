@@ -225,7 +225,7 @@ fn classify_problem_type(
 
     // Find primary and secondary by score
     let mut ranked: Vec<(ProblemType, i32)> = scores.into_iter().collect();
-    ranked.sort_by(|a, b| b.1.cmp(&a.1));
+    ranked.sort_by_key(|b| std::cmp::Reverse(b.1));
 
     let primary = ranked
         .first()
@@ -630,7 +630,7 @@ pub fn compute_analytics(
         })
         .collect();
 
-    agents.sort_by(|a, b| b.total_sessions.cmp(&a.total_sessions));
+    agents.sort_by_key(|b| std::cmp::Reverse(b.total_sessions));
 
     // Problem type distribution
     let mut type_counts: HashMap<ProblemType, usize> = HashMap::new();
@@ -646,7 +646,7 @@ pub fn compute_analytics(
             percentage: count as f64 / total_sessions as f64 * 100.0,
         })
         .collect();
-    problem_types.sort_by(|a, b| b.count.cmp(&a.count));
+    problem_types.sort_by_key(|b| std::cmp::Reverse(b.count));
 
     // Trends (weekly buckets)
     let trends = compute_weekly_trends(&sessions);
