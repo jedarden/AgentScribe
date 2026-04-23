@@ -16,6 +16,9 @@ clap_complete = "4.5"
 serde = { version = "1.0", features = ["derive"] }
 toml = "0.8"
 
+# YAML parsing
+serde_yaml = "0.9"
+
 # JSON parsing
 serde_json = "1.0"
 jsonpath_lib = "0.3"
@@ -74,6 +77,12 @@ tabled = "0.17"
 [dev-dependencies]
 tempfile = "3.14"
 pretty_assertions = "1.4"
+
+[features]
+# Compile-time enforcement of the Phase 1 zero-write invariant (§3.8, §6).
+# Under this flag, br write-verb helper functions are absent from write_guard.
+# Run `cargo check --features=zero-write-v01` in CI to enforce the invariant.
+zero-write-v01 = []
 
 [[bin]]
 name = "agentscribe"
