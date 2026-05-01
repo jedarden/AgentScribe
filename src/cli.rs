@@ -364,6 +364,23 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
+    /// Pre-task priming query for agent workers
+    Context {
+        /// Task description to query for context
+        query: String,
+
+        /// Token budget for context packing (default: 3000)
+        #[arg(long, default_value = "3000")]
+        token_budget: usize,
+
+        /// Scope rules extraction to this project path
+        #[arg(long)]
+        project: Option<PathBuf>,
+
+        /// JSON output (wrap sections in JSON object)
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 /// Config subcommands
@@ -600,6 +617,12 @@ pub fn run() -> Result<()> {
             timeout,
             json,
         } => run_transcribe(input, wait, timeout, json),
+        Commands::Context {
+            query,
+            token_budget,
+            project,
+            json,
+        } => run_context(query, token_budget, project, json),
         Commands::Completions { shell } => {
             let mut cmd = Args::command();
             generate(shell, &mut cmd, "agentscribe", &mut io::stdout());
@@ -2606,6 +2629,40 @@ fn run_digest(since: String, output: Option<String>, json: bool) -> Result<()> {
         eprintln!("Digest written to {}", path);
     } else {
         print!("{}", content);
+    }
+
+    Ok(())
+}
+
+/// Run context command: pre-task priming query for agent workers
+fn run_context(
+    query: String,
+    token_budget: usize,
+    project: Option<PathBuf>,
+    json: bool,
+) -> Result<()> {
+    let config = load_config()?;
+    let data_dir = config.data_dir()?;
+
+    if !data_dir.exists() {
+        eprintln!("AgentScribe not initialized. Run 'agentscribe config init' to set up.");
+        std::process::exit(1);
+    }
+
+    // Store the current_dir in a variable to avoid lifetime issues
+    let current_dir = std::env::current_dir().ok();
+    let project_path = if let Some(ref p) = project {
+        Some(p.as_path())
+    } else {
+        current_dir.as_deref()
+    };
+
+    let pack = crate::search::context_pack(&data_dir, &query, token_budget, project_path)?;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&pack).unwrap());
+    } else {
+        print!("{}", pack.format_text());
     }
 
     Ok(())

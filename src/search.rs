@@ -1169,6 +1169,258 @@ pub fn parse_datetime(s: &str) -> Result<DateTime<Utc>> {
     )))
 }
 
+/// Context pack output for JSON mode.
+#[derive(Debug, Serialize)]
+pub struct ContextPack {
+    pub past_solutions: String,
+    pub conventions: String,
+    pub file_notes: String,
+}
+
+impl ContextPack {
+    /// Format as a single text block with section headers.
+    pub fn format_text(&self) -> String {
+        let mut sections = Vec::new();
+
+        if !self.past_solutions.is_empty() {
+            sections.push(format!("### Past Solutions\n{}", self.past_solutions));
+        }
+
+        if !self.conventions.is_empty() {
+            sections.push(format!("### Project Conventions\n{}", self.conventions));
+        }
+
+        if !self.file_notes.is_empty() {
+            sections.push(format!("### File Notes\n{}", self.file_notes));
+        }
+
+        if sections.is_empty() {
+            return "No prior context found.".to_string();
+        }
+
+        sections.join("\n\n")
+    }
+
+    /// Get the token count for a string section.
+    pub fn count_tokens(text: &str) -> usize {
+        text.chars().count().div_ceil(CHARS_PER_TOKEN)
+    }
+
+    /// Create a budget-aware version of the pack with priority ordering.
+    pub fn with_budget(mut self, budget: usize) -> Self {
+        let solution_tokens = Self::count_tokens(&self.past_solutions);
+        let conventions_tokens = Self::count_tokens(&self.conventions);
+        let file_notes_tokens = Self::count_tokens(&self.file_notes);
+
+        // Priority: past solutions > conventions > file notes
+        let mut remaining = budget;
+
+        // Always include past solutions (highest priority)
+        if solution_tokens > remaining {
+            // Truncate solutions to fit budget
+            let max_chars = remaining * CHARS_PER_TOKEN;
+            self.past_solutions = truncate_to_chars(&self.past_solutions, max_chars);
+            remaining = 0;
+        } else {
+            remaining -= solution_tokens;
+        }
+
+        // Include conventions if budget remains
+        if remaining > 0 && !self.conventions.is_empty() {
+            if conventions_tokens > remaining {
+                let max_chars = remaining * CHARS_PER_TOKEN;
+                self.conventions = truncate_to_chars(&self.conventions, max_chars);
+                remaining = 0;
+            } else {
+                remaining -= conventions_tokens;
+            }
+        } else {
+            self.conventions = String::new();
+        }
+
+        // Include file notes only if budget still remains
+        if remaining > 0 && !self.file_notes.is_empty() {
+            if file_notes_tokens > remaining {
+                let max_chars = remaining * CHARS_PER_TOKEN;
+                self.file_notes = truncate_to_chars(&self.file_notes, max_chars);
+            }
+        } else {
+            self.file_notes = String::new();
+        }
+
+        self
+    }
+}
+
+/// Truncate text to a maximum character count at a word boundary.
+fn truncate_to_chars(text: &str, max_chars: usize) -> String {
+    if text.len() <= max_chars {
+        return text.to_string();
+    }
+
+    // Find the last word boundary before max_chars
+    let mut end = max_chars;
+    while end > 0 && !text.is_char_boundary(end) {
+        end += 1;
+    }
+
+    if let Some(space_pos) = text[..end].rfind('\n') {
+        end = space_pos;
+    } else if let Some(space_pos) = text[..end].rfind(' ') {
+        end = space_pos;
+    }
+
+    let truncated = &text[..end];
+    format!("{}...", truncated.trim_end())
+}
+
+/// Truncate a fingerprint for display.
+fn truncate_fingerprint(fp: &str, max_len: usize) -> String {
+    if fp.len() <= max_len {
+        return fp.to_string();
+    }
+    if let Some(colon_pos) = fp.find(':') {
+        let prefix = &fp[..=colon_pos];
+        let remaining = max_len.saturating_sub(prefix.len() + 4);
+        if remaining > 10 {
+            return format!(
+                "{}{}...",
+                prefix,
+                &fp[colon_pos + 1..colon_pos + 1 + remaining]
+            );
+        }
+    }
+    format!("{}...", &fp[..max_len.saturating_sub(3)])
+}
+
+/// Extract file paths from a task description.
+///
+/// Looks for common file path patterns: src/, .rs, .py, .ts, .js, etc.
+pub fn extract_file_paths(task: &str) -> Vec<String> {
+    let mut paths = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+
+    // Common file extensions and directory patterns
+    let patterns = [
+        r"src/[a-zA-Z0-9_/\-\.]+\.[a-z]{2,4}",
+        r"tests?/[a-zA-Z0-9_/\-\.]+\.[a-z]{2,4}",
+        r"[a-zA-Z0-9_/\-\.]+\.(rs|py|ts|js|tsx|jsx|go|java|c|cpp|h|hpp|rb|php|sh|yaml|yml|toml|json|md)",
+        r"lib/[a-zA-Z0-9_/\-\.]+\.[a-z]{2,4}",
+        r"cmd/[a-zA-Z0-9_/\-\.]+\.[a-z]{2,4}",
+        r"pkg/[a-zA-Z0-9_/\-\.]+\.[a-z]{2,4}",
+        r"internal/[a-zA-Z0-9_/\-\.]+\.[a-z]{2,4}",
+        r"api/[a-zA-Z0-9_/\-\.]+\.[a-z]{2,4}",
+        r"components?[a-zA-Z0-9_/\-\.]+\.[a-z]{2,4}",
+        r"handlers?[a-zA-Z0-9_/\-\.]+\.[a-z]{2,4}",
+        r"middlewares?[a-zA-Z0-9_/\-\.]+\.[a-z]{2,4}",
+        r"utils?[a-zA-Z0-9_/\-\.]+\.[a-z]{2,4}",
+        r"helpers?[a-zA-Z0-9_/\-\.]+\.[a-z]{2,4}",
+        r"models?[a-zA-Z0-9_/\-\.]+\.[a-z]{2,4}",
+        r"views?[a-zA-Z0-9_/\-\.]+\.[a-z]{2,4}",
+        r"controllers?[a-zA-Z0-9_/\-\.]+\.[a-z]{2,4}",
+        r"services?[a-zA-Z0-9_/\-\.]+\.[a-z]{2,4}",
+        r"routes?[a-zA-Z0-9_/\-\.]+\.[a-z]{2,4}",
+        r"config/[a-zA-Z0-9_/\-\.]+\.[a-z]{2,4}",
+    ];
+
+    for pattern in &patterns {
+        if let Ok(re) = regex::Regex::new(pattern) {
+            for cap in re.captures_iter(task) {
+                if let Some(path_match) = cap.get(0) {
+                    let path = path_match.as_str().to_string();
+                    if seen.insert(path.clone()) {
+                        paths.push(path);
+                    }
+                }
+            }
+        }
+    }
+
+    paths
+}
+
+/// Pack context for a task description: past solutions, conventions, and file notes.
+///
+/// This is the main entry point for the `context` subcommand.
+pub fn context_pack(
+    data_dir: &Path,
+    task: &str,
+    token_budget: usize,
+    project_path: Option<&Path>,
+) -> Result<ContextPack> {
+    // Step 1: Past solutions (60% of budget by default)
+    let solution_budget = (token_budget * 3) / 5;
+    let search_opts = SearchOptions {
+        query: Some(task.to_string()),
+        solution_only: true,
+        outcome: Some("success".to_string()),
+        token_budget: Some(solution_budget),
+        max_results: 10,
+        snippet_length: 300,
+        ..Default::default()
+    };
+
+    let search_output = execute_search(data_dir, &search_opts)?;
+    let past_solutions = if search_output.results.is_empty() {
+        String::new()
+    } else {
+        let mut lines = Vec::new();
+        for result in &search_output.results {
+            if let Some(ref summary) = result.summary {
+                lines.push(format!("- {}", summary));
+            }
+            if let Some(ref snippet) = result.snippet {
+                for line in snippet.lines().take(3) {
+                    lines.push(format!("  {}", line));
+                }
+            }
+        }
+        lines.join("\n")
+    };
+
+    // Step 2: Project conventions (inline rules extraction)
+    let conventions = if let Some(proj) = project_path {
+        crate::rules::extract_rules_inline(data_dir, proj)?
+    } else {
+        String::new()
+    };
+
+    // Step 3: File notes (extract file paths from task and get knowledge)
+    let file_paths = extract_file_paths(task);
+    let mut file_notes = Vec::new();
+    for path in &file_paths {
+        if let Ok(knowledge) = crate::file_knowledge::build_file_knowledge(
+            data_dir,
+            path,
+            &crate::config::Config::default(),
+        ) {
+            if !knowledge.gotchas.is_empty() || !knowledge.error_patterns.is_empty() {
+                file_notes.push(format!("**{}**", path));
+                for gotcha in &knowledge.gotchas {
+                    file_notes.push(format!("  - {}", gotcha.pattern));
+                }
+                if !knowledge.error_patterns.is_empty() {
+                    let errors: Vec<_> = knowledge
+                        .error_patterns
+                        .iter()
+                        .take(3)
+                        .map(|e| format!("  - Error: {}", truncate_fingerprint(&e.fingerprint, 80)))
+                        .collect();
+                    file_notes.extend(errors);
+                }
+            }
+        }
+    }
+
+    let pack = ContextPack {
+        past_solutions,
+        conventions,
+        file_notes: file_notes.join("\n"),
+    };
+
+    Ok(pack.with_budget(token_budget))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
