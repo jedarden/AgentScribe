@@ -265,3 +265,108 @@ agentscribe status --plugin devon
 ```
 
 See the [Plugin Authoring Guide](../plugins/BUILDING_PLUGINS.md) for the full specification.
+
+---
+
+## 9. NEEDLE Integration — Pre-Task Priming
+
+AgentScribe's `context` command is designed for integration with agent frameworks like NEEDLE. When a worker claims a bead, it can retrieve relevant past solutions, project conventions, and file notes before writing any code.
+
+### NEEDLE Integration Example
+
+In `NEEDLE/src/prompt/mod.rs`, add AgentScribe context as a fourth context part:
+
+```rust
+use std::process::Command;
+
+pub fn build_with_vars(bead_title: &str, vars: &HashMap<String, String>) -> String {
+    let mut context_parts = vec![
+        load_skills(),
+        load_learnings(),
+        load_bead_context(bead_title),
+    ];
+
+    // Add AgentScribe context if available
+    if let Ok(context) = Command::new("agentscribe")
+        .args(["context", bead_title, "--token-budget", "2000"])
+        .output()
+    {
+        if context.status.success() {
+            if let Ok(context_str) = String::from_utf8(context.stdout) {
+                if !context_str.trim().is_empty() && !context_str.contains("No prior context found") {
+                    context_parts.push(format!("## Prior Context\n\n{}", context_str));
+                }
+            }
+        }
+    }
+
+    context_parts.join("\n\n---\n\n")
+}
+```
+
+### How It Works
+
+1. **Search**: Finds relevant past solutions using the bead title as the search query
+2. **Filter**: Returns only successful sessions with extracted solutions
+3. **Pack**: Fits results within the token budget using greedy knapsack optimization
+4. **Prioritize**: Past solutions get 60% of budget, conventions get remaining, file notes get leftovers
+
+### Fire-and-Forget Design
+
+The integration is resilient to AgentScribe not being installed or returning empty results:
+- If `agentscribe` is not found, the command fails silently and no context is added
+- If the index is empty, "No prior context found" is detected and skipped
+- The worker continues normally with just skills, learnings, and bead context
+
+### Benefits
+
+- **Reduced repetition**: Workers see how similar problems were solved before
+- **Consistency**: Project conventions are automatically included
+- **Fewer errors**: File notes surface known gotchas before code is written
+- **Zero config**: Works immediately after the first `agentscribe scrape`
+
+---
+
+## 10. Session Export for Commit Messages
+
+Render a session as HTML and link it from a commit message for full traceability.
+
+```bash
+# Render the session to a temporary file
+agentscribe render claude-code/83f5a4e7 --output /tmp/session.html
+
+# Create a gist (requires GitHub CLI: gh)
+gh gist create /tmp/session.html --desc "Agent session for auth fix"
+
+# Use the gist URL in your commit message
+git commit -m "Fix JWT validation in middleware
+
+Full AI session trace: https://gist.github.com/abc123
+
+The issue was that the JWT library's default clock
+skew tolerance was too strict for our distributed system."
+```
+
+### Alternative: Markdown Export
+
+For projects that prefer Markdown over HTML:
+
+```bash
+# Render as Markdown
+agentscribe render claude-code/83f5a4e7 --format markdown --output session.md
+
+# Add to your repo's docs/
+cp session.md docs/sessions/auth-fix.md
+
+# Link from commit
+git commit -m "Fix JWT validation
+
+See docs/sessions/auth-fix.md for full AI session trace."
+```
+
+### Why This Matters
+
+- **Auditability**: Anyone reviewing the commit can see the full reasoning
+- **Knowledge transfer**: New team members learn from past AI interactions
+- **Debugging**: When a fix causes regressions, the original session is available
+- **Documentation**: Sessions become first-class artifacts of the development process

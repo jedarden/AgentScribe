@@ -1233,6 +1233,149 @@ The Markdown digest includes:
 
 ---
 
+## `agentscribe context`
+
+Pre-task priming query for agent workers. Returns a formatted context block with past solutions, project conventions, and file notes — ready for direct injection into agent prompts.
+
+### Usage
+
+```
+agentscribe context <query> [options]
+```
+
+### Arguments
+
+| Argument | Required | Description |
+|----------|----------|-------------|
+| `<query>` | yes | Task description to search for context. Used to find relevant past solutions. |
+
+### Options
+
+| Option | Short | Default | Description |
+|--------|-------|---------|-------------|
+| `--token-budget <n>` | | `3000` | Token budget for context packing. Sections are prioritized: past solutions > conventions > file notes. |
+| `--project <path>` | | cwd | Project path for rules extraction. Defaults to current directory. |
+| `--json` | | off | Output sections as JSON object. |
+
+### Examples
+
+```bash
+# Get context for implementing JWT authentication
+agentscribe context "implement JWT authentication" --token-budget 4000
+
+# Get context for a specific project
+agentscribe context "fix the database connection pool" --project ~/myproject
+
+# JSON output for programmatic assembly
+agentscribe context "handle file upload errors" --json
+```
+
+### Output
+
+Human-readable (default):
+```
+### Past Solutions
+- Migrated Postgres schema from v3 to v4, added rollback script
+  Ran ALTER TABLE to add the new columns, then backfilled existing rows.
+- Fixed Postgres connection pooling, added retry logic
+  The connection pool was exhausting under load because max_connections...
+
+### Project Conventions
+- Use uuid v7, not v4, for new database columns
+- API endpoints use kebab-case, response fields use snake_case
+- Don't modify applied migration files
+
+### File Notes
+**src/auth/middleware.rs**
+  - Error: ConnectionError:Connection refused to {host}:{port}
+```
+
+JSON (`--json`):
+```json
+{
+  "past_solutions": "- Migrated Postgres schema...",
+  "conventions": "- Use uuid v7, not v4...",
+  "file_notes": "**src/auth/middleware.rs**\n  - Error: ConnectionError..."
+}
+```
+
+### Exit Codes
+
+| Code | Meaning |
+|------|---------|
+| 0 | Success |
+| 1 | Data dir not initialized |
+| 2 | No sessions found |
+
+---
+
+## `agentscribe render`
+
+Render a session as self-contained HTML or Markdown for sharing, linking from commits, or human review outside the terminal.
+
+### Usage
+
+```
+agentscribe render <session-id> [options]
+```
+
+### Arguments
+
+| Argument | Required | Description |
+|----------|----------|-------------|
+| `<session-id>` | yes | Session ID in `<agent>/<id>` format. |
+
+### Options
+
+| Option | Short | Default | Description |
+|--------|-------|---------|-------------|
+| `--output <path>` | `-o` | stdout | Write output to a file instead of printing to stdout. |
+| `--format <format>` | | `html` | Output format: `html` or `markdown`. |
+
+### Examples
+
+```bash
+# Render as HTML to stdout
+agentscribe render claude-code/83f5a4e7
+
+# Save as Markdown
+agentscribe render claude-code/83f5a4e7 --format markdown --output session.md
+
+# Create a gist (via GitHub CLI)
+agentscribe render claude-code/83f5a4e7 --output /tmp/session.html && gh gist create /tmp/session.html
+
+# Link from commit message
+git commit -m "Fix auth bug
+
+Session: https://gist.github.com/abc123"
+```
+
+### Output
+
+HTML output includes:
+- Self-contained file with inline CSS (~3KB)
+- Syntax highlighting via embedded highlight.js subset (~50KB)
+- Dark/light mode support via `prefers-color-scheme`
+- Header with project, agent, outcome, duration, files touched
+- Conversation with role badges and timestamps
+- Footer with session ID and generation timestamp
+
+Markdown output includes:
+- YAML frontmatter with session metadata
+- Conversation as alternating role blocks
+- Code blocks fenced with language tags
+- Separator lines between turns
+
+### Exit Codes
+
+| Code | Meaning |
+|------|---------|
+| 0 | Success |
+| 1 | Session not found |
+| 2 | Data dir not initialized |
+
+---
+
 ## Environment Variables
 
 | Variable | Description |
