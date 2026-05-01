@@ -674,6 +674,28 @@ pub fn format_human(output: &RulesOutput) -> String {
     lines.join("\n")
 }
 
+/// Extract rules and return them as inline text (for context command).
+pub fn extract_rules_inline(data_dir: &Path, project_path: &Path) -> Result<String> {
+    let output = extract_rules(data_dir, project_path)?;
+
+    if output.rules.is_empty() {
+        return Ok(String::new());
+    }
+
+    // Use CLAUDE.md format as the inline representation
+    let content = format_claude(&output);
+
+    // Remove the header comment for cleaner inline output
+    let without_header = content
+        .lines()
+        .skip_while(|l| l.starts_with("<!--"))
+        .skip(1) // Skip the blank line after the comment
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    Ok(without_header.trim().to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -381,6 +381,19 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
+    /// Render a session as HTML or Markdown
+    Render {
+        /// Session ID to render
+        session_id: String,
+
+        /// Output file path (default: stdout)
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+
+        /// Output format (default: html)
+        #[arg(long, default_value = "html")]
+        format: String,
+    },
 }
 
 /// Config subcommands
@@ -623,6 +636,11 @@ pub fn run() -> Result<()> {
             project,
             json,
         } => run_context(query, token_budget, project, json),
+        Commands::Render {
+            session_id,
+            output,
+            format,
+        } => run_render(session_id, output, format),
         Commands::Completions { shell } => {
             let mut cmd = Args::command();
             generate(shell, &mut cmd, "agentscribe", &mut io::stdout());
@@ -2663,6 +2681,79 @@ fn run_context(
         println!("{}", serde_json::to_string_pretty(&pack).unwrap());
     } else {
         print!("{}", pack.format_text());
+    }
+
+    Ok(())
+}
+
+/// Run render command: export a session as HTML or Markdown
+fn run_render(session_id: String, output: Option<PathBuf>, format: String) -> Result<()> {
+    let config = load_config()?;
+    let data_dir = config.data_dir()?;
+
+    if !data_dir.exists() {
+        eprintln!("AgentScribe not initialized. Run 'agentscribe config init' to set up.");
+        std::process::exit(1);
+    }
+
+    let sessions_dir = data_dir.join("sessions");
+    if !sessions_dir.exists() {
+        eprintln!("No sessions directory found. Run 'agentscribe scrape' first.");
+        std::process::exit(1);
+    }
+
+    // Parse session ID to get agent and session parts
+    let parts: Vec<&str> = session_id.splitn(2, '/').collect();
+    if parts.len() != 2 {
+        eprintln!("Invalid session ID format. Expected: <agent>/<session-id>");
+        std::process::exit(1);
+    }
+
+    let session_path = sessions_dir
+        .join(parts[0])
+        .join(format!("{}.jsonl", parts[1]));
+
+    if !session_path.exists() {
+        eprintln!(
+            "Session '{}' not found at {}",
+            session_id,
+            session_path.display()
+        );
+        std::process::exit(1);
+    }
+
+    // Read session events
+    let events = read_session_events(&sessions_dir, &session_id)?;
+    if events.is_empty() {
+        eprintln!("Session '{}' has no events", session_id);
+        std::process::exit(1);
+    }
+
+    // Build manifest from events
+    let manifest = crate::index::build_manifest_from_events(
+        &events,
+        &session_id,
+        parts[0],
+        events.first().and_then(|e| e.project.as_deref()),
+        events.first().and_then(|e| e.model.as_deref()),
+    );
+
+    // Render based on format
+    let content = match format.as_str() {
+        "markdown" | "md" => crate::render::render_markdown(&events, &manifest)?,
+        "html" => crate::render::render_html(&events, &manifest)?,
+        _ => {
+            eprintln!("Unknown format '{}'. Use 'html' or 'markdown'.", format);
+            std::process::exit(1);
+        }
+    };
+
+    // Output to file or stdout
+    if let Some(path) = output {
+        std::fs::write(&path, &content)?;
+        eprintln!("Rendered session '{}' to {}", session_id, path.display());
+    } else {
+        print!("{}", content);
     }
 
     Ok(())
