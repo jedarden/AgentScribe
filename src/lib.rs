@@ -21,6 +21,7 @@ pub mod projects;
 pub mod pulse_report;
 pub mod recurring;
 pub mod redaction;
+pub mod render;
 pub mod rules;
 pub mod scraper;
 pub mod search;
