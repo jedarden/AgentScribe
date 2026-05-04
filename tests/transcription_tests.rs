@@ -121,11 +121,13 @@ fn test_redaction_scanner_has_pii_detection() {
 
 #[test]
 fn test_redaction_scanner_custom_patterns() {
-    let mut config = RedactionConfig::default();
-    config.custom_patterns = vec![
-        r"ACCT-\d+".to_string(),
-        r"TICKET-[A-Z]{2,4}-\d+".to_string(),
-    ];
+    let config = RedactionConfig {
+        custom_patterns: vec![
+            r"ACCT-\d+".to_string(),
+            r"TICKET-[A-Z]{2,4}-\d+".to_string(),
+        ],
+        ..Default::default()
+    };
     let scanner = RedactionScanner::new(config);
 
     let input = "Account ACCT-99887 and ticket TICKET-ABCD-12345";
@@ -139,11 +141,13 @@ fn test_redaction_scanner_custom_patterns() {
 #[test]
 fn test_redaction_scanner_selective_enable() {
     // Test individual category controls
-    let mut config = RedactionConfig::default();
-    config.redact_emails = true;
-    config.redact_phones = false;
-    config.redact_credit_cards = false;
-    config.redact_ssn = false;
+    let config = RedactionConfig {
+        redact_emails: true,
+        redact_phones: false,
+        redact_credit_cards: false,
+        redact_ssn: false,
+        ..Default::default()
+    };
 
     let scanner = RedactionScanner::new(config);
     let input = "Email: test@example.com, Phone: 555-123-4567";
@@ -159,8 +163,10 @@ fn test_redaction_scanner_selective_enable() {
 
 #[test]
 fn test_redaction_scanner_disabled() {
-    let mut config = RedactionConfig::default();
-    config.enabled = false;
+    let config = RedactionConfig {
+        enabled: false,
+        ..Default::default()
+    };
 
     let scanner = RedactionScanner::new(config);
     let input = "Email: test@example.com, SSN: 123-45-6789";

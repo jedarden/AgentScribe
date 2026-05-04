@@ -1333,6 +1333,137 @@ The Markdown digest includes:
 
 ---
 
+## `agentscribe capacity`
+
+Show per-account Claude Code utilization matching the `/status` output. Displays 5h and 7d rolling windows, per-model windows, burn rates, and forecasts. Supports multi-account setups (e.g., personal vs work credentials).
+
+### Usage
+
+```
+agentscribe capacity [options]
+```
+
+### Options
+
+| Option | Short | Default | Description |
+|--------|-------|---------|-------------|
+| `--account-dir <path>` | | `~/.claude` + auto-discovered `~/.claude-*` | Claude config directories to scan (each = one account). Repeatable. |
+| `--cache-max-age <seconds>` | | `600` | Maximum age of cached `usage.json` before falling back to JSONL estimation. |
+| `--json` | `-j` | off | Output in JSON format. |
+
+### Examples
+
+```bash
+# Show capacity for all auto-discovered accounts
+agentscribe capacity
+
+# Specific account directories
+agentscribe capacity --account-dir ~/.claude --account-dir ~/.claude-work
+
+# Use cached data even if older (up to 1 hour)
+agentscribe capacity --cache-max-age 3600
+
+# JSON for programmatic access
+agentscribe capacity --json
+```
+
+### Output
+
+Human-readable (default):
+```
+Claude Code Capacity
+
+Account: claude-default (max / default_claude_max_20x)
+  Source: api_cache
+  5h window:   24.5%  [█████░░░░░░░░░░░░░░]  resets in 2h 15m
+  7d window:   94.2%  [████████████████████░]  resets in 4h 30m
+    sonnet        82.0%  [█████████████████░░░]
+    opus          91.5%  [███████████████████░]
+    cowork        45.0%  [████████░░░░░░░░░░░]
+  Burn rate:  8,450 tokens/min
+  Forecast:   5h full in 1h 45m
+  Turns:      127 (5h)  2,840 (7d)
+
+Account: .claude-work (pro / default)
+  Source: jsonl_estimate
+  5h window:   67.8%  [████████████████░░░░░]  resets in 1h 30m
+  7d window:   23.4%  [█████░░░░░░░░░░░░░░░]  resets in 5d 12h
+  Burn rate:  2,100 tokens/min
+  Turns:      42 (5h)  580 (7d)
+```
+
+**Visual meter:** ASCII progress bar shows utilization percentage. Each `█` represents ~5% (20 bars = 100%).
+
+**Source indicators:**
+- `api_cache`: Exact numbers from cached Claude Code API response (`~/.cache/claude-usage/usage.json`)
+- `jsonl_estimate`: Approximate from parsing JSONL logs (uses cost-equivalent token weighting)
+
+**Per-model windows:** Shown for 7d window when available from cached API (sonnet, opus, cowork, omelette). Not available in JSONL fallback mode.
+
+**Burn rate:** Cost-equivalent tokens per minute averaged over the last hour.
+
+**Forecast:** Minutes until the window hits 100% at current burn rate. `null` if burn rate is zero or already at 100%.
+
+JSON (`--json`):
+```json
+[
+  {
+    "account_id": "claude-default",
+    "adapter": "claude",
+    "plan_type": "max",
+    "rate_limit_tier": "default_claude_max_20x",
+    "utilization_5h": 24.5,
+    "utilization_7d": 94.2,
+    "resets_at_5h": "2026-05-03T16:15:00Z",
+    "resets_at_7d": "2026-05-03T18:30:00Z",
+    "model_windows_7d": [
+      {"model": "sonnet", "utilization": 82.0, "resets_at": "2026-05-03T18:30:00Z"},
+      {"model": "opus", "utilization": 91.5, "resets_at": "2026-05-03T18:30:00Z"}
+    ],
+    "tokens_5h": 127000,
+    "tokens_7d": 2840000,
+    "turns_5h": 127,
+    "turns_7d": 2840,
+    "burn_rate_per_min": 8450.0,
+    "forecast_full_5h_min": 105.0,
+    "forecast_full_7d_min": null,
+    "source": "api_cache",
+    "computed_at": "2026-05-03T14:20:00Z"
+  }
+]
+```
+
+### Data Sources
+
+The capacity meter reads from two sources (in priority order):
+
+1. **Cached API response** (`~/.cache/claude-usage/usage.json`) — exact numbers matching Claude Code's `/status` output. This file is written by Claude Code when you run `/status` or check limits.
+
+2. **JSONL-based estimation** — fallback when cache is stale or missing. Parses `~/.claude/projects/*/*.jsonl` files and counts tokens using cost-equivalent weighting:
+   - Input tokens: 1.0× weight
+   - Output tokens: ~5× weight (matching API pricing ratio)
+   - Cache read tokens: ~0.1× weight
+   - Cache write tokens: ~0.25× weight
+
+The JSONL fallback is inherently approximate because the exact weighting formula is proprietary. The cached API response should be preferred whenever available.
+
+### Account Discovery
+
+By default, scans:
+- `~/.claude` (named "claude-default" in output)
+- All `~/.claude-*` directories that contain `.credentials.json`
+
+For example, if you have `~/.claude` and `~/.claude-work`, both will be scanned and reported separately.
+
+### Exit Codes
+
+| Code | Meaning |
+|------|---------|
+| 0 | Success |
+| 1 | No Claude accounts found |
+
+---
+
 ## `agentscribe context`
 
 Pre-task priming query for agent workers. Returns a formatted context block with past solutions, project conventions, and file notes — ready for direct injection into agent prompts.
