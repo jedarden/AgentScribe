@@ -126,6 +126,24 @@ mod tests {
     }
 
     #[test]
+    fn test_phone_redaction() {
+        let s = default_scanner();
+        // Test various phone formats
+        let test_cases = vec![
+            ("Call me at 555-123-4567", "[PHONE]"),
+            ("+1 (555) 555-5555", "[PHONE]"),
+            ("(555) 555 5555", "[PHONE]"),
+            ("555.555.5555", "[PHONE]"),
+            ("Phone: 1-800-555-0199", "[PHONE]"),
+        ];
+        for (input, expected) in test_cases {
+            let result = s.redact(input);
+            assert!(result.contains(expected), "Failed for: {}", input);
+            assert!(!result.contains("555"), "Phone number not redacted in: {}", input);
+        }
+    }
+
+    #[test]
     fn test_credit_card_redaction() {
         let s = default_scanner();
         let result = s.redact("Card: 4111 1111 1111 1111");
@@ -172,5 +190,238 @@ mod tests {
         // Should not panic — invalid patterns are silently skipped.
         let s = RedactionScanner::new(config);
         assert_eq!(s.redact("hello"), "hello");
+    }
+
+    // ─── Regression test for PHONE_RE \b edge case (f0c6efa) ───────────
+
+    // Regression test for bug fixed in f0c6efa: PHONE_RE was missing leading \b
+    // and would match inside credit card numbers, breaking credit-card redaction.
+    #[test]
+    fn test_phone_re_does_not_match_inside_credit_card() {
+        // Create scanner that only redacts phones (not cards)
+        let config = RedactionConfig {
+            enabled: true,
+            redact_emails: false,
+            redact_phones: true,
+            redact_credit_cards: false,
+            redact_ssn: false,
+            custom_patterns: vec![],
+        };
+        let s = RedactionScanner::new(config);
+
+        // Credit card number "4111 1111 1111 1111" contains "111-1111" which
+        // looks like a phone number. PHONE_RE should NOT match it due to \b.
+        let result = s.redact("Card: 4111 1111 1111 1111");
+        assert_eq!(result, "Card: 4111 1111 1111 1111",
+                   "PHONE_RE should not match inside credit card digits");
+
+        // Another example: "4242 4242 4242 4242" could have "424-2424" pattern
+        let result = s.redact("Card: 4242 4242 4242 4242");
+        assert_eq!(result, "Card: 4242 4242 4242 4242",
+                   "PHONE_RE should not match 424-2424 pattern inside card");
+    }
+
+    // ─── Credit card negative cases ─────────────────────────────────────
+
+    #[test]
+    fn test_credit_card_does_not_match_short_numbers() {
+        let s = default_scanner();
+
+        // 12-digit number (too short for credit card)
+        let result = s.redact("ID: 1234 5678 9012");
+        assert!(result.contains("1234 5678 9012"));
+        assert!(!result.contains("[CARD]"));
+
+        // 15-digit without proper grouping (below 16 threshold for plain numbers)
+        let result = s.redact("Number: 123456789012345");
+        assert!(result.contains("123456789012345"));
+        assert!(!result.contains("[CARD]"));
+    }
+
+    #[test]
+    fn test_credit_card_does_not_match_mid_sequence() {
+        let s = default_scanner();
+
+        // 20-digit number (too long for credit card)
+        let result = s.redact("Long: 12345678901234567890");
+        assert!(result.contains("12345678901234567890"));
+        assert!(!result.contains("[CARD]"));
+
+        // Partial grouping at end - note: the grouped pattern matches 3 groups of 4 digits
+        // followed by 1-4 more digits, so "1234 5678 9012 34" does match (14 digits total)
+        let result = s.redact("Ends with 1234 5678 9012 34");
+        assert!(!result.contains("1234 5678 9012 34"));
+        assert!(result.contains("[CARD]"));
+
+        // But "1234 5678 9012" (only 3 groups, no trailing digits) should not match
+        let result = s.redact("Just 1234 5678 9012 here");
+        assert!(result.contains("1234 5678 9012"));
+        assert!(!result.contains("[CARD]"));
+    }
+
+    #[test]
+    fn test_credit_card_variations() {
+        let s = default_scanner();
+
+        // 15-digit card (below 16-19 threshold for plain numbers)
+        let result = s.redact("Card: 378282246310005");
+        assert!(result.contains("378282246310005"));
+        assert!(!result.contains("[CARD]"));
+
+        // 16-digit with dashes
+        let result = s.redact("Card: 4111-1111-1111-1111");
+        assert!(!result.contains("4111-1111-1111-1111"));
+        assert!(result.contains("[CARD]"));
+
+        // 19-digit card
+        let result = s.redact("Card: 1234567890123456789");
+        assert!(!result.contains("1234567890123456789"));
+        assert!(result.contains("[CARD]"));
+
+        // 13-digit grouped (Amex-style: 4-6-3 grouping not supported, but 4-4-4-1 is)
+        let result = s.redact("Card: 3782 822463 10005");
+        assert!(result.contains("3782 822463 10005"));
+        assert!(!result.contains("[CARD]"));
+
+        // 16-digit plain number
+        let result = s.redact("Card: 4111111111111111");
+        assert!(!result.contains("4111111111111111"));
+        assert!(result.contains("[CARD]"));
+    }
+
+    // ─── SSN negative cases ─────────────────────────────────────────────
+
+    #[test]
+    fn test_ssn_does_not_match_invalid_formats() {
+        let s = default_scanner();
+
+        // SSN with spaces between groups (valid - space is in [\s\-] character class)
+        let result = s.redact("SSN: 123 45 6789");
+        assert!(!result.contains("123 45 6789"));
+        assert!(result.contains("[SSN]"));
+
+        // SSN without separators (should not match)
+        let result = s.redact("ID: 123456789");
+        assert!(result.contains("123456789"));
+        assert!(!result.contains("[SSN]"));
+
+        // SSN with wrong grouping (2-3-4 instead of 3-2-4)
+        // Note: this will be redacted by phone pattern matching "45-6789",
+        // so we use a scanner with only SSN enabled to test SSN behavior.
+        let config = RedactionConfig {
+            enabled: true,
+            redact_emails: false,
+            redact_phones: false,
+            redact_credit_cards: false,
+            redact_ssn: true,
+            custom_patterns: vec![],
+        };
+        let s = RedactionScanner::new(config);
+        let result = s.redact("ID: 12-345-6789");
+        assert!(result.contains("12-345-6789"));
+        assert!(!result.contains("[SSN]"));
+
+        // SSN with 4-2-4 grouping (wrong)
+        let result = s.redact("ID: 1234-56-7890");
+        assert!(result.contains("1234-56-7890"));
+        assert!(!result.contains("[SSN]"));
+    }
+
+    // ─── Email negative cases ───────────────────────────────────────────
+
+    #[test]
+    fn test_email_does_not_match_invalid_formats() {
+        let s = default_scanner();
+
+        // Missing TLD
+        let result = s.redact("Contact at user@localhost");
+        assert!(result.contains("user@localhost"));
+        assert!(!result.contains("[EMAIL]"));
+
+        // Missing @ symbol
+        let result = s.redact("Contact at user.example.com");
+        assert!(result.contains("user.example.com"));
+        assert!(!result.contains("[EMAIL]"));
+
+        // Invalid TLD (single char)
+        let result = s.redact("Contact at user@example.c");
+        assert!(result.contains("user@example.c"));
+        assert!(!result.contains("[EMAIL]"));
+    }
+
+    // ─── Phone negative cases ───────────────────────────────────────────
+
+    #[test]
+    fn test_phone_does_not_match_short_numbers() {
+        let s = default_scanner();
+
+        // Too short (less than 7 digits after area code)
+        let result = s.redact("Extension: x1234");
+        assert!(result.contains("x1234"));
+        assert!(!result.contains("[PHONE]"));
+
+        // 6-digit number (too short)
+        let result = s.redact("Code: 123-456");
+        assert!(result.contains("123-456"));
+        assert!(!result.contains("[PHONE]"));
+    }
+
+    // ─── Multiple PII in one text ───────────────────────────────────────
+
+    #[test]
+    fn test_multiple_pii_types_in_one_text() {
+        let s = default_scanner();
+        let input = "Contact alice@example.com or call 555-123-4567. Card: 4111 1111 1111 1111. SSN: 123-45-6789.";
+        let result = s.redact(input);
+
+        assert!(!result.contains("alice@example.com"));
+        assert!(!result.contains("555-123-4567"));
+        assert!(!result.contains("4111 1111 1111 1111"));
+        assert!(!result.contains("123-45-6789"));
+
+        assert!(result.contains("[EMAIL]"));
+        assert!(result.contains("[PHONE]"));
+        assert!(result.contains("[CARD]"));
+        assert!(result.contains("[SSN]"));
+    }
+
+    // ─── Selective redaction ────────────────────────────────────────────
+
+    #[test]
+    fn test_selective_redaction_phones_only() {
+        let config = RedactionConfig {
+            enabled: true,
+            redact_emails: false,
+            redact_phones: true,
+            redact_credit_cards: false,
+            redact_ssn: false,
+            custom_patterns: vec![],
+        };
+        let s = RedactionScanner::new(config);
+        let result = s.redact("alice@example.com or 555-123-4567");
+
+        assert!(result.contains("alice@example.com"));
+        assert!(!result.contains("555-123-4567"));
+        assert!(result.contains("[PHONE]"));
+        assert!(!result.contains("[EMAIL]"));
+    }
+
+    #[test]
+    fn test_selective_redaction_emails_only() {
+        let config = RedactionConfig {
+            enabled: true,
+            redact_emails: true,
+            redact_phones: false,
+            redact_credit_cards: false,
+            redact_ssn: false,
+            custom_patterns: vec![],
+        };
+        let s = RedactionScanner::new(config);
+        let result = s.redact("alice@example.com or 555-123-4567");
+
+        assert!(!result.contains("alice@example.com"));
+        assert!(result.contains("555-123-4567"));
+        assert!(!result.contains("[PHONE]"));
+        assert!(result.contains("[EMAIL]"));
     }
 }
