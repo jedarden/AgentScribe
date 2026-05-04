@@ -139,7 +139,11 @@ mod tests {
         for (input, expected) in test_cases {
             let result = s.redact(input);
             assert!(result.contains(expected), "Failed for: {}", input);
-            assert!(!result.contains("555"), "Phone number not redacted in: {}", input);
+            assert!(
+                !result.contains("555"),
+                "Phone number not redacted in: {}",
+                input
+            );
         }
     }
 
@@ -212,13 +216,17 @@ mod tests {
         // Credit card number "4111 1111 1111 1111" contains "111-1111" which
         // looks like a phone number. PHONE_RE should NOT match it due to \b.
         let result = s.redact("Card: 4111 1111 1111 1111");
-        assert_eq!(result, "Card: 4111 1111 1111 1111",
-                   "PHONE_RE should not match inside credit card digits");
+        assert_eq!(
+            result, "Card: 4111 1111 1111 1111",
+            "PHONE_RE should not match inside credit card digits"
+        );
 
         // Another example: "4242 4242 4242 4242" could have "424-2424" pattern
         let result = s.redact("Card: 4242 4242 4242 4242");
-        assert_eq!(result, "Card: 4242 4242 4242 4242",
-                   "PHONE_RE should not match 424-2424 pattern inside card");
+        assert_eq!(
+            result, "Card: 4242 4242 4242 4242",
+            "PHONE_RE should not match 424-2424 pattern inside card"
+        );
     }
 
     // ─── Credit card negative cases ─────────────────────────────────────
