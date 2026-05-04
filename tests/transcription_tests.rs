@@ -384,6 +384,219 @@ fn test_transcription_queue_creation() {
     drop(queue); // Explicit drop to verify cleanup works
 }
 
+// ─── TranscriptionQueue comprehensive integration tests ─────────────────────────────
+
+#[test]
+fn test_transcription_queue_job_submission() {
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let _guard = rt.enter();
+
+    let whisper_config = WhisperConfig {
+        enabled: false,
+        ..Default::default()
+    };
+    let redaction_config = RedactionConfig::default();
+
+    let queue = TranscriptionQueue::new(whisper_config, redaction_config);
+
+    // Submit a job
+    let test_file = PathBuf::from("/tmp/test.wav");
+    let job_id = rt.block_on(queue.submit(test_file.clone(), 3));
+
+    assert!(job_id.is_ok(), "Job submission should succeed");
+    let id = job_id.unwrap();
+    assert!(!id.is_empty(), "Job ID should not be empty");
+    assert!(id.starts_with("txjob-"), "Job ID should have txjob- prefix");
+
+    // Verify job is tracked in state
+    let job = rt.block_on(queue.get_job(&id));
+    assert!(job.is_some(), "Submitted job should be retrievable");
+    let job = job.unwrap();
+    assert_eq!(job.input_path, test_file);
+    assert_eq!(job.max_retries, 3);
+    assert_eq!(job.attempts, 0);
+    assert_eq!(job.status, agentscribe::transcription::JobStatus::Pending);
+}
+
+#[test]
+fn test_transcription_queue_multiple_jobs() {
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let _guard = rt.enter();
+
+    let whisper_config = WhisperConfig {
+        enabled: false,
+        ..Default::default()
+    };
+    let redaction_config = RedactionConfig::default();
+
+    let queue = TranscriptionQueue::new(whisper_config, redaction_config);
+
+    // Submit multiple jobs
+    let job1_id = rt
+        .block_on(queue.submit(PathBuf::from("/tmp/test1.wav"), 2))
+        .unwrap();
+    let job2_id = rt
+        .block_on(queue.submit(PathBuf::from("/tmp/test2.mp3"), 3))
+        .unwrap();
+    let job3_id = rt
+        .block_on(queue.submit(PathBuf::from("/tmp/test3.m4a"), 1))
+        .unwrap();
+
+    // All IDs should be unique
+    assert_ne!(job1_id, job2_id);
+    assert_ne!(job2_id, job3_id);
+    assert_ne!(job1_id, job3_id);
+
+    // All jobs should be retrievable
+    assert!(rt.block_on(queue.get_job(&job1_id)).is_some());
+    assert!(rt.block_on(queue.get_job(&job2_id)).is_some());
+    assert!(rt.block_on(queue.get_job(&job3_id)).is_some());
+}
+
+#[test]
+fn test_transcription_queue_get_unknown_job() {
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let _guard = rt.enter();
+
+    let whisper_config = WhisperConfig {
+        enabled: false,
+        ..Default::default()
+    };
+    let redaction_config = RedactionConfig::default();
+
+    let queue = TranscriptionQueue::new(whisper_config, redaction_config);
+
+    // Unknown job should return None
+    let job = rt.block_on(queue.get_job("txjob-fake-id"));
+    assert!(job.is_none(), "Unknown job should return None");
+}
+
+#[test]
+fn test_transcription_queue_wait_timeout() {
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let _guard = rt.enter();
+
+    let whisper_config = WhisperConfig {
+        enabled: false,
+        ..Default::default()
+    };
+    let redaction_config = RedactionConfig::default();
+
+    let queue = TranscriptionQueue::new(whisper_config, redaction_config);
+
+    // Submit a job (it will sit in Pending since Whisper is disabled)
+    let job_id = rt
+        .block_on(queue.submit(PathBuf::from("/tmp/test.wav"), 0))
+        .unwrap();
+
+    // wait_for_job should timeout since the job won't complete
+    let result = rt.block_on(queue.wait_for_job(&job_id, std::time::Duration::from_millis(100)));
+
+    assert!(result.is_err(), "wait_for_job should timeout");
+}
+
+#[test]
+fn test_transcription_job_state_transitions() {
+    let mut job = TranscriptionJob::new(PathBuf::from("/tmp/test.wav"), 3);
+
+    // Initial state
+    assert_eq!(job.status, agentscribe::transcription::JobStatus::Pending);
+    assert_eq!(job.attempts, 0);
+    assert!(job.result.is_none());
+    assert!(job.error.is_none());
+
+    // Simulate state changes (normally done by the worker)
+    job.status = agentscribe::transcription::JobStatus::Running;
+    job.attempts = 1;
+
+    assert_eq!(job.status, agentscribe::transcription::JobStatus::Running);
+    assert_eq!(job.attempts, 1);
+}
+
+#[test]
+fn test_transcription_result_with_pii_in_word_timestamps() {
+    let scanner = RedactionScanner::new(RedactionConfig::default());
+
+    // Create a result with PII in word timestamps
+    let mut result = TranscriptionResult::word_level(
+        "My email is test@example.com".to_string(),
+        vec![
+            agentscribe::transcription::WordTimestamp {
+                text: "My".to_string(),
+                start_ms: 0,
+                end_ms: 100,
+                probability: None,
+            },
+            agentscribe::transcription::WordTimestamp {
+                text: "email".to_string(),
+                start_ms: 100,
+                end_ms: 300,
+                probability: None,
+            },
+            agentscribe::transcription::WordTimestamp {
+                text: "is".to_string(),
+                start_ms: 300,
+                end_ms: 400,
+                probability: None,
+            },
+            agentscribe::transcription::WordTimestamp {
+                text: "test@example.com".to_string(),
+                start_ms: 400,
+                end_ms: 900,
+                probability: None,
+            },
+        ],
+        vec![],
+        None,
+    );
+
+    // Apply redaction to both full text and individual words
+    result.full_text = scanner.redact(&result.full_text);
+    for word in &mut result.word_timestamps {
+        word.text = scanner.redact(&word.text);
+    }
+
+    // Verify PII is redacted in both full text and word timestamps
+    assert!(result.full_text.contains("[EMAIL]"));
+    assert!(!result.full_text.contains("test@example.com"));
+
+    // Check the specific word that contained the email
+    let email_word = &result.word_timestamps[3];
+    assert!(email_word.text.contains("[EMAIL]"));
+    assert!(!email_word.text.contains("test@example.com"));
+}
+
+#[test]
+fn test_transcription_result_with_pii_in_utterances() {
+    let scanner = RedactionScanner::new(RedactionConfig::default());
+
+    // Create a result with PII in utterance timestamps
+    let mut result = TranscriptionResult::utterance_level(
+        "Call me at 555-123-4567".to_string(),
+        vec![agentscribe::transcription::UtteranceTimestamp {
+            text: "Call me at 555-123-4567".to_string(),
+            start_ms: 0,
+            end_ms: 1500,
+        }],
+        None,
+        vec![],
+    );
+
+    // Apply redaction to both full text and utterances
+    result.full_text = scanner.redact(&result.full_text);
+    for utterance in &mut result.utterance_timestamps {
+        utterance.text = scanner.redact(&utterance.text);
+    }
+
+    // Verify PII is redacted in both full text and utterances
+    assert!(result.full_text.contains("[PHONE]"));
+    assert!(!result.full_text.contains("555-123-4567"));
+
+    let utterance = &result.utterance_timestamps[0];
+    assert!(utterance.text.contains("[PHONE]"));
+    assert!(!utterance.text.contains("555-123-4567"));
+}
+
 // ─── Integration: redaction happens before storage ───────────────────────────────
 
 #[test]
