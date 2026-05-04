@@ -121,7 +121,7 @@ pub struct TranscriptionResult {
 }
 
 impl TranscriptionResult {
-    fn word_level(
+    pub fn word_level(
         full_text: String,
         words: Vec<WordTimestamp>,
         utterances: Vec<UtteranceTimestamp>,
@@ -139,7 +139,7 @@ impl TranscriptionResult {
         }
     }
 
-    fn utterance_level(
+    pub fn utterance_level(
         full_text: String,
         utterances: Vec<UtteranceTimestamp>,
         language: Option<String>,
