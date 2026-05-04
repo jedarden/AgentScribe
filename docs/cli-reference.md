@@ -927,6 +927,106 @@ Summary written to ~/.agentscribe/sessions/claude-code/83f5a4e7.md
 
 ---
 
+## `agentscribe pulse-report`
+
+Generate comprehensive quarterly analytics reports from the AgentScribe index. Provides executive summaries, monthly breakdowns, agent comparisons, error patterns, model usage, and PR/media highlights for "State of AI Coding" reports.
+
+### Usage
+
+```
+agentscribe pulse-report [options]
+```
+
+### Options
+
+| Option | Short | Default | Description |
+|--------|-------|---------|-------------|
+| `--quarter <quarter>` | `-q` | `current` | Quarter to report on. Format: `YYYY-Q1` through `YYYY-Q4` or `current` for the current calendar quarter. Case-insensitive. |
+| `--output <path>` | `-o` | stdout | Write output to a file instead of printing to stdout. |
+| `--format <format>` | `-f` | `markdown` | Output format: `markdown`, `html`, or `json`. |
+
+### Examples
+
+```bash
+# Generate report for current quarter
+agentscribe pulse-report
+
+# Specific quarter
+agentscribe pulse-report --quarter 2026-Q1
+
+# Save as HTML
+agentscribe pulse-report --quarter 2026-Q2 --format html --output q2-report.html
+
+# JSON for further processing
+agentscribe pulse-report --format json --output report.json
+```
+
+### Output
+
+**Markdown** (default):
+- Full report with tables, ASCII charts, and methodology section
+- Suitable for documentation, git commits, or conversion to PDF via pandoc
+
+**HTML**:
+- Self-contained HTML with inline CSS (~3KB) and responsive design
+- Dark/light mode support via `prefers-color-scheme`
+- No external dependencies
+- Suitable for web hosting or email attachments
+
+**JSON**:
+- Structured data for programmatic consumption or further analysis
+
+Markdown output includes:
+- Executive Summary with total sessions, success rate, avg turns, tokens, cost
+- Monthly Breakdown table with ASCII charts for session volume and success rate
+- Agent Comparison table with success rate comparison chart
+- Problem Type Distribution chart
+- Model Usage table
+- Top Error Patterns list
+- Key Insights with auto-generated observations
+- PR & Media Highlights with statistics for announcements
+- Methodology section explaining data sources and calculations
+
+HTML output includes:
+- Summary cards with key metrics
+- Interactive bar charts
+- Responsive tables
+- Color-coded insights by category
+- Footer with methodology
+
+JSON output structure:
+```json
+{
+  "quarter": "Q1 2026",
+  "period_start": "2026-01-01T00:00:00Z",
+  "period_end": "2026-03-31T23:59:59Z",
+  "total_sessions": 1247,
+  "overall_success_rate": 73.2,
+  "overall_avg_turns": 9.4,
+  "estimated_total_tokens": 5900000.0,
+  "estimated_total_cost": 142.30,
+  "monthly_breakdown": [...],
+  "agent_metrics": [...],
+  "model_usage": [...],
+  "top_error_patterns": [...],
+  "problem_type_distribution": [...],
+  "weekly_trend": [...],
+  "key_insights": [...],
+  "pr_highlights": [...],
+  "computed_at": "2026-04-01T09:00:00Z"
+}
+```
+
+### Exit Codes
+
+| Code | Meaning |
+|------|---------|
+| 0 | Success |
+| 1 | Invalid quarter format |
+| 2 | Data dir not initialized |
+
+---
+
 ## `agentscribe recurring`
 
 Detect recurring problems by grouping error fingerprints across sessions. Shows problems that happen repeatedly, which projects they affect, and links to sessions that fixed them.
