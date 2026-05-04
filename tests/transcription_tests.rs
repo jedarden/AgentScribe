@@ -91,11 +91,7 @@ fn test_redaction_scanner_pii_patterns() {
     }
 
     // SSN patterns
-    let ssn_cases = vec![
-        "SSN: 123-45-6789",
-        "Social: 123 45 6789",
-        "ID: 123-45-6789",
-    ];
+    let ssn_cases = vec!["SSN: 123-45-6789", "Social: 123 45 6789", "ID: 123-45-6789"];
     for input in ssn_cases {
         let result = scanner.redact(input);
         assert!(
@@ -155,7 +151,10 @@ fn test_redaction_scanner_selective_enable() {
 
     assert!(result.contains("[EMAIL]"));
     assert!(!result.contains("[PHONE]"));
-    assert!(result.contains("555-123-4567"), "Phone should not be redacted");
+    assert!(
+        result.contains("555-123-4567"),
+        "Phone should not be redacted"
+    );
 }
 
 #[test]

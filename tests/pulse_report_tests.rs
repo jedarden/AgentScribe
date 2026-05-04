@@ -11,8 +11,7 @@ use std::fs;
 
 use agentscribe::config::Config;
 use agentscribe::pulse_report::{
-    format_html, format_json, format_markdown, parse_quarter, PulseReportOptions,
-    ReportFormat,
+    format_html, format_json, format_markdown, parse_quarter, PulseReportOptions, ReportFormat,
 };
 use agentscribe::scraper::Scraper;
 use chrono::{Datelike, Timelike, Utc};
@@ -120,13 +119,23 @@ fn test_quarter_parsing_current() {
 
     // Verify the quarter label is valid
     assert!(q.label.starts_with('Q'), "label should start with Q");
-    assert!(q.label.contains(&now.year().to_string()), "label should contain year");
+    assert!(
+        q.label.contains(&now.year().to_string()),
+        "label should contain year"
+    );
 
     // Verify the key format
     assert!(q.key.contains('-'), "key should contain hyphen");
     let parts: Vec<&str> = q.key.split('-').collect();
-    assert_eq!(parts.len(), 2, "key should have two parts separated by hyphen");
-    assert!(parts[0].parse::<i32>().is_ok(), "first part should be a valid year");
+    assert_eq!(
+        parts.len(),
+        2,
+        "key should have two parts separated by hyphen"
+    );
+    assert!(
+        parts[0].parse::<i32>().is_ok(),
+        "first part should be a valid year"
+    );
     assert!(parts[1].starts_with('Q'), "second part should start with Q");
 }
 
@@ -214,10 +223,13 @@ fn test_empty_index_returns_valid_report() {
         format: ReportFormat::Markdown,
     };
 
-    let report =
-        agentscribe::pulse_report::generate_pulse_report(data_dir.path(), &opts, &config);
+    let report = agentscribe::pulse_report::generate_pulse_report(data_dir.path(), &opts, &config);
 
-    assert!(report.is_ok(), "empty index should return Ok report: {:?}", report.err());
+    assert!(
+        report.is_ok(),
+        "empty index should return Ok report: {:?}",
+        report.err()
+    );
 
     let r = report.unwrap();
     assert_eq!(r.total_sessions, 0);
@@ -252,9 +264,8 @@ fn test_markdown_output_format() {
         format: ReportFormat::Markdown,
     };
 
-    let report =
-        agentscribe::pulse_report::generate_pulse_report(data_dir.path(), &opts, &config)
-            .expect("generate failed");
+    let report = agentscribe::pulse_report::generate_pulse_report(data_dir.path(), &opts, &config)
+        .expect("generate failed");
 
     let md = format_markdown(&report);
 
@@ -276,11 +287,17 @@ fn test_markdown_output_format() {
     assert!(md.contains("## Methodology"));
 
     // Verify ASCII charts are present
-    assert!(md.contains('█'), "Markdown should contain ASCII bar characters");
+    assert!(
+        md.contains('█'),
+        "Markdown should contain ASCII bar characters"
+    );
 
     // Verify table formatting
     assert!(md.contains("|"), "Markdown should contain table separators");
-    assert!(md.contains("---"), "Markdown should contain table header separators");
+    assert!(
+        md.contains("---"),
+        "Markdown should contain table header separators"
+    );
 
     // Verify data is populated
     assert!(md.contains("Total Sessions"));
@@ -312,9 +329,8 @@ fn test_html_output_self_contained() {
         format: ReportFormat::Html,
     };
 
-    let report =
-        agentscribe::pulse_report::generate_pulse_report(data_dir.path(), &opts, &config)
-            .expect("generate failed");
+    let report = agentscribe::pulse_report::generate_pulse_report(data_dir.path(), &opts, &config)
+        .expect("generate failed");
 
     let html = format_html(&report);
 
@@ -328,7 +344,10 @@ fn test_html_output_self_contained() {
     // Verify CSS is embedded (no external links for styles)
     assert!(html.contains("<style>"));
     assert!(html.contains("</style>"));
-    assert!(!html.contains("<link rel=\"stylesheet\""), "should not have external CSS links");
+    assert!(
+        !html.contains("<link rel=\"stylesheet\""),
+        "should not have external CSS links"
+    );
 
     // Verify required CSS classes are present
     assert!(html.contains("class=\"report-header\""));
@@ -388,15 +407,13 @@ fn test_json_output_structure() {
         format: ReportFormat::Json,
     };
 
-    let report =
-        agentscribe::pulse_report::generate_pulse_report(data_dir.path(), &opts, &config)
-            .expect("generate failed");
+    let report = agentscribe::pulse_report::generate_pulse_report(data_dir.path(), &opts, &config)
+        .expect("generate failed");
 
     let json_str = format_json(&report);
 
     // Verify valid JSON
-    let parsed: serde_json::Value =
-        serde_json::from_str(&json_str).expect("should be valid JSON");
+    let parsed: serde_json::Value = serde_json::from_str(&json_str).expect("should be valid JSON");
 
     // Verify top-level fields exist
     assert!(parsed.get("quarter").is_some());
@@ -447,8 +464,14 @@ fn test_report_format_parsing() {
         Some(ReportFormat::Markdown)
     );
     assert_eq!(ReportFormat::parse("md"), Some(ReportFormat::Markdown));
-    assert_eq!(ReportFormat::parse("Markdown"), Some(ReportFormat::Markdown));
-    assert_eq!(ReportFormat::parse("MARKDOWN"), Some(ReportFormat::Markdown));
+    assert_eq!(
+        ReportFormat::parse("Markdown"),
+        Some(ReportFormat::Markdown)
+    );
+    assert_eq!(
+        ReportFormat::parse("MARKDOWN"),
+        Some(ReportFormat::Markdown)
+    );
 
     assert_eq!(ReportFormat::parse("html"), Some(ReportFormat::Html));
     assert_eq!(ReportFormat::parse("HTML"), Some(ReportFormat::Html));
@@ -510,7 +533,11 @@ fn test_full_pulse_report_integration() {
     assert_eq!(q1_report.total_sessions, 10, "Q1 should have 10 sessions");
 
     // Verify monthly breakdown for Q1
-    assert_eq!(q1_report.monthly_breakdown.len(), 3, "Q1 should have 3 months");
+    assert_eq!(
+        q1_report.monthly_breakdown.len(),
+        3,
+        "Q1 should have 3 months"
+    );
     let month_keys: Vec<&str> = q1_report
         .monthly_breakdown
         .iter()
@@ -573,12 +600,15 @@ fn test_report_without_error_patterns() {
         format: ReportFormat::Markdown,
     };
 
-    let report =
-        agentscribe::pulse_report::generate_pulse_report(data_dir.path(), &opts, &config)
-            .expect("generate failed");
+    let report = agentscribe::pulse_report::generate_pulse_report(data_dir.path(), &opts, &config)
+        .expect("generate failed");
 
     assert_eq!(report.total_sessions, 1);
-    assert_eq!(report.top_error_patterns.len(), 0, "should have no error patterns");
+    assert_eq!(
+        report.top_error_patterns.len(),
+        0,
+        "should have no error patterns"
+    );
 
     // Verify formats handle empty error patterns gracefully
     let md = format_markdown(&report);
