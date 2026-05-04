@@ -65,23 +65,26 @@ Every coding agent stores its conversation history differently — JSONL, Markdo
 
 ```
 agentscribe <command>
-├── config      # Manage global config and data directory (init|show|set|get)
-├── plugins     # Manage scraper plugin definitions (list|validate|show)
-├── scrape      # Discover and read agent log files from known locations
-├── index       # Manage the Tantivy search index (rebuild|stats|optimize)
-├── search      # Query the index — primary interface for agents
-├── blame       # Bidirectional git commit ↔ session linking
-├── file        # File knowledge map — show all sessions that touched a file
-├── recurring   # Surface problems that keep being solved repeatedly
-├── rules       # Auto-generate project rules from session patterns
-├── analytics   # Agent effectiveness metrics and comparisons
-├── summarize   # Generate Markdown summaries for sessions
-├── digest      # Automated activity summary over a time period
-├── status      # Show tracked agents, session counts, daemon state
-├── daemon      # Long-running background process (start|stop|status|run|logs)
-├── gc          # Delete old sessions, compact index, reclaim disk space
-├── shell-hook  # Generate shell integration for search-on-error (bash|zsh|fish)
-└── completions # Generate shell completions (bash|zsh|fish)
+├── config       # Manage global config and data directory (init|show|set|get)
+├── plugins      # Manage scraper plugin definitions (list|validate|show)
+├── scrape       # Discover and read agent log files from known locations
+├── index        # Manage the Tantivy search index (rebuild|stats|optimize)
+├── search       # Query the index — primary interface for agents
+├── blame        # Bidirectional git commit ↔ session linking
+├── file         # File knowledge map — show all sessions that touched a file
+├── recurring    # Surface problems that keep being solved repeatedly
+├── rules        # Auto-generate project rules from session patterns
+├── analytics    # Agent effectiveness metrics and comparisons
+├── summarize    # Generate Markdown summaries for sessions
+├── digest       # Automated activity summary over a time period
+├── pulse-report # Quarterly State of AI Coding analytics report
+├── capacity     # Per-account Claude Code utilization (5h/7d rolling windows)
+├── transcribe   # Transcribe audio files using local Whisper with PII redaction
+├── status       # Show tracked agents, session counts, daemon state
+├── daemon       # Long-running background process (start|stop|status|run|logs)
+├── gc           # Delete old sessions, compact index, reclaim disk space
+├── shell-hook   # Generate shell integration for search-on-error (bash|zsh|fish)
+└── completions  # Generate shell completions (bash|zsh|fish)
 ```
 
 See [cli-reference.md](cli-reference.md) for detailed help on every command, flag, output format, and exit code.
@@ -1024,6 +1027,305 @@ agentscribe digest --since 7d
 #   - Aider: 100% success rate on refactoring tasks (5/5)
 #   - Codex: 43% abandonment rate — highest of all agents
 ```
+
+---
+
+### Audio Transcription with PII Redaction
+
+Local Whisper audio transcription with automatic PII redaction for privacy-safe audio processing. Designed for transcribing voice memos, meeting recordings, and agent-audio interactions without exposing sensitive information.
+
+**Interface:**
+
+```bash
+agentscribe transcribe <audio-file> [--wait] [--timeout <seconds>] [--json]
+```
+
+- `<audio-file>`: Path to the audio file (wav, mp3, or m4a format)
+- `--wait`: Wait for the job to complete and print the transcript (default: true)
+- `--timeout <seconds>`: Maximum time to wait for completion (default: 300)
+- `--json`: Output the transcript as JSON instead of human-readable text
+
+**Supported audio formats:** wav, mp3, m4a. Format is auto-detected from the file extension.
+
+**Backends:** whisper.cpp (recommended) or OpenAI Whisper CLI. Auto-detected from output JSON structure when `backend` is set to "auto" (default).
+
+**Privacy:** All transcripts pass through [`RedactionScanner`] before storage or indexing. PII categories are redacted by default:
+- Email addresses → `[EMAIL]`
+- Phone numbers (US/NANP format) → `[PHONE]`
+- Credit card numbers (16 digits) → `[CARD]`
+- Social Security Numbers → `[SSN]`
+- Custom regex patterns → `[REDACTED]`
+
+**Configuration** (`~/.agentscribe/config.toml`):
+
+```toml
+[whisper]
+enabled = true                       # Enable transcription support
+model_path = "~/.agentscribe/models/ggml-base.bin"  # Whisper model file
+executable = "whisper"                # Path or name of whisper binary
+backend = "whisper_cpp"              # "whisper_cpp", "openai_whisper", or "auto"
+max_retries = 3                      # Retry attempts on failure (default: 3)
+timeout_seconds = 300                # Per-attempt timeout (default: 300)
+word_timestamps = true               # Request word-level timestamps
+language = "en"                      # Language code (auto-detected if unset)
+
+[redaction]
+enabled = true                       # Enable redaction (default: true)
+redact_emails = true                 # Redact email addresses (default: true)
+redact_phones = true                 # Redact phone numbers (default: true)
+redact_credit_cards = true           # Redact credit card numbers (default: true)
+redact_ssn = true                    # Redact Social Security Numbers (default: true)
+custom_patterns = []                 # Additional regex patterns to redact
+```
+
+**Job queue:** Transcription jobs run asynchronously in a background queue with retry and exponential back-off. Jobs survive process restarts via state tracking.
+
+**Output example:**
+
+```
+$ agentscribe transcribe meeting.m4a
+
+[txjob-1740987654321-000001] Processing meeting.m4a...
+[txjob-1740987654321-000001] Complete
+[4 segments, word-level, transcribed at 2025-03-16T12:34:56Z]
+
+Full transcript:
+Hi everyone, please email me at [EMAIL] or call [PHONE] for questions.
+The project deadline is next Friday.
+```
+
+**JSON output** (`--json`):
+
+```json
+{
+  "id": "txjob-1740987654321-000001",
+  "input_path": "/path/to/meeting.m4a",
+  "status": "completed",
+  "result": {
+    "full_text": "Hi everyone, please email me at [EMAIL]...",
+    "timestamp_level": "word",
+    "word_timestamps": [
+      {"text": "Hi", "start_ms": 0, "end_ms": 250, "probability": 0.98},
+      {"text": "everyone", "start_ms": 250, "end_ms": 800, "probability": 0.95}
+    ],
+    "utterance_timestamps": [],
+    "language": "en",
+    "has_warnings": false,
+    "warnings": [],
+    "transcribed_at": "2025-03-16T12:34:56Z"
+  }
+}
+```
+
+**Failure modes:**
+- **Word-level timestamps unavailable:** Falls back to utterance-level timestamps, sets `has_warnings = true`
+- **Whisper subprocess exits non-zero:** Attempts to salvage partial output from temp directory
+- **All retries exhausted:** Returns `JobStatus::Failed` with the last error message
+- **Unsupported audio format:** Returns error before invoking Whisper
+
+**Privacy guarantee:** The `RedactionScanner` runs as the final step of transcription, before any result is stored or returned. Even if Whisper produces PII in its output, it never leaves the process redacted.
+
+**Implementation:** `src/transcription.rs` (async job queue, Whisper subprocess integration), `src/redaction.rs` (PII pattern matching), `src/config.rs` (`WhisperConfig`, `RedactionConfig`).
+
+---
+
+### Quarterly Pulse Report
+
+**Purpose:** Generate comprehensive quarterly analytics reports from the AgentScribe index. Provides executive summaries, monthly breakdowns, agent comparisons, error patterns, and PR/media highlights for "State of AI Coding" reports.
+
+**Interface:**
+
+```bash
+agentscribe pulse-report [--quarter <YYYY-Qn|current>] [--output <path>] [--format markdown|html|json]
+```
+
+- `--quarter`: Quarter to report on (e.g., "2026-Q1", "2026-q2", "current"). Default: current quarter.
+- `--output <path>`: Write output to file instead of stdout.
+- `--format`: Output format: markdown (default), html, or json.
+
+**Quarter parsing:** Accepts `YYYY-Q1` through `YYYY-Q4` (case-insensitive), or the literal string "current" for the current calendar quarter. The quarter includes all sessions from 00:00:00 UTC on the first day to 23:59:59 UTC on the last day.
+
+**Output formats:**
+
+- **Markdown:** Full report with tables, ASCII charts, and methodology section. Suitable for documentation, git commits, or conversion to PDF via pandoc.
+- **HTML:** Self-contained HTML with inline CSS (~3KB) and responsive design. No external dependencies. Suitable for web hosting or email attachments.
+- **JSON:** Structured data for programmatic consumption or further analysis.
+
+**Example Markdown output:**
+
+```markdown
+# Pulse Report: State of AI Coding — Q1 2026
+
+> **Period:** January 1, 2026 to March 31, 2026  
+> **Generated:** 2026-04-01 09:00 UTC
+
+## Executive Summary
+
+| Metric | Value |
+|--------|-------|
+| Total Sessions | 1,247 |
+| Overall Success Rate | 73.2% |
+| Avg Turns / Session | 9.4 |
+| Est. Total Tokens | 5.9M |
+| Est. Total Cost | $142.30 |
+| Agents Tracked | 4 |
+
+## Monthly Breakdown
+| Month | Sessions | Success | Fail | Abandoned | Success Rate | Avg Turns |
+|-------|----------|---------|------|-----------|-------------|----------|
+| January 2026 | 412 | 305 | 67 | 40 | 74.0% | 9.2 |
+| February 2026 | 435 | 318 | 72 | 45 | 73.1% | 9.5 |
+| March 2026 | 400 | 289 | 81 | 30 | 72.3% | 9.6 |
+
+## Agent Comparison
+| Agent | Sessions | Success Rate | Avg Turns | Est. Cost |
+|-------|----------|-------------|-----------|-----------|
+| claude-code | 923 | 76.1% | 8.9 | $118.20 |
+| aider | 198 | 68.2% | 10.2 | $18.50 |
+| codex | 126 | 62.7% | 11.5 | $5.60 |
+
+## Key Insights
+### claude-code leads with 76.1% success rate
+**Category:** Agent Performance
+claude-code completed 923 sessions with 76.1% success, averaging 8.9 turns per successful resolution.
+
+## PR & Media Highlights
+1. **State of AI Coding Q1 2026 — 1,247 Sessions Analyzed**
+   - Stat: `1,247 coding sessions`
+   - Context: Comprehensive analysis of AI coding agent sessions across the Q1 2026 quarter.
+
+2. **73.2% of AI Coding Sessions Succeed**
+   - Stat: `73.2% success rate`
+   - Context: Measured by explicit user confirmation, clean test exits, and git commits.
+```
+
+**Data structures:**
+
+- `PulseReportOutput`: Full report with quarterly stats, monthly breakdown, agent metrics, model usage, error patterns, insights, and PR highlights
+- `MonthlyStats`: Per-month session counts, success/failure/abandoned counts, success rate, average turns, estimated tokens/cost, and sessions-by-agent map
+- `ModelUsageEntry`: Per-model usage statistics with sessions, estimated tokens/cost, and success rate
+- `ErrorPatternEntry`: Top error patterns with fingerprint, occurrences, resolution rate, and affected agents
+- `Insight`: Auto-generated insights with category, headline, and detail
+- `PrHighlight`: PR/media-ready statistics with headline, stat, and context
+
+**Memory/performance notes:**
+
+- Single-pass index scan using Tantivy TopDocs collector with limit = total_docs
+- All computation is in-memory; scales linearly with session count in the quarter
+- Typical quarter (1000 sessions): ~50ms index scan, ~200ms report generation
+- HTML output includes inline CSS (~3KB) and dark/light mode support via `prefers-color-scheme`
+- No external dependencies for HTML rendering (self-contained)
+
+**Implementation:** `src/pulse_report.rs` (~1700 lines). Integrates with `analytics` module for agent metrics and `recurring` module for error patterns. Includes comprehensive unit tests for quarter parsing, ASCII chart rendering, and output formatting.
+
+---
+
+### Per-Account Capacity Utilization
+
+**Purpose:** Show per-account Claude Code utilization matching the `/status` output. Displays 5h and 7d rolling windows, per-model windows, burn rates, and forecasts. Supports multi-account setups (e.g., personal vs work credentials).
+
+**Interface:**
+
+```bash
+agentscribe capacity [--account-dir <path>]... [--cache-max-age <seconds>] [--json]
+```
+
+- `--account-dir`: Claude config directories to scan (default: ~/.claude + auto-discovered ~/.claude-* dirs). Repeatable for explicit control.
+- `--cache-max-age`: Maximum age of cached usage.json in seconds before falling back to JSONL (default: 600).
+- `--json`: JSON structured output.
+
+**Data sources (in priority order):**
+
+1. **Cached API response** (`~/.cache/claude-usage/usage.json`) — exact numbers matching Claude Code's `/status` output
+2. **JSONL-based estimation** — fallback when cache is stale or missing, using cost-equivalent token weighting
+
+**Example output:**
+
+```
+Claude Code Capacity
+
+Account: claude-default (max / default_claude_max_20x)
+  Source: api_cache
+  5h window:   24.5%  [█████░░░░░░░░░░░░░░]  resets in 2h 15m
+  7d window:   94.2%  [████████████████████░]  resets in 4h 30m
+    sonnet        82.0%  [█████████████████░░░]
+    opus          91.5%  [███████████████████░]
+    cowork        45.0%  [████████░░░░░░░░░░░]
+  Burn rate:  8,450 tokens/min
+  Forecast:   5h full in 1h 45m
+  Turns:      127 (5h)  2,840 (7d)
+
+Account: .claude-work (pro / default)
+  Source: jsonl_estimate
+  5h window:   67.8%  [████████████████░░░░░]  resets in 1h 30m
+  7d window:   23.4%  [█████░░░░░░░░░░░░░░░]  resets in 5d 12h
+  Burn rate:  2,100 tokens/min
+  Turns:      42 (5h)  580 (7d)
+```
+
+**JSON output** (`--json`):
+
+```json
+[
+  {
+    "account_id": "claude-default",
+    "adapter": "claude",
+    "plan_type": "max",
+    "rate_limit_tier": "default_claude_max_20x",
+    "utilization_5h": 24.5,
+    "utilization_7d": 94.2,
+    "resets_at_5h": "2026-05-03T16:15:00Z",
+    "resets_at_7d": "2026-05-03T18:30:00Z",
+    "model_windows_7d": [
+      {"model": "sonnet", "utilization": 82.0, "resets_at": "2026-05-03T18:30:00Z"},
+      {"model": "opus", "utilization": 91.5, "resets_at": "2026-05-03T18:30:00Z"}
+    ],
+    "tokens_5h": 127000,
+    "tokens_7d": 2840000,
+    "turns_5h": 127,
+    "turns_7d": 2840,
+    "burn_rate_per_min": 8450.0,
+    "forecast_full_5h_min": 105.0,
+    "forecast_full_7d_min": null,
+    "source": "api_cache",
+    "computed_at": "2026-05-03T14:20:00Z"
+  }
+]
+```
+
+**Data structures:**
+
+- `AccountCapacity`: Per-account utilization with 5h/7d windows, model-specific windows, token counts, burn rate, forecasts
+- `ModelWindow`: Per-model 7d utilization (sonnet, opus, cowork, omelette) with reset times
+- `CapacityMeterConfig`: Configuration for account directories and cache settings
+
+**Cost-equivalent token weighting** (JSONL fallback):
+
+Claude's rate limiting uses a cost-weighted token count. The exact ratio is proprietary, but empirically:
+- `input_tokens` at full weight (1.0×)
+- `output_tokens` at ~5× weight (matching the ~5:1 output:input price ratio)
+- `cache_read` at ~0.1× (cache reads are discounted)
+- `cache_write` at ~0.25× (cache writes are partially discounted)
+
+**Plan-specific token limits** (JSONL fallback path only):
+
+| Plan / Tier | 5h Limit | 7d Limit |
+|-------------|----------|----------|
+| Max 20x | 1,000,000 | 15,000,000 |
+| Max 10x | 500,000 | 7,500,000 |
+| Max 5x | 250,000 | 3,750,000 |
+| Max (default) | 100,000 | 1,500,000 |
+| Pro | 44,000 | 660,000 |
+
+**Memory/performance notes:**
+
+- JSONL parsing is streaming (BufReader) — memory use independent of file size
+- Skips synthetic tool-use scaffolding (`model == "<synthetic>"`)
+- Deduplicates by message ID to avoid counting resumed sessions twice
+- Auto-discovers `~/.claude-*` directories for multi-account setups
+- Prefers cached API response when available and fresh (within `cache_max_age`)
+
+**Implementation:** `src/capacity.rs` (~1100 lines). Parses Claude Code JSONL logs from `~/.claude/projects/*/` and cached `~/.cache/claude-usage/usage.json` API responses. Reads credentials from `.credentials.json` for plan type and rate limit tier. Includes comprehensive unit tests for JSONL parsing, rolling window boundaries, and multi-account scenarios.
 
 ---
 
