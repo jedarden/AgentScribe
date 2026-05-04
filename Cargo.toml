@@ -77,6 +77,7 @@ tabled = "0.17"
 [dev-dependencies]
 tempfile = "3.14"
 pretty_assertions = "1.4"
+filetime = "0.2"
 
 [features]
 # Compile-time enforcement of the Phase 1 zero-write invariant (§3.8, §6).

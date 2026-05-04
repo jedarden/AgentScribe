@@ -1126,4 +1126,120 @@ mod tests {
         assert!((acct.utilization_5h - 47.0).abs() < 0.01);
         assert!((acct.utilization_7d - 97.0).abs() < 0.01);
     }
+
+    #[test]
+    fn test_burn_rate_and_forecast() {
+        let dir = TempDir::new().unwrap();
+
+        let claude_dir = dir.path().join(".claude");
+        fs::create_dir_all(&claude_dir).unwrap();
+        fs::write(
+            claude_dir.join(".credentials.json"),
+            r#"{"claudeAiOauth":{"subscriptionType":"max","rateLimitTier":"default_claude_max_20x"}}"#,
+        )
+        .unwrap();
+
+        let projects_dir = claude_dir.join("projects");
+        fs::create_dir_all(&projects_dir).unwrap();
+        let now = Utc::now();
+
+        // Add some usage in the last hour to establish a burn rate
+        let mut f = fs::File::create(projects_dir.join("test.jsonl")).unwrap();
+
+        // 3 assistant turns in the last hour, each using ~100k weighted tokens
+        for i in 0..3 {
+            let ts = (now - Duration::minutes(20 * (i + 1))).to_rfc3339();
+            writeln!(
+                f,
+                "{}",
+                make_assistant_jsonl(&ts, 20000, 10000, 0, 0, "claude-sonnet-4-6")
+            )
+            .unwrap();
+        }
+
+        let config = CapacityMeterConfig {
+            account_dirs: vec![claude_dir],
+            cache_max_age_secs: 600,
+            cache_base_dir: Some(dir.path().join("cache")),
+        };
+
+        let meter = CapacityMeter::new(config);
+        let accounts = meter.compute();
+        let acct = &accounts[0];
+
+        // Should have positive burn rate from JSONL usage
+        assert!(
+            acct.burn_rate_per_min > 0.0,
+            "burn_rate_per_min should be positive: {}",
+            acct.burn_rate_per_min
+        );
+
+        // With positive utilization and burn rate, forecast should be Some
+        assert!(
+            acct.forecast_full_5h_min.is_some() || acct.utilization_5h >= 100.0,
+            "forecast_full_5h_min should be Some when utilization < 100%"
+        );
+
+        // Verify forecast is reasonable (should be > 0 if utilization < 100%)
+        if let Some(forecast) = acct.forecast_full_5h_min {
+            assert!(
+                forecast > 0.0 || acct.utilization_5h >= 100.0,
+                "forecast should be positive unless at 100% utilization"
+            );
+        }
+    }
+
+    #[test]
+    fn test_stale_cache_falls_back_to_jsonl() {
+        let dir = TempDir::new().unwrap();
+
+        let cache_dir_path = dir.path().join("cache").join("claude-usage");
+        fs::create_dir_all(&cache_dir_path).unwrap();
+
+        // Create a cached file but make it old (simulate staleness)
+        let cached_path = cache_dir_path.join("usage.json");
+        fs::write(
+            &cached_path,
+            r#"{"five_hour":{"utilization":50.0},"seven_day":{"utilization":75.0}}"#,
+        )
+        .unwrap();
+
+        // Set file modification time to > 10 minutes ago
+        let old_time = std::time::SystemTime::now() - std::time::Duration::from_secs(700);
+        filetime::set_file_mtime(&cached_path, old_time.into()).unwrap();
+
+        let claude_dir = dir.path().join(".claude");
+        fs::create_dir_all(&claude_dir).unwrap();
+        fs::write(
+            claude_dir.join(".credentials.json"),
+            r#"{"claudeAiOauth":{"subscriptionType":"max","rateLimitTier":"default_claude_max_20x"}}"#,
+        )
+        .unwrap();
+
+        // Add JSONL data to ensure fallback works
+        let projects_dir = claude_dir.join("projects");
+        fs::create_dir_all(&projects_dir).unwrap();
+        let now = Utc::now();
+        let ts = (now - Duration::hours(1)).to_rfc3339();
+        let mut f = fs::File::create(projects_dir.join("test.jsonl")).unwrap();
+        writeln!(
+            f,
+            "{}",
+            make_assistant_jsonl(&ts, 50000, 5000, 0, 0, "claude-sonnet-4-6")
+        )
+        .unwrap();
+
+        let config = CapacityMeterConfig {
+            account_dirs: vec![claude_dir],
+            cache_max_age_secs: 600, // 10 minutes
+            cache_base_dir: Some(dir.path().join("cache")),
+        };
+
+        let meter = CapacityMeter::new(config);
+        let accounts = meter.compute();
+        let acct = &accounts[0];
+
+        // Should use JSONL estimate since cache is stale
+        assert_eq!(acct.source, "jsonl_estimate");
+    }
 }
