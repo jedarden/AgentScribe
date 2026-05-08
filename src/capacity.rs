@@ -1242,4 +1242,413 @@ mod tests {
         // Should use JSONL estimate since cache is stale
         assert_eq!(acct.source, "jsonl_estimate");
     }
+
+    #[test]
+    fn test_rolling_window_utilization_calculation() {
+        let dir = TempDir::new().unwrap();
+        let claude_dir = dir.path().join(".claude");
+        fs::create_dir_all(&claude_dir).unwrap();
+        fs::write(
+            claude_dir.join(".credentials.json"),
+            r#"{"claudeAiOauth":{"subscriptionType":"max","rateLimitTier":"default_claude_max_20x"}}"#,
+        )
+        .unwrap();
+
+        let projects_dir = claude_dir.join("projects");
+        fs::create_dir_all(&projects_dir).unwrap();
+        let now = Utc::now();
+        let mut f = fs::File::create(projects_dir.join("test.jsonl")).unwrap();
+
+        // Add events that sum to exactly 10% of 5h limit (100,000 tokens for max 20x)
+        // Cost-equivalent: input 10000 + output*5 10000 = 60000 weighted tokens
+        let ts_1h = (now - Duration::hours(1)).to_rfc3339();
+        writeln!(
+            f,
+            "{}",
+            make_assistant_jsonl(&ts_1h, 10000, 10000, 0, 0, "claude-sonnet-4-6")
+        )
+        .unwrap();
+
+        let config = CapacityMeterConfig {
+            account_dirs: vec![claude_dir],
+            cache_max_age_secs: 0,
+            cache_base_dir: Some(dir.path().join("cache")),
+        };
+
+        let meter = CapacityMeter::new(config);
+        let accounts = meter.compute();
+        let acct = &accounts[0];
+
+        // Should be approximately 6% utilization (60k / 1M * 100)
+        assert!(
+            acct.utilization_5h > 5.0 && acct.utilization_5h < 10.0,
+            "utilization_5h should be ~6%, got {}",
+            acct.utilization_5h
+        );
+        assert_eq!(acct.tokens_5h, 60000);
+        assert_eq!(acct.turns_5h, 1);
+    }
+
+    #[test]
+    fn test_burn_rate_calculation_accuracy() {
+        let dir = TempDir::new().unwrap();
+        let claude_dir = dir.path().join(".claude");
+        fs::create_dir_all(&claude_dir).unwrap();
+        fs::write(
+            claude_dir.join(".credentials.json"),
+            r#"{"claudeAiOauth":{"subscriptionType":"max","rateLimitTier":"default_claude_max_20x"}}"#,
+        )
+        .unwrap();
+
+        let projects_dir = claude_dir.join("projects");
+        fs::create_dir_all(&projects_dir).unwrap();
+        let now = Utc::now();
+        let mut f = fs::File::create(projects_dir.join("test.jsonl")).unwrap();
+
+        // Add 3 events in the last hour with known token counts
+        // Each: 20000 input + 10000 output = 20000 + 10000*5 = 70000 weighted
+        // Total: 3 * 70000 = 210000 weighted tokens over ~60 minutes
+        // Use 10, 30, 50 minutes ago to ensure all are within the hour (not at boundary)
+        for i in 0..3 {
+            let ts = (now - Duration::minutes(10 * (2 * i + 1))).to_rfc3339();
+            writeln!(
+                f,
+                "{}",
+                make_assistant_jsonl(&ts, 20000, 10000, 0, 0, "claude-sonnet-4-6")
+            )
+            .unwrap();
+        }
+
+        let config = CapacityMeterConfig {
+            account_dirs: vec![claude_dir],
+            cache_max_age_secs: 0,
+            cache_base_dir: Some(dir.path().join("cache")),
+        };
+
+        let meter = CapacityMeter::new(config);
+        let accounts = meter.compute();
+        let acct = &accounts[0];
+
+        // Burn rate should be approximately 210000 / 60 = 3500 tokens/min
+        assert!(
+            acct.burn_rate_per_min > 3000.0 && acct.burn_rate_per_min < 4000.0,
+            "burn_rate_per_min should be ~3500, got {}",
+            acct.burn_rate_per_min
+        );
+    }
+
+    #[test]
+    fn test_forecast_calculation_with_known_utilization() {
+        let dir = TempDir::new().unwrap();
+        let claude_dir = dir.path().join(".claude");
+        fs::create_dir_all(&claude_dir).unwrap();
+        fs::write(
+            claude_dir.join(".credentials.json"),
+            r#"{"claudeAiOauth":{"subscriptionType":"max","rateLimitTier":"default_claude_max_20x"}}"#,
+        )
+        .unwrap();
+
+        let projects_dir = claude_dir.join("projects");
+        fs::create_dir_all(&projects_dir).unwrap();
+        let now = Utc::now();
+        let mut f = fs::File::create(projects_dir.join("test.jsonl")).unwrap();
+
+        // Add usage that gives us 50% utilization with known burn rate
+        // 500,000 weighted tokens = 50% of 1M limit
+        let ts_1h = (now - Duration::minutes(30)).to_rfc3339();
+        writeln!(
+            f,
+            "{}",
+            make_assistant_jsonl(&ts_1h, 100000, 80000, 0, 0, "claude-sonnet-4-6")
+        )
+        .unwrap();
+
+        let config = CapacityMeterConfig {
+            account_dirs: vec![claude_dir],
+            cache_max_age_secs: 0,
+            cache_base_dir: Some(dir.path().join("cache")),
+        };
+
+        let meter = CapacityMeter::new(config);
+        let accounts = meter.compute();
+        let acct = &accounts[0];
+
+        // With 50% utilization and positive burn rate, forecast should be Some
+        assert!(
+            acct.forecast_full_5h_min.is_some(),
+            "forecast_full_5h_min should be Some at 50% utilization with positive burn rate"
+        );
+
+        // Forecast should be reasonable (remaining tokens / burn rate)
+        // Remaining: 50% of 1M = 500,000 tokens
+        // At ~5000 tokens/min burn rate, should be ~100 minutes
+        if let Some(forecast) = acct.forecast_full_5h_min {
+            assert!(
+                forecast > 50.0 && forecast < 200.0,
+                "forecast should be ~100 minutes, got {}",
+                forecast
+            );
+        }
+    }
+
+    #[test]
+    fn test_forecast_at_100_percent_utilization() {
+        let dir = TempDir::new().unwrap();
+        let claude_dir = dir.path().join(".claude");
+        fs::create_dir_all(&claude_dir).unwrap();
+        fs::write(
+            claude_dir.join(".credentials.json"),
+            r#"{"claudeAiOauth":{"subscriptionType":"max","rateLimitTier":"default_claude_max_20x"}}"#,
+        )
+        .unwrap();
+
+        let projects_dir = claude_dir.join("projects");
+        fs::create_dir_all(&projects_dir).unwrap();
+        let now = Utc::now();
+        let mut f = fs::File::create(projects_dir.join("test.jsonl")).unwrap();
+
+        // Add usage that exceeds 5h limit (should cap at 100%)
+        let ts = (now - Duration::minutes(10)).to_rfc3339();
+        writeln!(
+            f,
+            "{}",
+            make_assistant_jsonl(&ts, 200000, 200000, 0, 0, "claude-sonnet-4-6")
+        )
+        .unwrap();
+
+        let config = CapacityMeterConfig {
+            account_dirs: vec![claude_dir],
+            cache_max_age_secs: 0,
+            cache_base_dir: Some(dir.path().join("cache")),
+        };
+
+        let meter = CapacityMeter::new(config);
+        let accounts = meter.compute();
+        let acct = &accounts[0];
+
+        // Utilization should be capped at 100%
+        assert_eq!(acct.utilization_5h, 100.0);
+
+        // Forecast at 100% should be Some(0.0)
+        assert_eq!(acct.forecast_full_5h_min, Some(0.0));
+    }
+
+    #[test]
+    fn test_cache_hit_with_valid_data() {
+        let dir = TempDir::new().unwrap();
+        let cache_dir_path = dir.path().join("cache").join("claude-usage");
+        fs::create_dir_all(&cache_dir_path).unwrap();
+
+        // Create fresh cache file
+        let cached = r#"{"five_hour":{"utilization":25.0,"resets_at":"2026-04-23T02:00:00Z"},"seven_day":{"utilization":80.0,"resets_at":"2026-04-23T19:00:00Z"}}"#;
+        fs::write(cache_dir_path.join("usage.json"), cached).unwrap();
+
+        let claude_dir = dir.path().join(".claude");
+        fs::create_dir_all(&claude_dir).unwrap();
+        fs::write(
+            claude_dir.join(".credentials.json"),
+            r#"{"claudeAiOauth":{"subscriptionType":"max","rateLimitTier":"default_claude_max_20x"}}"#,
+        )
+        .unwrap();
+
+        let config = CapacityMeterConfig {
+            account_dirs: vec![claude_dir],
+            cache_max_age_secs: 600,
+            cache_base_dir: Some(dir.path().join("cache")),
+        };
+
+        let meter = CapacityMeter::new(config);
+        let accounts = meter.compute();
+        let acct = &accounts[0];
+
+        // Should use cached API data
+        assert_eq!(acct.source, "api_cache");
+        assert_eq!(acct.utilization_5h, 25.0);
+        assert_eq!(acct.utilization_7d, 80.0);
+        assert!(acct.resets_at_5h.is_some());
+        assert!(acct.resets_at_7d.is_some());
+    }
+
+    #[test]
+    fn test_cache_miss_falls_back_to_jsonl() {
+        let dir = TempDir::new().unwrap();
+        let claude_dir = dir.path().join(".claude");
+        fs::create_dir_all(&claude_dir).unwrap();
+        fs::write(
+            claude_dir.join(".credentials.json"),
+            r#"{"claudeAiOauth":{"subscriptionType":"max","rateLimitTier":"default_claude_max_20x"}}"#,
+        )
+        .unwrap();
+
+        // No cache file exists
+        let projects_dir = claude_dir.join("projects");
+        fs::create_dir_all(&projects_dir).unwrap();
+        let now = Utc::now();
+        let ts = (now - Duration::minutes(30)).to_rfc3339();
+        let mut f = fs::File::create(projects_dir.join("test.jsonl")).unwrap();
+        writeln!(
+            f,
+            "{}",
+            make_assistant_jsonl(&ts, 5000, 5000, 0, 0, "claude-sonnet-4-6")
+        )
+        .unwrap();
+
+        let config = CapacityMeterConfig {
+            account_dirs: vec![claude_dir],
+            cache_max_age_secs: 600,
+            cache_base_dir: Some(dir.path().join("cache")),
+        };
+
+        let meter = CapacityMeter::new(config);
+        let accounts = meter.compute();
+        let acct = &accounts[0];
+
+        // Should fall back to JSONL estimation
+        assert_eq!(acct.source, "jsonl_estimate");
+        assert!(acct.utilization_5h > 0.0);
+        assert!(acct.utilization_7d > 0.0);
+    }
+
+    #[test]
+    fn test_cache_corrupted_falls_back_to_jsonl() {
+        let dir = TempDir::new().unwrap();
+        let cache_dir_path = dir.path().join("cache").join("claude-usage");
+        fs::create_dir_all(&cache_dir_path).unwrap();
+
+        // Write invalid JSON
+        fs::write(
+            cache_dir_path.join("usage.json"),
+            r#"{"five_hour": invalid json"#,
+        )
+        .unwrap();
+
+        let claude_dir = dir.path().join(".claude");
+        fs::create_dir_all(&claude_dir).unwrap();
+        fs::write(
+            claude_dir.join(".credentials.json"),
+            r#"{"claudeAiOauth":{"subscriptionType":"max","rateLimitTier":"default_claude_max_20x"}}"#,
+        )
+        .unwrap();
+
+        let projects_dir = claude_dir.join("projects");
+        fs::create_dir_all(&projects_dir).unwrap();
+        let now = Utc::now();
+        let ts = (now - Duration::minutes(30)).to_rfc3339();
+        let mut f = fs::File::create(projects_dir.join("test.jsonl")).unwrap();
+        writeln!(
+            f,
+            "{}",
+            make_assistant_jsonl(&ts, 5000, 5000, 0, 0, "claude-sonnet-4-6")
+        )
+        .unwrap();
+
+        let config = CapacityMeterConfig {
+            account_dirs: vec![claude_dir],
+            cache_max_age_secs: 600,
+            cache_base_dir: Some(dir.path().join("cache")),
+        };
+
+        let meter = CapacityMeter::new(config);
+        let accounts = meter.compute();
+        let acct = &accounts[0];
+
+        // Should fall back to JSONL estimation when cache is corrupted
+        assert_eq!(acct.source, "jsonl_estimate");
+    }
+
+    #[test]
+    fn test_7d_window_with_mixed_age_events() {
+        let dir = TempDir::new().unwrap();
+        let claude_dir = dir.path().join(".claude");
+        fs::create_dir_all(&claude_dir).unwrap();
+        fs::write(
+            claude_dir.join(".credentials.json"),
+            r#"{"claudeAiOauth":{"subscriptionType":"max","rateLimitTier":"default_claude_max_20x"}}"#,
+        )
+        .unwrap();
+
+        let projects_dir = claude_dir.join("projects");
+        fs::create_dir_all(&projects_dir).unwrap();
+        let now = Utc::now();
+        let mut f = fs::File::create(projects_dir.join("test.jsonl")).unwrap();
+
+        // Events at different ages
+        let ages = vec![
+            Duration::hours(2), // In both windows
+            Duration::hours(6), // In 7d, not in 5h
+            Duration::days(6),  // In 7d, not in 5h
+            Duration::days(8),  // Outside both windows
+        ];
+
+        for age in ages {
+            let ts = (now - age).to_rfc3339();
+            writeln!(
+                f,
+                "{}",
+                make_assistant_jsonl(&ts, 10000, 5000, 0, 0, "claude-sonnet-4-6")
+            )
+            .unwrap();
+        }
+
+        let config = CapacityMeterConfig {
+            account_dirs: vec![claude_dir],
+            cache_max_age_secs: 0,
+            cache_base_dir: Some(dir.path().join("cache")),
+        };
+
+        let meter = CapacityMeter::new(config);
+        let accounts = meter.compute();
+        let acct = &accounts[0];
+
+        // 5h: 1 event (2h ago)
+        // 7d: 3 events (2h, 6h, 6d ago)
+        assert_eq!(acct.turns_5h, 1);
+        assert_eq!(acct.turns_7d, 3);
+    }
+
+    #[test]
+    fn test_cost_equivalent_weighting() {
+        let dir = TempDir::new().unwrap();
+        let claude_dir = dir.path().join(".claude");
+        fs::create_dir_all(&claude_dir).unwrap();
+        fs::write(
+            claude_dir.join(".credentials.json"),
+            r#"{"claudeAiOauth":{"subscriptionType":"max","rateLimitTier":"default_claude_max_20x"}}"#,
+        )
+        .unwrap();
+
+        let projects_dir = claude_dir.join("projects");
+        fs::create_dir_all(&projects_dir).unwrap();
+        let now = Utc::now();
+        let ts = (now - Duration::minutes(10)).to_rfc3339();
+        let mut f = fs::File::create(projects_dir.join("test.jsonl")).unwrap();
+
+        // Test cost-equivalent weighting
+        // input: 1000, output: 200, cache_read: 5000, cache_write: 500
+        // Expected: 1000 + 200*5 + 5000*0.1 + 500*0.25
+        // = 1000 + 1000 + 500 + 125 = 2625
+        writeln!(
+            f,
+            "{}",
+            make_assistant_jsonl(&ts, 1000, 200, 5000, 500, "claude-sonnet-4-6")
+        )
+        .unwrap();
+
+        let config = CapacityMeterConfig {
+            account_dirs: vec![claude_dir],
+            cache_max_age_secs: 0,
+            cache_base_dir: Some(dir.path().join("cache")),
+        };
+
+        let meter = CapacityMeter::new(config);
+        let accounts = meter.compute();
+        let acct = &accounts[0];
+
+        // Should be approximately 2625 weighted tokens
+        assert!(
+            acct.tokens_5h > 2500 && acct.tokens_5h < 2800,
+            "tokens_5h should be ~2625, got {}",
+            acct.tokens_5h
+        );
+    }
 }
