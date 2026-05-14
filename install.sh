@@ -107,6 +107,51 @@ if [ -d "$TMP_DIR/completions" ]; then
   install_completions
 fi
 
+# Install systemd user service (Linux only)
+install_systemd_service() {
+  if ! command -v systemctl > /dev/null 2>&1; then
+    echo "Note: systemctl not found, skipping systemd service installation."
+    return 0
+  fi
+
+  SYSTEMD_USER_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
+  mkdir -p "$SYSTEMD_USER_DIR"
+  SERVICE_FILE="$SYSTEMD_USER_DIR/agentscribe.service"
+
+  if [ -f "$TMP_DIR/agentscribe.service" ]; then
+    cp "$TMP_DIR/agentscribe.service" "$SERVICE_FILE"
+  else
+    cat > "$SERVICE_FILE" <<EOF
+[Unit]
+Description=AgentScribe daemon
+After=network.target
+
+[Service]
+ExecStart=${INSTALL_DIR}/agentscribe daemon run
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
+EOF
+  fi
+
+  echo "Installed systemd user service to $SERVICE_FILE"
+
+  if systemctl --user daemon-reload 2>/dev/null && \
+     systemctl --user enable agentscribe 2>/dev/null && \
+     systemctl --user start agentscribe 2>/dev/null; then
+    echo "AgentScribe daemon enabled and started."
+  else
+    echo "Note: could not enable/start the service automatically."
+    echo "To start manually: systemctl --user enable agentscribe && systemctl --user start agentscribe"
+  fi
+}
+
+if [ "$OS" = "linux" ]; then
+  install_systemd_service
+fi
+
 # Check if INSTALL_DIR is in PATH
 case ":$PATH:" in
   *":$INSTALL_DIR:"*) ;;
