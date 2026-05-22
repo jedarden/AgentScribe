@@ -355,4 +355,36 @@ mod tests {
         assert_eq!(events[0].role, Role::User);
         assert_eq!(events[0].content, "Hello");
     }
+
+    #[test]
+    fn test_open_file_maybe_zst_uncompressed() {
+        // Test that regular JSONL files are handled correctly
+        let temp_file = tempfile::NamedTempFile::new().unwrap();
+        let path = temp_file.path();
+        std::fs::write(path, b"{\"test\": \"data\"}\n").unwrap();
+
+        let result = open_file_maybe_zst(path);
+        assert!(result.is_ok(), "Should open uncompressed file");
+    }
+
+    #[test]
+    fn test_open_file_maybe_zst_compressed() {
+        // Test that .jsonl.zst files are decompressed correctly
+        let temp_file = tempfile::NamedTempFile::new().unwrap();
+        let path = temp_file.path().with_extension("jsonl.zst");
+
+        // Create a compressed JSONL file
+        let original_content = b"{\"ts\": \"2026-03-16T12:00:00Z\", \"role\": \"user\", \"content\": \"Hello\"}\n";
+        let compressed = zstd::bulk::compress(original_content, 3).unwrap();
+        std::fs::write(&path, compressed).unwrap();
+
+        let result = open_file_maybe_zst(&path);
+        assert!(result.is_ok(), "Should open and decompress .zst file");
+
+        // Verify we can read the decompressed content
+        let mut reader = result.unwrap();
+        let mut line = String::new();
+        assert!(reader.read_line(&mut line).is_ok(), "Should read a line from decompressed file");
+        assert!(line.contains("Hello"), "Decompressed content should contain original data");
+    }
 }
