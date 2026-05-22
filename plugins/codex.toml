@@ -37,3 +37,7 @@ value = "gpt-4"
 
 [parser.file_paths]
 content_regex = true
+
+[metadata]
+# Companion index file that maps thread_id to metadata (model, cwd, etc.)
+companion_index = "~/.codex/session_index.jsonl"
