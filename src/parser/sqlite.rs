@@ -30,6 +30,75 @@ use std::path::Path;
 pub struct SqliteParser;
 
 impl SqliteParser {
+    /// Safely extract a string value from a SQLite column, detecting binary blobs.
+    ///
+    /// Returns `Ok(None)` for binary blobs (prints a warning).
+    /// Returns `Ok(Some(text))` for valid UTF-8 text.
+    /// Returns `Err` for other SQLite errors.
+    fn get_column_as_string(row: &rusqlite::Row, col_idx: usize, key: &str) -> Result<Option<String>> {
+        // First try to get as String (handles TEXT columns correctly)
+        match row.get::<_, String>(col_idx) {
+            Ok(text) => {
+                // Check if this looks like JSON (starts with '{' or '[')
+                let is_likely_json = text.chars().next().map_or(false, |c| c == '{' || c == '[');
+                if !is_likely_json {
+                    // Text doesn't look like JSON - could be a text-stored protobuf
+                    // Check if the original bytes were valid UTF-8 by trying to get as blob
+                    if let Ok(blob) = row.get::<_, Vec<u8>>(col_idx) {
+                        if blob.first().map_or(false, |&b| b != b'{' && b != b'[') {
+                            eprintln!(
+                                "Warning: key '{}' has non-JSON text value (may be text-encoded protobuf), skipping",
+                                key
+                            );
+                            return Ok(None);
+                        }
+                    }
+                }
+                Ok(Some(text))
+            }
+            Err(e) => {
+                // String conversion failed - might be a BLOB column
+                // Try getting as raw bytes to check
+                match row.get::<_, Vec<u8>>(col_idx) {
+                    Ok(blob) => {
+                        // Check if this looks like JSON (starts with '{' or '[')
+                        let is_likely_json = blob.first().map_or(false, |&b| b == b'{' || b == b'[');
+
+                        if !is_likely_json {
+                            // This appears to be binary data (e.g., protobuf)
+                            // Check if it contains non-UTF-8 sequences to confirm
+                            if std::str::from_utf8(&blob).is_err() {
+                                // Binary blob detected - warn and skip
+                                eprintln!(
+                                    "Warning: skipping binary blob for key '{}' (likely protobuf, not JSON)",
+                                    key
+                                );
+                                return Ok(None);
+                            }
+                        }
+
+                        // Try to convert to UTF-8 string
+                        match std::str::from_utf8(&blob) {
+                            Ok(text) => Ok(Some(text.to_string())),
+                            Err(_) => {
+                                eprintln!(
+                                    "Warning: skipping binary blob for key '{}' (invalid UTF-8)",
+                                    key
+                                );
+                                Ok(None)
+                            }
+                        }
+                    }
+                    Err(_) => Err(AgentScribeError::Parse {
+                        file: "(query)".to_string(),
+                        line: None,
+                        message: format!("column read error at index {}: {}", col_idx, e),
+                    }),
+                }
+            }
+        }
+    }
+
     /// Open the database read-only and configure memory limits.
     fn open_db(path: &Path) -> Result<Connection> {
         let conn = Connection::open_with_flags(
@@ -288,12 +357,12 @@ impl super::FormatParser for SqliteParser {
             // Column layout:
             //   ≥2 columns → col[0] = key, col[1] = value  (cursorDiskKV pattern)
             //   1 column   → col[0] = value (no key filter applicable)
-            let (key, value_str): (String, String) = if col_count >= 2 {
+            let (key, value_str): (String, Option<String>) = if col_count >= 2 {
                 let k: String = row.get::<_, String>(0).unwrap_or_default();
-                let v: String = row.get::<_, String>(1).unwrap_or_default();
+                let v = Self::get_column_as_string(&row, 1, &k)?;
                 (k, v)
             } else {
-                let v: String = row.get::<_, String>(0).unwrap_or_default();
+                let v = Self::get_column_as_string(&row, 0, "")?;
                 (String::new(), v)
             };
 
@@ -303,6 +372,12 @@ impl super::FormatParser for SqliteParser {
                     continue;
                 }
             }
+
+            // Skip rows where value is binary blob (already warned in get_column_as_string)
+            let value_str = match value_str {
+                Some(v) => v,
+                None => continue,
+            };
 
             if value_str.is_empty() {
                 continue;
@@ -391,6 +466,13 @@ impl super::FormatParser for SqliteParser {
                 } else {
                     String::new()
                 };
+
+                // Skip rows with binary blobs in the key column
+                if let Some(k_bytes) = row.get::<_, Vec<u8>>(0).ok() {
+                    if std::str::from_utf8(&k_bytes).is_err() {
+                        continue; // Skip binary key
+                    }
+                }
 
                 if let Some(ref kre) = key_re {
                     if !kre.is_match(&key) {
@@ -715,5 +797,68 @@ mod tests {
         // The session_id comes from the filename stem (tmpXXXX), which varies
         // Just verify it's not empty and not "unknown" (which would mean no file stem was found)
         assert!(!sessions[0].session_id.is_empty());
+    }
+
+    #[test]
+    fn test_binary_protobuf_blob_skipped_with_warning() {
+        let tmp = NamedTempFile::new().unwrap();
+        let conn = Connection::open(tmp.path()).unwrap();
+        conn.execute_batch("CREATE TABLE cursorDiskKV (key TEXT, value BLOB);")
+            .unwrap();
+
+        // Insert a valid JSON row
+        conn.execute(
+            "INSERT INTO cursorDiskKV VALUES (?1, ?2)",
+            rusqlite::params![
+                "history.session1",
+                r#"[{"role":"user","text":"valid json"}]"#
+            ],
+        )
+        .unwrap();
+
+        // Insert a binary protobuf blob (starts with non-JSON bytes)
+        // Protobuf typically doesn't start with '{' or '[', and often contains invalid UTF-8
+        let binary_blob: Vec<u8> = vec![0x08, 0x96, 0x01, 0x12, 0x04, 0x74, 0x65, 0x73, 0x74]; // sample protobuf bytes
+        conn.execute(
+            "INSERT INTO cursorDiskKV VALUES (?1, ?2)",
+            rusqlite::params!["binary.proto.blob", binary_blob],
+        )
+        .unwrap();
+
+        let plugin = make_plugin("SELECT key, value FROM cursorDiskKV", None);
+
+        // Capture stderr to verify warning is printed
+        let parser = SqliteParser;
+        let events = parser.parse(tmp.path(), &plugin).unwrap();
+
+        // Should only parse the valid JSON row, binary blob should be skipped
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].content, "valid json");
+    }
+
+    #[test]
+    fn test_json_starting_with_brace_is_parsed() {
+        let tmp = NamedTempFile::new().unwrap();
+        let conn = Connection::open(tmp.path()).unwrap();
+        conn.execute_batch("CREATE TABLE cursorDiskKV (key TEXT, value TEXT);")
+            .unwrap();
+
+        // JSON object starting with '{'
+        conn.execute(
+            "INSERT INTO cursorDiskKV VALUES (?1, ?2)",
+            rusqlite::params![
+                "history.session1",
+                r#"{"role":"user","text":"hello"}"#
+            ],
+        )
+        .unwrap();
+
+        let plugin = make_plugin("SELECT key, value FROM cursorDiskKV", None);
+
+        let parser = SqliteParser;
+        let events = parser.parse(tmp.path(), &plugin).unwrap();
+
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].content, "hello");
     }
 }
