@@ -1652,3 +1652,199 @@ fn test_token_budget_respects_limit() {
         );
     }
 }
+
+// ─── Cursor/Windsurf SQLite integration tests ───────────────────────────────────
+
+/// Build a SQLite plugin (for Cursor or Windsurf) pointing at a .vscdb file.
+fn sqlite_plugin(name: &str, path: &str) -> Plugin {
+    use std::collections::HashMap;
+    Plugin {
+        plugin: PluginMeta {
+            name: name.to_string(),
+            version: "2.0".to_string(),
+        },
+        source: Source {
+            paths: vec![path.to_string()],
+            exclude: vec![],
+            format: LogFormat::Sqlite,
+            session_detection: SessionDetection::OneFilePerSession {
+                session_id_from: SessionIdSource::Filename,
+            },
+            tree: None,
+            truncation_limit: None,
+        },
+        parser: Parser {
+            query: Some("SELECT key, value FROM cursorDiskKV ORDER BY rowid ASC".to_string()),
+            key_filter: Some("^bubbleId:".to_string()),
+            key_session_id_regex: Some("^bubbleId:([^:]+):".to_string()),
+            role: Some("type".to_string()),
+            content: Some("text".to_string()),
+            timestamp: Some("createdAt".to_string()),
+            project: Some(ProjectDetection::ParentDir),
+            model: Some(ModelDetection::None),
+            role_map: {
+                let mut m = HashMap::new();
+                m.insert("1".to_string(), "user".to_string());
+                m.insert("2".to_string(), "assistant".to_string());
+                m.insert("user".to_string(), "user".to_string());
+                m.insert("assistant".to_string(), "assistant".to_string());
+                m
+            },
+            ..Default::default()
+        },
+        metadata: None,
+    }
+}
+
+/// Scraping Cursor .vscdb fixture produces expected session count.
+#[test]
+fn test_scrape_cursor_vscdb_sessions() {
+    let data_dir = make_data_dir();
+    let fixtures = fixtures_dir().join("cursor");
+    let db_path = format!("{}/state.vscdb", fixtures.display());
+
+    let mut scraper = Scraper::new(data_dir.path().to_path_buf()).expect("scraper init");
+    let plugin = sqlite_plugin("cursor", &db_path);
+    scraper.plugin_manager_mut().add_plugin(plugin.clone());
+
+    let result = scraper.scrape_plugin(&plugin).expect("scrape failed");
+
+    // Fixture has 3 sessions: cmp-001, cmp-002, cmp-003
+    assert_eq!(
+        result.sessions_scraped, 3,
+        "expected 3 cursor sessions, got {} (errors: {:?})",
+        result.sessions_scraped, result.errors
+    );
+    assert_eq!(result.files_processed, 1);
+    assert!(
+        result.errors.is_empty(),
+        "unexpected scrape errors: {:?}",
+        result.errors
+    );
+}
+
+/// Cursor sessions have correct event content after scraping.
+#[test]
+fn test_cursor_session_content_preserved() {
+    let data_dir = make_data_dir();
+    let fixtures = fixtures_dir().join("cursor");
+    let db_path = format!("{}/state.vscdb", fixtures.display());
+
+    let mut scraper = Scraper::new(data_dir.path().to_path_buf()).expect("scraper init");
+    let plugin = sqlite_plugin("cursor", &db_path);
+    scraper.plugin_manager_mut().add_plugin(plugin.clone());
+
+    scraper.scrape_plugin(&plugin).expect("scrape failed");
+
+    let sessions = scraper.list_sessions("cursor").expect("list sessions");
+    assert!(!sessions.is_empty());
+
+    // Should find sessions derived from composerId (cmp-001, cmp-002, cmp-003)
+    let session_ids: Vec<&str> = sessions.iter().map(|s| s.as_str()).collect();
+    assert!(
+        session_ids.iter().any(|s| s.contains("cmp-001")),
+        "expected cmp-001 session, got {:?}",
+        session_ids
+    );
+
+    // Verify content from first session
+    for session_id in &sessions {
+        if session_id.contains("cmp-001") {
+            let events = scraper.read_session(session_id).expect("read session");
+            let all_content: String = events.iter().map(|e| e.content.as_str()).collect();
+            assert!(
+                all_content.contains("connection pool"),
+                "cursor session should contain 'connection pool': {:?}",
+                &all_content[..all_content.len().min(200)]
+            );
+        }
+    }
+}
+
+/// Scraping Windsurf .vscdb fixture produces expected session count.
+#[test]
+fn test_scrape_windsurf_vscdb_sessions() {
+    let data_dir = make_data_dir();
+    let fixtures = fixtures_dir().join("windsurf");
+    let db_path = format!("{}/state.vscdb", fixtures.display());
+
+    let mut scraper = Scraper::new(data_dir.path().to_path_buf()).expect("scraper init");
+    let plugin = sqlite_plugin("windsurf", &db_path);
+    scraper.plugin_manager_mut().add_plugin(plugin.clone());
+
+    let result = scraper.scrape_plugin(&plugin).expect("scrape failed");
+
+    // Fixture has 2 sessions: ws-cmp-001, ws-cmp-002
+    assert_eq!(
+        result.sessions_scraped, 2,
+        "expected 2 windsurf sessions, got {} (errors: {:?})",
+        result.sessions_scraped, result.errors
+    );
+    assert_eq!(result.files_processed, 1);
+}
+
+/// Windsurf sessions are searchable after scraping.
+#[test]
+fn test_windsurf_sessions_searchable() {
+    let data_dir = make_data_dir();
+    let fixtures = fixtures_dir().join("windsurf");
+    let db_path = format!("{}/state.vscdb", fixtures.display());
+
+    let mut scraper = Scraper::new(data_dir.path().to_path_buf()).expect("scraper init");
+    let plugin = sqlite_plugin("windsurf", &db_path);
+    scraper.plugin_manager_mut().add_plugin(plugin.clone());
+
+    let result = scraper.scrape_plugin(&plugin).expect("scrape failed");
+    assert!(result.sessions_indexed > 0, "windsurf sessions not indexed");
+
+    let opts = SearchOptions {
+        query: Some("websocket".to_string()),
+        ..Default::default()
+    };
+
+    let output = execute_search(data_dir.path(), &opts).expect("search failed");
+    assert!(
+        output.total_matches >= 1,
+        "expected ≥1 result for 'websocket', got {}",
+        output.total_matches
+    );
+
+    // The top result should be from windsurf
+    let top = &output.results[0];
+    assert_eq!(top.source_agent, "windsurf");
+}
+
+/// Cursor and Windsurf can be scraped together without conflicts.
+#[test]
+fn test_scrape_cursor_and_windsurf_together() {
+    let data_dir = make_data_dir();
+    let fixtures = fixtures_dir();
+
+    let cursor_db = format!("{}/cursor/state.vscdb", fixtures.display());
+    let windsurf_db = format!("{}/windsurf/state.vscdb", fixtures.display());
+
+    let mut scraper = Scraper::new(data_dir.path().to_path_buf()).expect("scraper init");
+
+    let cursor_plugin = sqlite_plugin("cursor", &cursor_db);
+    let windsurf_plugin = sqlite_plugin("windsurf", &windsurf_db);
+
+    scraper.plugin_manager_mut().add_plugin(cursor_plugin);
+    scraper.plugin_manager_mut().add_plugin(windsurf_plugin);
+
+    let result = scraper.scrape_all().expect("scrape_all failed");
+
+    // 3 cursor + 2 windsurf = 5
+    assert!(
+        result.sessions_scraped >= 5,
+        "expected ≥5 sessions, got {}",
+        result.sessions_scraped
+    );
+    assert!(
+        result.agent_types.contains(&"cursor".to_string()),
+        "cursor not in agent_types"
+    );
+    assert!(
+        result.agent_types.contains(&"windsurf".to_string()),
+        "windsurf not in agent_types"
+    );
+}
