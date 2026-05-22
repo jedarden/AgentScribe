@@ -2,9 +2,11 @@
 //!
 //! Coordinates plugin loading, file discovery, parsing, and state management.
 
+mod companion;
 mod file_path_extractor;
 mod state;
 
+pub use companion::{CompanionCache, CompanionIndex};
 pub use file_path_extractor::FilePathExtractor;
 pub use state::StateManager;
 
@@ -54,6 +56,7 @@ pub struct Scraper {
     state_manager: StateManager,
     index_manager: Option<IndexManager>,
     index_write_depth: usize,
+    companion_cache: CompanionCache,
 }
 
 impl Scraper {
@@ -100,7 +103,62 @@ impl Scraper {
             state_manager,
             index_manager,
             index_write_depth: 0,
+            companion_cache: CompanionCache::new(),
         })
+    }
+
+    /// Get the companion cache
+    #[allow(dead_code)]
+    pub fn companion_cache(&self) -> &CompanionCache {
+        &self.companion_cache
+    }
+
+    /// Get the companion cache (mutable)
+    pub fn companion_cache_mut(&mut self) -> &mut CompanionCache {
+        &mut self.companion_cache
+    }
+
+    /// Load companion metadata for a session from the plugin's companion index file.
+    ///
+    /// This reads the companion index file (if configured) and looks up metadata
+    /// for the given session ID. Returns None if no companion index is configured
+    /// or the session is not found.
+    fn load_companion_metadata(
+        &self,
+        session_id: &str,
+        plugin: &Plugin,
+    ) -> Result<Option<Value>> {
+        if let Some(ref metadata_config) = plugin.metadata {
+            if let Some(ref companion_path) = metadata_config.companion_index {
+                // Expand ~ and environment variables
+                let expanded = shellexpand::full(companion_path)
+                    .map_err(|e| {
+                        AgentScribeError::Glob(format!("Path expansion error: {}", e))
+                    })?;
+
+                let path = PathBuf::from(expanded.as_ref());
+
+                // Load the companion index
+                match self.companion_cache.get_or_load(&path) {
+                    Ok(index) => {
+                        let metadata = index.get(session_id).cloned();
+                        Ok(metadata)
+                    }
+                    Err(e) => {
+                        // If the file doesn't exist, return None rather than failing
+                        if matches!(e, AgentScribeError::FileNotFound(_)) {
+                            Ok(None)
+                        } else {
+                            Err(e)
+                        }
+                    }
+                }
+            } else {
+                Ok(None)
+            }
+        } else {
+            Ok(None)
+        }
     }
 
     /// Load all plugins
@@ -429,14 +487,34 @@ impl Scraper {
                 continue;
             }
 
+            // Load companion metadata (if available)
+            let companion_meta = self.load_companion_metadata(&session_info.session_id, plugin)?;
+
             // Enrich events with project, model, and file paths
             for event in &mut events {
-                // Set project
+                // Enrich from companion metadata first (highest priority)
+                if let Some(ref meta) = companion_meta {
+                    // Set model from companion metadata
+                    if event.model.is_none() {
+                        if let Some(m) = meta.get("model").and_then(|v| v.as_str()) {
+                            event.model = Some(m.to_string());
+                        }
+                    }
+
+                    // Set project/cwd from companion metadata
+                    if event.project.is_none() {
+                        if let Some(cwd) = meta.get("cwd").and_then(|v| v.as_str()) {
+                            event.project = Some(cwd.to_string());
+                        }
+                    }
+                }
+
+                // Set project (fallback to detection)
                 if event.project.is_none() {
                     event.project = project.clone();
                 }
 
-                // Set model
+                // Set model (fallback to detection)
                 if event.model.is_none() {
                     event.model = model.clone();
                 }
@@ -1040,5 +1118,113 @@ mod tests {
         let plugin_names = scraper.plugin_manager().names();
         assert!(plugin_names.contains(&"cursor"));
         assert!(plugin_names.contains(&"windsurf"));
+    }
+
+    #[test]
+    fn test_companion_metadata_enrichment() {
+        use crate::plugin::{Parser, PluginMeta, SessionDetection, SessionIdSource, Source};
+
+        let temp = tempfile::tempdir().unwrap();
+        let data_dir = temp.path().join(".agentscribe");
+        std::fs::create_dir_all(data_dir.join("sessions")).unwrap();
+
+        // Create a companion index file
+        let companion_path = temp.path().join("session_index.jsonl");
+        std::fs::write(
+            &companion_path,
+            r#"{"thread_id": "test-session-1", "model": "gpt-4-turbo", "cwd": "/home/user/project"}
+{"thread_id": "test-session-2", "model": "gpt-3.5-turbo", "cwd": "/home/user/other"}"#,
+        )
+        .unwrap();
+
+        // Create a test plugin with companion_index configured
+        let plugin = Plugin {
+            plugin: PluginMeta {
+                name: "test-agent".to_string(),
+                version: "1.0".to_string(),
+            },
+            source: Source {
+                paths: vec![],
+                exclude: vec![],
+                format: LogFormat::Jsonl,
+                session_detection: SessionDetection::OneFilePerSession {
+                    session_id_from: SessionIdSource::Filename,
+                },
+                tree: None,
+                truncation_limit: None,
+            },
+            parser: Parser {
+                ..Default::default()
+            },
+            metadata: Some(crate::plugin::Metadata {
+                companion_index: Some(companion_path.to_str().unwrap().to_string()),
+                ..Default::default()
+            }),
+        };
+
+        let scraper = Scraper::new(data_dir).unwrap();
+
+        // Test loading companion metadata for a session
+        let result = scraper.load_companion_metadata("test-session-1", &plugin);
+
+        assert!(result.is_ok());
+        let metadata = result.unwrap().expect("should have metadata");
+
+        // Verify the metadata contains the expected fields
+        assert_eq!(
+            metadata.get("thread_id").unwrap().as_str(),
+            Some("test-session-1")
+        );
+        assert_eq!(metadata.get("model").unwrap().as_str(), Some("gpt-4-turbo"));
+        assert_eq!(
+            metadata.get("cwd").unwrap().as_str(),
+            Some("/home/user/project")
+        );
+
+        // Test loading a non-existent session returns None
+        let result = scraper.load_companion_metadata("nonexistent", &plugin);
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_none());
+    }
+
+    #[test]
+    fn test_companion_metadata_enrichment_with_missing_file() {
+        use crate::plugin::{Parser, PluginMeta, SessionDetection, SessionIdSource, Source};
+
+        let temp = tempfile::tempdir().unwrap();
+        let data_dir = temp.path().join(".agentscribe");
+        std::fs::create_dir_all(data_dir.join("sessions")).unwrap();
+
+        // Create a test plugin with a non-existent companion index
+        let plugin = Plugin {
+            plugin: PluginMeta {
+                name: "test-agent".to_string(),
+                version: "1.0".to_string(),
+            },
+            source: Source {
+                paths: vec![],
+                exclude: vec![],
+                format: LogFormat::Jsonl,
+                session_detection: SessionDetection::OneFilePerSession {
+                    session_id_from: SessionIdSource::Filename,
+                },
+                tree: None,
+                truncation_limit: None,
+            },
+            parser: Parser {
+                ..Default::default()
+            },
+            metadata: Some(crate::plugin::Metadata {
+                companion_index: Some("/nonexistent/session_index.jsonl".to_string()),
+                ..Default::default()
+            }),
+        };
+
+        let scraper = Scraper::new(data_dir).unwrap();
+
+        // Should return Ok(None) when file doesn't exist (not an error)
+        let result = scraper.load_companion_metadata("any-session", &plugin);
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_none());
     }
 }

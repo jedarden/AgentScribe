@@ -244,8 +244,14 @@ pub struct FilePathExtraction {
 }
 
 /// Metadata sources
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Metadata {
+    /// Path to a companion index file (JSONL) that maps session IDs to metadata.
+    /// Unlike session_meta/session_summary which are per-session file templates,
+    /// this is a single file containing metadata for all sessions.
+    /// Example: "~/.codex/session_index.jsonl" for Codex sessions.
+    #[serde(default)]
+    pub companion_index: Option<String>,
     #[serde(default)]
     pub session_meta: Option<String>,
     #[serde(default)]
