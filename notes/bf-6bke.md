@@ -1,6 +1,6 @@
 # Codex session_index.jsonl Companion Metadata Enrichment
 
-## Status: Already Implemented
+## Status: Complete (Verified 2026-05-22)
 
 This bead task is already complete. The companion metadata enrichment feature was implemented in:
 
