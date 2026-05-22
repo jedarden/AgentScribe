@@ -432,4 +432,120 @@ mod tests {
         assert!(!result.contains("[PHONE]"));
         assert!(result.contains("[EMAIL]"));
     }
+
+    // ─── Additional edge cases ─────────────────────────────────────────────
+
+    #[test]
+    fn test_empty_text() {
+        let s = default_scanner();
+        assert_eq!(s.redact(""), "");
+        assert!(!s.has_pii(""));
+    }
+
+    #[test]
+    fn test_text_with_no_pii() {
+        let s = default_scanner();
+        let text = "Hello world, this is just plain text with no sensitive data.";
+        assert_eq!(s.redact(text), text);
+        assert!(!s.has_pii(text));
+    }
+
+    #[test]
+    fn test_multiple_emails_in_one_text() {
+        let s = default_scanner();
+        let result = s.redact("Contact alice@example.com or bob@corp.io or carol@domain.org");
+        assert!(!result.contains("alice@example.com"));
+        assert!(!result.contains("bob@corp.io"));
+        assert!(!result.contains("carol@domain.org"));
+        assert_eq!(result.matches("[EMAIL]").count(), 3);
+    }
+
+    #[test]
+    fn test_unusual_but_valid_email_formats() {
+        let s = default_scanner();
+        let test_cases = vec![
+            "user+tag@example.com",
+            "user.name@example.co.uk",
+            "user_name@sub.domain.example.com",
+            "12345@example.com",
+            "user+test+filter@example-domain.io",
+        ];
+        for email in test_cases {
+            let result = s.redact(email);
+            assert!(!result.contains(email), "Email not redacted: {}", email);
+            assert!(result.contains("[EMAIL]"), "No [EMAIL] placeholder for: {}", email);
+        }
+    }
+
+    #[test]
+    fn test_international_phone_formats() {
+        let s = default_scanner();
+        // PHONE_RE supports US/NANP-style international numbers (with +1 country code)
+        // and standard 7-10 digit formats with various separators
+        let test_cases = vec![
+            ("Call +1-555-123-4567", "[PHONE]"),
+            ("Phone: +1 (555) 555-5555", "[PHONE]"),
+            ("Mobile: +1 555.555.5555", "[PHONE]"),
+            // Also test various separators without country code
+            ("Tel: 555.123.4567", "[PHONE]"),
+            ("Direct: (555) 555-5555", "[PHONE]"),
+        ];
+        for (input, expected) in test_cases {
+            let result = s.redact(input);
+            assert!(result.contains(expected), "Failed for: {}", input);
+        }
+    }
+
+    #[test]
+    fn test_has_pii_with_selective_redaction() {
+        // Scanner that only redacts emails
+        let config = RedactionConfig {
+            enabled: true,
+            redact_emails: true,
+            redact_phones: false,
+            redact_credit_cards: false,
+            redact_ssn: false,
+            custom_patterns: vec![],
+        };
+        let s = RedactionScanner::new(config);
+
+        // Should detect PII when email is present
+        assert!(s.has_pii("Contact alice@example.com"));
+
+        // Should NOT detect PII when only phone is present (phones not enabled)
+        assert!(!s.has_pii("Call 555-123-4567"));
+
+        // Should NOT detect PII when only credit card is present
+        assert!(!s.has_pii("Card: 4111 1111 1111 1111"));
+    }
+
+    #[test]
+    fn test_custom_pattern_with_special_chars() {
+        let config = RedactionConfig {
+            custom_patterns: vec![r"KEY\[[A-Z0-9]+\]".to_string()],
+            ..Default::default()
+        };
+        let s = RedactionScanner::new(config);
+        let result = s.redact("Use KEY[ABCD] to access.");
+        assert!(!result.contains("KEY[ABCD]"));
+        assert!(result.contains("[REDACTED]"));
+    }
+
+    #[test]
+    fn test_multiple_custom_patterns() {
+        let config = RedactionConfig {
+            custom_patterns: vec![
+                r"ACCT-\d+".to_string(),
+                r"ID:\d{5}".to_string(),
+                r"SECRET\[[^\]]+\]".to_string(),
+            ],
+            ..Default::default()
+        };
+        let s = RedactionScanner::new(config);
+        let result = s.redact("Account ACCT-99887, ID:12345, and SECRET[passw0rd]");
+        assert!(!result.contains("ACCT-99887"));
+        assert!(!result.contains("ID:12345"));
+        assert!(!result.contains("SECRET[passw0rd]"));
+        assert_eq!(result.matches("[REDACTED]").count(), 3);
+    }
 }
