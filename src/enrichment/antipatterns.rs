@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::event::{Event, Role, SessionManifest};
 use crate::scraper::Scraper;
+use crate::enrichment::solution;
 
 /// A detected anti-pattern with its rejection window and alternatives.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -23,6 +24,8 @@ pub struct AntiPattern {
     pub session_ids: Vec<String>,
     /// Session IDs that successfully resolved the same error
     pub alternative_session_ids: Vec<String>,
+    /// Solution summaries for each alternative session (what worked instead)
+    pub working_alternative_summaries: Vec<String>,
 }
 
 /// Detect anti-patterns in a session.
@@ -66,7 +69,8 @@ pub fn detect_antipatterns(
             ),
             error_fingerprints: fps,
             session_ids: vec![manifest.session_id.clone()],
-            alternative_session_ids: alternatives,
+            alternative_session_ids: alternatives.iter().map(|(id, _)| id.clone()).collect(),
+            working_alternative_summaries: alternatives.into_iter().map(|(_, summary)| summary.unwrap_or_default()).collect(),
         });
     }
 
@@ -91,7 +95,8 @@ pub fn detect_antipatterns(
             ),
             error_fingerprints: fps,
             session_ids: vec![manifest.session_id.clone()],
-            alternative_session_ids: alternatives,
+            alternative_session_ids: alternatives.iter().map(|(id, _)| id.clone()).collect(),
+            working_alternative_summaries: alternatives.into_iter().map(|(_, summary)| summary.unwrap_or_default()).collect(),
         });
     }
 
@@ -221,11 +226,12 @@ fn has_positive_signal(content: &str) -> bool {
 }
 
 /// Find successful sessions that resolved the same error fingerprints.
+/// Returns tuples of (session_id, solution_summary).
 fn find_alternatives(
     error_fps: &[String],
     current_session: &str,
     scraper: &Scraper,
-) -> Vec<String> {
+) -> Vec<(String, Option<String>)> {
     if error_fps.is_empty() {
         return Vec::new();
     }
@@ -254,7 +260,9 @@ fn find_alternatives(
                         .any(|e| e.role == Role::User && has_positive_signal(&e.content));
 
                     if has_match && has_success {
-                        alternatives.push(session_id);
+                        // Extract solution summary from this successful session
+                        let summary = solution::extract_solution(&events);
+                        alternatives.push((session_id, summary));
                     }
                 }
             }
@@ -425,6 +433,7 @@ mod tests {
             error_fingerprints: vec!["test_fp".to_string()],
             session_ids: vec!["test/1".to_string()],
             alternative_session_ids: vec![],
+            working_alternative_summaries: vec![],
         }];
 
         write_antipatterns_sidecar(temp.path(), "test/1", &patterns).unwrap();

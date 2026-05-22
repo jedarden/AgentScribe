@@ -25,6 +25,8 @@ pub struct KnownGotcha {
     pub affected_sessions: Vec<String>,
     /// Sessions that successfully resolved this issue (if any)
     pub resolution_sessions: Vec<String>,
+    /// Solution summaries for each resolution session (what worked instead)
+    pub resolution_summaries: Vec<String>,
 }
 
 /// Error pattern summary for a file.
@@ -279,6 +281,7 @@ fn load_gotchas_for_sessions(data_dir: &Path, session_ids: &[String]) -> Result<
                 error_fingerprints: pattern.error_fingerprints,
                 affected_sessions: pattern.session_ids,
                 resolution_sessions: pattern.alternative_session_ids,
+                resolution_summaries: pattern.working_alternative_summaries,
             });
         }
     }
@@ -440,6 +443,7 @@ mod tests {
                 error_fingerprints: vec!["CompileError:missing import".to_string()],
                 affected_sessions: vec!["claude/1".to_string()],
                 resolution_sessions: vec!["claude/2".to_string()],
+                resolution_summaries: vec!["Added missing import".to_string()],
             }],
             error_patterns: vec![FileErrorPattern {
                 fingerprint: "CompileError:missing import".to_string(),
@@ -642,6 +646,7 @@ mod tests {
                 error_fingerprints: vec!["DBError:connection pool exhausted".to_string()],
                 session_ids: vec!["claude-code/s1".to_string()],
                 alternative_session_ids: vec![],
+                working_alternative_summaries: vec![],
             }],
         )
         .unwrap();

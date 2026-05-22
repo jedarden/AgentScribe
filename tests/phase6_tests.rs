@@ -1033,6 +1033,7 @@ fn test_file_knowledge_with_gotchas() {
             error_fingerprints: vec!["DBError:pool exhausted".to_string()],
             session_ids: vec!["claude-code/s1".to_string()],
             alternative_session_ids: vec![],
+            working_alternative_summaries: vec![],
         }],
     )
     .unwrap();
