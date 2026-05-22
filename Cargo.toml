@@ -58,6 +58,9 @@ tantivy = "0.22"
 # SQLite (bundled - no system dependency)
 rusqlite = { version = "0.32", features = ["bundled"] }
 
+# Zstandard decompression
+zstd = "0.13"
+
 # File locking
 fs2 = "0.4"
 

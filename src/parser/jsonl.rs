@@ -14,6 +14,25 @@ use std::path::Path;
 /// JSONL parser implementation
 pub struct JsonlParser;
 
+/// Opens a file, optionally decompressing if it has a .zst extension
+fn open_file_maybe_zst(path: &Path) -> Result<Box<dyn BufRead>> {
+    let file = std::fs::File::open(path)?;
+
+    if path.extension().and_then(|s| s.to_str()) == Some("zst") {
+        // Use streaming zstd decompression
+        let decoder = zstd::stream::read::Decoder::new(file).map_err(|e| {
+            AgentScribeError::Parse {
+                file: path.display().to_string(),
+                line: Some(0),
+                message: format!("Zstd decompression error: {}", e),
+            }
+        })?;
+        Ok(Box::new(BufReader::new(decoder)))
+    } else {
+        Ok(Box::new(BufReader::new(file)))
+    }
+}
+
 impl JsonlParser {
     /// Parse a single JSONL line into an event
     pub fn parse_line(
@@ -177,8 +196,7 @@ impl JsonlParser {
 
 impl super::FormatParser for JsonlParser {
     fn parse(&self, source_path: &Path, plugin: &Plugin) -> Result<Vec<Event>> {
-        let file = std::fs::File::open(source_path)?;
-        let reader = BufReader::new(file);
+        let reader = open_file_maybe_zst(source_path)?;
         let mut events = Vec::new();
 
         // Get session ID from filename
@@ -250,20 +268,22 @@ impl super::FormatParser for JsonlParser {
                         .unwrap_or("unknown")
                         .to_string(),
                     SessionIdSource::Field(field) => {
-                        // Read first line to extract session ID
-                        if let Ok(first_line) = std::fs::read_to_string(source_path) {
-                            if let Some(line) = first_line.lines().next() {
-                                if let Ok(json) = serde_json::from_str::<Value>(line) {
-                                    extract_string(&json, field)
-                                        .unwrap_or_else(|| "unknown".to_string())
+                        // Read first line to extract session ID (handle zst)
+                        match open_file_maybe_zst(source_path) {
+                            Ok(mut reader) => {
+                                let mut first_line = String::new();
+                                if reader.read_line(&mut first_line).is_ok() {
+                                    if let Ok(json) = serde_json::from_str::<Value>(&first_line) {
+                                        extract_string(&json, field)
+                                            .unwrap_or_else(|| "unknown".to_string())
+                                    } else {
+                                        "unknown".to_string()
+                                    }
                                 } else {
                                     "unknown".to_string()
                                 }
-                            } else {
-                                "unknown".to_string()
                             }
-                        } else {
-                            "unknown".to_string()
+                            Err(_) => "unknown".to_string(),
                         }
                     }
                 };

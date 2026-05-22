@@ -39,6 +39,7 @@ dependencies = [
  "tracing-appender",
  "tracing-subscriber",
  "walkdir",
+ "zstd",
 ]
 
 [[package]]
