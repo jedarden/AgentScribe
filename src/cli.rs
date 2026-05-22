@@ -1991,25 +1991,88 @@ fn run_file(path: String, max_results: usize, json: bool) -> Result<()> {
         std::process::exit(1);
     }
 
-    let opts = search::SearchOptions {
-        file_path: Some(path.clone()),
-        max_results,
-        sort: search::SortOrder::Oldest,
-        ..Default::default()
-    };
+    // Expand glob pattern if present
+    let matched_paths = search::expand_file_glob(&data_dir, &path)?;
 
-    let output = match search::execute_search(&data_dir, &opts) {
-        Ok(o) => o,
-        Err(e) => {
-            eprintln!("Search error: {}", e);
-            std::process::exit(1);
+    if matched_paths.is_empty() {
+        if json {
+            println!(
+                "{}",
+                serde_json::json!({
+                    "query": path,
+                    "total_matches": 0,
+                    "matched_paths": [],
+                    "results": []
+                })
+            );
+        } else {
+            println!("No files found matching pattern: {}", path);
         }
+        return Ok(());
+    }
+
+    // Collect results for all matched paths
+    let mut all_results = Vec::new();
+    let mut total_searched = 0u64;
+    let mut search_time_ms = 0u64;
+
+    for matched_path in &matched_paths {
+        let opts = search::SearchOptions {
+            file_path: Some(matched_path.clone()),
+            max_results,
+            sort: search::SortOrder::Oldest,
+            ..Default::default()
+        };
+
+        match search::execute_search(&data_dir, &opts) {
+            Ok(output) => {
+                total_searched = total_searched.max(output.sessions_searched);
+                search_time_ms += output.search_time_ms;
+                all_results.extend(output.results);
+            }
+            Err(e) => {
+                eprintln!("Search error for path '{}': {}", matched_path, e);
+            }
+        }
+    }
+
+    // Sort results by timestamp (oldest first)
+    all_results.sort_by(|a, b| {
+        let ts_a = a.timestamp.as_deref().unwrap_or("");
+        let ts_b = b.timestamp.as_deref().unwrap_or("");
+        ts_a.cmp(ts_b)
+    });
+
+    // Cap at max_results
+    all_results.truncate(max_results);
+
+    let output = search::SearchOutput {
+        query: path.clone(),
+        total_matches: all_results.len(),
+        search_time_ms,
+        sessions_searched: total_searched,
+        results: all_results,
+        fuzzy_fallback: false,
     };
 
     if json {
         println!("{}", serde_json::to_string_pretty(&output).unwrap());
     } else {
-        println!("Sessions that touched: {}", path);
+        // Show which files matched the pattern
+        let paths_display: Vec<&str> = matched_paths.iter().map(|p| p.as_str()).collect();
+        if paths_display.len() > 1 {
+            println!(
+                "Pattern '{}' matched {} files:",
+                path,
+                paths_display.len()
+            );
+            for p in &paths_display {
+                println!("  - {}", p);
+            }
+            println!();
+        } else {
+            println!("Sessions that touched: {}", paths_display[0]);
+        }
         println!("{}", search::format_human(&output, 200));
     }
 

@@ -1293,6 +1293,98 @@ fn truncate_fingerprint(fp: &str, max_len: usize) -> String {
     format!("{}...", &fp[..max_len.saturating_sub(3)])
 }
 
+/// Collect all unique file paths from the index.
+///
+/// Returns a HashSet of all file_path values stored in the file_paths field
+/// across all documents. Used for glob pattern expansion.
+pub fn collect_all_file_paths(data_dir: &Path) -> Result<std::collections::HashSet<String>> {
+    let index = open_index(data_dir)?;
+    let reader = index
+        .reader()
+        .map_err(|e| AgentScribeError::DataDir(format!("Failed to create index reader: {}", e)))?;
+    let searcher = reader.searcher();
+    let total_docs = searcher.num_docs();
+
+    if total_docs == 0 {
+        return Ok(std::collections::HashSet::new());
+    }
+
+    let (_schema, fields) = build_schema();
+    let mut all_paths = std::collections::HashSet::new();
+
+    use tantivy::collector::TopDocs;
+    use tantivy::query::AllQuery;
+
+    // Fetch all documents (no filter - we want all file_paths)
+    let all_docs: Vec<_> = searcher
+        .search(&AllQuery, &TopDocs::with_limit(total_docs as usize))
+        .map_err(|e| AgentScribeError::DataDir(format!("Search failed: {}", e)))?;
+
+    for (_score, doc_addr) in all_docs {
+        let doc: TantivyDocument = match searcher.doc(doc_addr) {
+            Ok(d) => d,
+            Err(_) => continue,
+        };
+        // Collect all file_paths from this document
+        for path_value in doc.get_all(fields.file_paths) {
+            if let Some(path) = path_value.as_str() {
+                all_paths.insert(path.to_string());
+            }
+        }
+    }
+
+    Ok(all_paths)
+}
+
+/// Expand a glob pattern against all file paths in the index.
+///
+/// Takes a glob pattern (e.g., "src/auth/**", "src/**/*.rs") and returns
+/// all file paths in the index that match the pattern.
+///
+/// If the pattern contains no glob metacharacters (*, ?, [, ]), it's treated
+/// as an exact path and returned in a singleton set if it exists in the index.
+///
+/// Returns an empty set if:
+/// - The index is empty
+/// - No paths match the pattern
+/// - The glob pattern is invalid
+pub fn expand_file_glob(data_dir: &Path, pattern: &str) -> Result<std::collections::HashSet<String>> {
+    let all_paths = collect_all_file_paths(data_dir)?;
+
+    if all_paths.is_empty() {
+        return Ok(std::collections::HashSet::new());
+    }
+
+    // Check if pattern contains glob metacharacters
+    let has_glob = pattern.contains('*') || pattern.contains('?') || pattern.contains('[');
+
+    if !has_glob {
+        // Exact path match - check if it exists in the index
+        let mut result = std::collections::HashSet::new();
+        if all_paths.contains(pattern) {
+            result.insert(pattern.to_string());
+        }
+        return Ok(result);
+    }
+
+    // Build a glob matcher
+    let glob_matcher = match glob::Pattern::new(pattern) {
+        Ok(m) => m,
+        Err(_) => {
+            // Invalid glob pattern - return empty set
+            return Ok(std::collections::HashSet::new());
+        }
+    };
+
+    // Match all paths against the pattern
+    let matched: std::collections::HashSet<String> = all_paths
+        .into_iter()
+        .filter(|path| glob_matcher.matches(path))
+        .collect();
+
+    Ok(matched)
+}
+
 /// Extract file paths from a task description.
 ///
 /// Looks for common file path patterns: src/, .rs, .py, .ts, .js, etc.
@@ -5102,5 +5194,275 @@ mod tests {
             result.results.len() <= 1,
             "max_results should limit results"
         );
+    }
+
+    #[test]
+    fn test_collect_all_file_paths_empty_index() {
+        use tempfile::TempDir;
+        let temp_dir = TempDir::new().unwrap();
+        let index_path = temp_dir.path().join("index").join("tantivy");
+
+        let (schema, _) = build_schema();
+        std::fs::create_dir_all(&index_path).unwrap();
+        tantivy::Index::create_in_dir(&index_path, schema).unwrap();
+
+        let paths = collect_all_file_paths(temp_dir.path()).unwrap();
+        assert!(paths.is_empty());
+    }
+
+    #[test]
+    fn test_collect_all_file_paths_with_sessions() {
+        use crate::event::{Event, Role, SessionManifest};
+        use crate::index::build_session_document;
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let index_path = temp_dir.path().join("index").join("tantivy");
+
+        let (schema, fields) = build_schema();
+        std::fs::create_dir_all(&index_path).unwrap();
+        let index = tantivy::Index::create_in_dir(&index_path, schema).unwrap();
+        let mut writer = index.writer(50_000_000).unwrap();
+
+        let now = Utc::now();
+
+        // Session 1 with multiple files
+        let m1 = {
+            let mut m = SessionManifest::new("test/1".to_string(), "test".to_string());
+            m.started = now;
+            m.turns = 2;
+            m
+        };
+        let e1 = vec![
+            Event::new(now, "test/1".to_string(), "test".to_string(), Role::User, "fix auth".to_string())
+                .with_file_paths(vec!["src/auth.rs".to_string(), "src/auth/mod.rs".to_string()]),
+            Event::new(now, "test/1".to_string(), "test".to_string(), Role::Assistant, "done".to_string()),
+        ];
+
+        // Session 2 with different files
+        let m2 = {
+            let mut m = SessionManifest::new("test/2".to_string(), "test".to_string());
+            m.started = now;
+            m.turns = 2;
+            m
+        };
+        let e2 = vec![
+            Event::new(now, "test/2".to_string(), "test".to_string(), Role::User, "fix db".to_string())
+                .with_file_paths(vec!["src/db.rs".to_string(), "src/db/connection.rs".to_string()]),
+            Event::new(now, "test/2".to_string(), "test".to_string(), Role::Assistant, "done".to_string()),
+        ];
+
+        writer
+            .add_document(build_session_document(&fields, &e1, &m1))
+            .unwrap();
+        writer
+            .add_document(build_session_document(&fields, &e2, &m2))
+            .unwrap();
+        writer.commit().unwrap();
+        writer.wait_merging_threads().unwrap();
+
+        let paths = collect_all_file_paths(temp_dir.path()).unwrap();
+        assert_eq!(paths.len(), 4);
+        assert!(paths.contains("src/auth.rs"));
+        assert!(paths.contains("src/auth/mod.rs"));
+        assert!(paths.contains("src/db.rs"));
+        assert!(paths.contains("src/db/connection.rs"));
+    }
+
+    #[test]
+    fn test_expand_file_glob_exact_match() {
+        use crate::event::{Event, Role, SessionManifest};
+        use crate::index::build_session_document;
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let index_path = temp_dir.path().join("index").join("tantivy");
+
+        let (schema, fields) = build_schema();
+        std::fs::create_dir_all(&index_path).unwrap();
+        let index = tantivy::Index::create_in_dir(&index_path, schema).unwrap();
+        let mut writer = index.writer(50_000_000).unwrap();
+
+        let now = Utc::now();
+        let m = SessionManifest::new("test/1".to_string(), "test".to_string());
+        let e = vec![Event::new(
+            now,
+            "test/1".to_string(),
+            "test".to_string(),
+            Role::User,
+            "fix".to_string(),
+        )
+        .with_file_paths(vec!["src/main.rs".to_string()])];
+
+        writer
+            .add_document(build_session_document(&fields, &e, &m))
+            .unwrap();
+        writer.commit().unwrap();
+
+        // Exact match
+        let matched = expand_file_glob(temp_dir.path(), "src/main.rs").unwrap();
+        assert_eq!(matched.len(), 1);
+        assert!(matched.contains("src/main.rs"));
+
+        // Exact non-match
+        let matched = expand_file_glob(temp_dir.path(), "src/other.rs").unwrap();
+        assert!(matched.is_empty());
+    }
+
+    #[test]
+    fn test_expand_file_glob_wildcard_single() {
+        use crate::event::{Event, Role, SessionManifest};
+        use crate::index::build_session_document;
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let index_path = temp_dir.path().join("index").join("tantivy");
+
+        let (schema, fields) = build_schema();
+        std::fs::create_dir_all(&index_path).unwrap();
+        let index = tantivy::Index::create_in_dir(&index_path, schema).unwrap();
+        let mut writer = index.writer(50_000_000).unwrap();
+
+        let now = Utc::now();
+        let m = SessionManifest::new("test/1".to_string(), "test".to_string());
+        let e = vec![Event::new(
+            now,
+            "test/1".to_string(),
+            "test".to_string(),
+            Role::User,
+            "fix".to_string(),
+        )
+        .with_file_paths(vec![
+            "src/main.rs".to_string(),
+            "src/lib.rs".to_string(),
+            "src/auth.rs".to_string(),
+            "tests/test.rs".to_string(),
+        ])];
+
+        writer
+            .add_document(build_session_document(&fields, &e, &m))
+            .unwrap();
+        writer.commit().unwrap();
+
+        // *.rs pattern - matches any .rs file anywhere in the path
+        let matched = expand_file_glob(temp_dir.path(), "*.rs").unwrap();
+        // eprintln!("DEBUG *.rs matched: {:?}", matched);
+        assert_eq!(matched.len(), 4);
+        assert!(matched.contains("tests/test.rs"));
+        assert!(matched.contains("src/main.rs"));
+
+        // src/*.rs pattern
+        let matched = expand_file_glob(temp_dir.path(), "src/*.rs").unwrap();
+        assert_eq!(matched.len(), 3);
+        assert!(matched.contains("src/main.rs"));
+        assert!(matched.contains("src/lib.rs"));
+        assert!(matched.contains("src/auth.rs"));
+    }
+
+    #[test]
+    fn test_expand_file_glob_recursive_wildcard() {
+        use crate::event::{Event, Role, SessionManifest};
+        use crate::index::build_session_document;
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let index_path = temp_dir.path().join("index").join("tantivy");
+
+        let (schema, fields) = build_schema();
+        std::fs::create_dir_all(&index_path).unwrap();
+        let index = tantivy::Index::create_in_dir(&index_path, schema).unwrap();
+        let mut writer = index.writer(50_000_000).unwrap();
+
+        let now = Utc::now();
+        let m = SessionManifest::new("test/1".to_string(), "test".to_string());
+        let e = vec![Event::new(
+            now,
+            "test/1".to_string(),
+            "test".to_string(),
+            Role::User,
+            "fix".to_string(),
+        )
+        .with_file_paths(vec![
+            "src/auth.rs".to_string(),
+            "src/auth/mod.rs".to_string(),
+            "src/auth/login.rs".to_string(),
+            "src/auth/middleware.rs".to_string(),
+            "src/db.rs".to_string(),
+        ])];
+
+        writer
+            .add_document(build_session_document(&fields, &e, &m))
+            .unwrap();
+        writer.commit().unwrap();
+
+        // **/auth.rs pattern
+        let matched = expand_file_glob(temp_dir.path(), "**/auth.rs").unwrap();
+        assert_eq!(matched.len(), 1);
+        assert!(matched.contains("src/auth.rs"));
+
+        // src/auth/** pattern - matches files under src/auth/ directory
+        let matched = expand_file_glob(temp_dir.path(), "src/auth/**").unwrap();
+        assert_eq!(matched.len(), 3);
+        assert!(matched.contains("src/auth/mod.rs"));
+        assert!(matched.contains("src/auth/login.rs"));
+        assert!(matched.contains("src/auth/middleware.rs"));
+
+        // src/**/*.rs pattern
+        let matched = expand_file_glob(temp_dir.path(), "src/**/*.rs").unwrap();
+        assert_eq!(matched.len(), 5);
+        assert!(matched.contains("src/auth.rs"));
+        assert!(matched.contains("src/auth/mod.rs"));
+        assert!(matched.contains("src/auth/login.rs"));
+        assert!(matched.contains("src/auth/middleware.rs"));
+        assert!(matched.contains("src/db.rs"));
+    }
+
+    #[test]
+    fn test_expand_file_glob_empty_index() {
+        use tempfile::TempDir;
+        let temp_dir = TempDir::new().unwrap();
+        let index_path = temp_dir.path().join("index").join("tantivy");
+
+        let (schema, _) = build_schema();
+        std::fs::create_dir_all(&index_path).unwrap();
+        tantivy::Index::create_in_dir(&index_path, schema).unwrap();
+
+        let matched = expand_file_glob(temp_dir.path(), "src/**").unwrap();
+        assert!(matched.is_empty());
+    }
+
+    #[test]
+    fn test_expand_file_glob_invalid_glob() {
+        use crate::event::{Event, Role, SessionManifest};
+        use crate::index::build_session_document;
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let index_path = temp_dir.path().join("index").join("tantivy");
+
+        let (schema, fields) = build_schema();
+        std::fs::create_dir_all(&index_path).unwrap();
+        let index = tantivy::Index::create_in_dir(&index_path, schema).unwrap();
+        let mut writer = index.writer(50_000_000).unwrap();
+
+        let now = Utc::now();
+        let m = SessionManifest::new("test/1".to_string(), "test".to_string());
+        let e = vec![Event::new(
+            now,
+            "test/1".to_string(),
+            "test".to_string(),
+            Role::User,
+            "fix".to_string(),
+        )
+        .with_file_paths(vec!["src/main.rs".to_string()])];
+
+        writer
+            .add_document(build_session_document(&fields, &e, &m))
+            .unwrap();
+        writer.commit().unwrap();
+
+        // Invalid glob pattern (unclosed bracket)
+        let matched = expand_file_glob(temp_dir.path(), "src/[invalid").unwrap();
+        assert!(matched.is_empty());
     }
 }
