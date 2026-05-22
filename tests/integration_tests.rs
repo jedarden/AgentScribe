@@ -183,6 +183,44 @@ fn codex_plugin(glob: &str) -> Plugin {
     }
 }
 
+/// Build a Codex JSONL plugin with companion metadata index.
+fn codex_plugin_with_companion(glob: &str, companion_path: &str) -> Plugin {
+    Plugin {
+        plugin: PluginMeta {
+            name: "codex".to_string(),
+            version: "1.0".to_string(),
+        },
+        source: Source {
+            paths: vec![glob.to_string()],
+            exclude: vec![],
+            format: LogFormat::Jsonl,
+            session_detection: SessionDetection::OneFilePerSession {
+                session_id_from: SessionIdSource::Filename,
+            },
+            tree: None,
+            truncation_limit: None,
+        },
+        parser: Parser {
+            timestamp: Some("time".to_string()),
+            role: Some("role".to_string()),
+            content: Some("content".to_string()),
+            project: Some(ProjectDetection::Field {
+                field: "cwd".to_string(),
+            }),
+            model: Some(ModelDetection::None),
+            file_paths: Some(FilePathExtraction {
+                tool_call_field: None,
+                content_regex: Some(true),
+            }),
+            ..Default::default()
+        },
+        metadata: Some(agentscribe::plugin::Metadata {
+            companion_index: Some(companion_path.to_string()),
+            ..Default::default()
+        }),
+    }
+}
+
 /// Read RSS (Resident Set Size) in kilobytes from /proc/self/status.
 /// Returns None on non-Linux platforms.
 fn current_rss_kb() -> Option<u64> {
@@ -1369,6 +1407,49 @@ fn test_codex_session_content_preserved() {
         all_content.to_lowercase().contains("pagination"),
         "codex session content should contain 'pagination': {:?}",
         &all_content[..all_content.len().min(300)]
+    );
+}
+
+/// Codex sessions are enriched with companion metadata from session_index.jsonl.
+#[test]
+fn test_codex_companion_metadata_enrichment() {
+    let data_dir = make_data_dir();
+    let fixtures = fixtures_dir().join("codex");
+    let glob = format!("{}/rollout-success.jsonl", fixtures.display());
+    let companion_path = format!("{}/session_index.jsonl", fixtures.display());
+
+    let mut scraper = Scraper::new(data_dir.path().to_path_buf()).expect("scraper init");
+    let plugin = codex_plugin_with_companion(&glob, &companion_path);
+    scraper.plugin_manager_mut().add_plugin(plugin.clone());
+
+    let result = scraper.scrape_plugin(&plugin).expect("scrape failed");
+    assert_eq!(result.sessions_scraped, 1);
+
+    let sessions = scraper.list_sessions("codex").expect("list sessions");
+    assert!(!sessions.is_empty());
+
+    let events = scraper.read_session(&sessions[0]).expect("read session");
+
+    // Events should be enriched with model from companion metadata
+    // The companion index has model: "gpt-4o-2024-05-13" for thread-success-001
+    let has_model_from_companion = events.iter().any(|e| {
+        e.model.as_deref() == Some("gpt-4o-2024-05-13")
+    });
+    assert!(
+        has_model_from_companion,
+        "codex events should have model from companion metadata, found models: {:?}",
+        events.iter().filter_map(|e| e.model.as_deref()).collect::<Vec<_>>()
+    );
+
+    // Events should be enriched with cwd from companion metadata
+    // The companion index has cwd: "/home/user/backend" for thread-success-001
+    let has_cwd_from_companion = events.iter().any(|e| {
+        e.project.as_deref() == Some("/home/user/backend")
+    });
+    assert!(
+        has_cwd_from_companion,
+        "codex events should have cwd from companion metadata, found projects: {:?}",
+        events.iter().filter_map(|e| e.project.as_deref()).collect::<Vec<_>>()
     );
 }
 
