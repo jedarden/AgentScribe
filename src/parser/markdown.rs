@@ -3,6 +3,7 @@
 //! Parses append-only Markdown files where roles are distinguished by line prefixes.
 //! Used by agents like Aider.
 
+use super::aider_input::AiderInputHistory;
 use crate::error::{AgentScribeError, Result};
 use crate::event::{Event, Role};
 use crate::parser::{ParseContext, SessionInfo};
@@ -22,6 +23,17 @@ impl MarkdownParser {
         session_id: String,
         plugin: &Plugin,
     ) -> Result<Vec<Event>> {
+        Self::parse_content_with_input_history(content, source_path, session_id, plugin, None)
+    }
+
+    /// Parse a markdown file into events, optionally enriching with input history timestamps
+    pub fn parse_content_with_input_history(
+        content: &str,
+        source_path: &Path,
+        session_id: String,
+        plugin: &Plugin,
+        input_history: Option<&AiderInputHistory>,
+    ) -> Result<Vec<Event>> {
         let parser = Self;
         let context = ParseContext::new(
             session_id,
@@ -29,7 +41,35 @@ impl MarkdownParser {
             source_path.display().to_string(),
         );
 
-        parser.parse_markdown(content, &context, plugin)
+        parser.parse_markdown_with_input_history(content, &context, plugin, input_history)
+    }
+
+    /// Enrich events with timestamps from Aider input history
+    ///
+    /// This matches user events to timestamps from .aider.input.history
+    /// to provide finer granularity for event timestamps.
+    fn enrich_with_input_history(
+        events: &mut Vec<Event>,
+        input_history: &AiderInputHistory,
+    ) -> Result<()> {
+        let mut user_event_index = 0;
+
+        for event in events.iter_mut() {
+            if event.role == Role::User {
+                // Try to find matching timestamp by content
+                if let Some(ts) = input_history.find_timestamp_for_input(&event.content) {
+                    event.ts = ts;
+                } else {
+                    // Fallback: use sequence-based matching
+                    if let Some(ts) = input_history.get_timestamp_by_sequence(user_event_index) {
+                        event.ts = ts;
+                    }
+                }
+                user_event_index += 1;
+            }
+        }
+
+        Ok(())
     }
 
     fn parse_markdown(
@@ -37,6 +77,16 @@ impl MarkdownParser {
         content: &str,
         context: &ParseContext,
         plugin: &Plugin,
+    ) -> Result<Vec<Event>> {
+        self.parse_markdown_with_input_history(content, context, plugin, None)
+    }
+
+    fn parse_markdown_with_input_history(
+        &self,
+        content: &str,
+        context: &ParseContext,
+        plugin: &Plugin,
+        input_history: Option<&AiderInputHistory>,
     ) -> Result<Vec<Event>> {
         let mut events = Vec::new();
         let mut current_role: Option<Role> = None;
@@ -170,6 +220,11 @@ impl MarkdownParser {
             }
         }
 
+        // Enrich with input history timestamps if available
+        if let Some(history) = input_history {
+            Self::enrich_with_input_history(&mut events, history)?;
+        }
+
         Ok(events)
     }
 }
@@ -263,6 +318,7 @@ impl super::FormatParser for MarkdownParser {
 mod tests {
     use super::*;
     use crate::plugin::{LogFormat, Parser, Plugin, PluginMeta, SessionDetection, Source};
+    use std::fs::File;
 
     fn create_aider_plugin() -> Plugin {
         Plugin {
@@ -310,5 +366,56 @@ On branch main
 
         assert!(!events.is_empty());
         assert!(events.iter().any(|e| e.role == Role::User));
+    }
+
+    #[test]
+    fn test_parse_aider_with_input_history() {
+        use std::io::Write;
+        use tempfile::NamedTempFile;
+
+        let plugin = create_aider_plugin();
+        let content = r#"# aider chat started at 2026-03-16 12:00:00
+#### Fix the login bug
+I'll help you fix the login bug.
+> git status
+On branch main
+#### Add JWT validation
+I'll add JWT validation to the auth middleware.
+"#;
+
+        // Create a temporary input history file
+        let temp_file = NamedTempFile::new().unwrap();
+        let input_path = temp_file.path();
+        let mut file = File::create(input_path).unwrap();
+        writeln!(file, "# 2026-03-16 12:00:30").unwrap();
+        writeln!(file, "+ Fix the login bug").unwrap();
+        writeln!(file, "# 2026-03-16 12:05:45").unwrap();
+        writeln!(file, "+ Add JWT validation").unwrap();
+
+        // Load the input history
+        let input_history = AiderInputHistory::load_from_file(input_path).unwrap();
+        assert_eq!(input_history.len(), 2);
+
+        // Parse with input history
+        let events = MarkdownParser::parse_content_with_input_history(
+            content,
+            Path::new("/tmp/.aider.chat.history.md"),
+            "test-session".to_string(),
+            &plugin,
+            Some(&input_history),
+        )
+        .unwrap();
+
+        // Should have user events with enriched timestamps
+        let user_events: Vec<_> = events.iter().filter(|e| e.role == Role::User).collect();
+        assert_eq!(user_events.len(), 2);
+
+        // First user event - content includes assistant response (no assistant prefix in Aider format)
+        assert!(user_events[0].content.starts_with("Fix the login bug"));
+        assert_eq!(user_events[0].ts.timestamp(), 1773662430); // 2026-03-16 12:00:30
+
+        // Second user event
+        assert!(user_events[1].content.starts_with("Add JWT validation"));
+        assert_eq!(user_events[1].ts.timestamp(), 1773662745); // 2026-03-16 12:05:45
     }
 }
