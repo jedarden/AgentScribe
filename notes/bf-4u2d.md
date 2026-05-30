@@ -60,3 +60,12 @@ tests were already present — added in two commits:
 | `test_international_phone_formats` | +1 country code variants |
 
 All 26 tests ran and passed: `cargo test --lib redaction`
+
+## Verification (2026-05-30)
+
+Verified all 26 tests still passing. The test suite is complete and covers all requirements:
+- ✅ Positive matches for all four pattern types
+- ✅ Negative cases (short numbers, invalid formats, edge cases)
+- ✅ PHONE_RE edge case with leading \b (regression test for f0c6efa fix)
+- ✅ Custom regex from RedactionConfig
+- ✅ Disabled scanner passes through unchanged
