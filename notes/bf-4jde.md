@@ -1,25 +1,17 @@
-# Fix bf-4jde: Align claude-code.toml with plan spec for subagent exclusion
+# Fix bf-4jde: Subagent Default Exclusion
 
-## Problem
-The plan specified that sub-agents should be excluded by default:
-- Sub-agents location: `<session-uuid>/subagents/agent-<id>.jsonl`
-- Plan spec: `exclude = ["*/subagents/*"]`
+## Issue
+The plan specified that sub-agents should be "excluded by default" but the mechanism didn't support opt-in.
 
-But `plugins/claude-code.toml` had:
-- `paths` including explicit subagent glob
-- `exclude = []` (empty, no exclusion)
+## Root Cause
+The `paths` glob pattern `~/.claude/projects/*/*.jsonl` only matched 2 directory levels, while subagent files are at 3 levels (`<project>/<session-uuid>/subagents/agent-*.jsonl`). This meant subagents were already excluded by the glob being too shallow, making the `exclude = ["*/subagents/*"]` entry redundant and the "opt-in" mechanism non-functional.
 
-## Fix Applied
-Updated `plugins/claude-code.toml`:
-```toml
-[source]
-paths = ["~/.claude/projects/*/*.jsonl"]  # Removed explicit subagents path
-exclude = ["*/subagents/*"]               # Now excludes subagents by default
-```
+## Fix
+Changed glob pattern to `~/.claude/projects/**/*.jsonl` (using `**` for recursive matching) so that:
+1. Subagent paths are included by the glob
+2. `exclude = ["*/subagents/*"]` excludes them by default
+3. Opt-in is possible by overriding `exclude` in user config or custom plugins
 
-This aligns with the plan's specification (line 104 of plan.md).
-
-## Why This Matters
-- The glob `~/.claude/projects/*/*.jsonl` matches both main sessions AND subagent files
-- The exclude pattern `*/subagents/*` filters out subagent files by default
-- Users can still opt-in by modifying their local config to remove the exclude pattern
+## Files Changed
+- `plugins/claude-code.toml`: Updated paths glob
+- `docs/plan.md`: Updated example to match
