@@ -126,6 +126,10 @@ fn tool_definitions() -> Value {
                             "type": "string",
                             "description": "Filter by model name"
                         },
+                        "session_type": {
+                            "type": "string",
+                            "description": "Filter by session type (debug, feature, refactor, investigation, configuration, documentation)"
+                        },
                         "fuzzy": {
                             "type": "boolean",
                             "description": "Enable fuzzy matching on all query terms",
@@ -279,6 +283,7 @@ async fn handle_search(data_dir: Arc<PathBuf>, args: Value) -> Value {
             outcome,
             doc_type_filter: None,
             model,
+            session_type: None,
             fuzzy,
             fuzzy_distance: 1,
             max_results,
@@ -288,6 +293,7 @@ async fn handle_search(data_dir: Arc<PathBuf>, args: Value) -> Value {
             sort,
             file_path,
             git_commit: None,
+            anti_patterns: false,
         };
 
         execute_search(&data_dir, &opts)
@@ -468,6 +474,7 @@ fn file_search_opts(
         outcome: None,
         doc_type_filter: None,
         model: None,
+        session_type: None,
         fuzzy: false,
         fuzzy_distance: 1,
         max_results,
@@ -477,6 +484,7 @@ fn file_search_opts(
         sort,
         file_path: Some(file_path),
         git_commit: None,
+        anti_patterns: false,
     }
 }
 

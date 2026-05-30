@@ -387,6 +387,53 @@ fn classify_session_type(events: &[Event], manifest: &SessionManifest) -> &'stat
     }
 }
 
+/// Load anti-pattern content from a session's sidecar file.
+///
+/// Returns formatted content with "anti-pattern:" prefixes for each pattern.
+fn load_antipattern_content(data_dir: &Path, session_id: &str) -> String {
+    let sessions_dir = data_dir.join("sessions");
+    let parts: Vec<&str> = session_id.splitn(2, '/').collect();
+    if parts.len() != 2 {
+        return String::new();
+    }
+
+    let sidecar_path = sessions_dir
+        .join(parts[0])
+        .join(format!("{}.anti-patterns.jsonl", parts[1]));
+
+    if !sidecar_path.exists() {
+        return String::new();
+    }
+
+    let content = match std::fs::read_to_string(&sidecar_path) {
+        Ok(c) => c,
+        Err(_) => return String::new(),
+    };
+
+    let mut anti_pattern_lines = Vec::new();
+    for line in content.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        if let Ok(pattern) = serde_json::from_str::<crate::enrichment::antipatterns::AntiPattern>(line) {
+            // Format: anti-pattern: <pattern description>
+            anti_pattern_lines.push(format!("anti-pattern: {}", pattern.pattern));
+            // Include working alternatives if available
+            for (i, alt_summary) in pattern.working_alternative_summaries.iter().enumerate() {
+                if !alt_summary.is_empty() {
+                    anti_pattern_lines.push(format!("  working alternative {}: {}", i + 1, alt_summary));
+                }
+            }
+        }
+    }
+
+    if anti_pattern_lines.is_empty() {
+        String::new()
+    } else {
+        anti_pattern_lines.join("\n\n")
+    }
+}
+
 /// Build a Tantivy document for a session.
 ///
 /// Takes a list of events belonging to the session and the session manifest,
@@ -395,11 +442,16 @@ pub fn build_session_document(
     fields: &IndexFields,
     events: &[Event],
     manifest: &SessionManifest,
+    anti_pattern_content: &str,
 ) -> TantivyDocument {
     let mut doc = TantivyDocument::new();
 
-    // Content field — concatenated conversation with role prefixes
-    let content = build_content(events);
+    // Content field — concatenated conversation with role prefixes, plus anti-patterns
+    let mut content = build_content(events);
+    if !anti_pattern_content.is_empty() {
+        content.push_str("\n\n");
+        content.push_str(anti_pattern_content);
+    }
     doc.add_text(fields.content, &content);
 
     // Summary fields
@@ -575,6 +627,7 @@ pub struct IndexManager {
     fields: IndexFields,
     writer: Option<tantivy::IndexWriter>,
     heap_size: usize,
+    data_dir: std::path::PathBuf,
 }
 
 impl IndexManager {
@@ -602,6 +655,7 @@ impl IndexManager {
             fields,
             writer: None,
             heap_size: 50_000_000,
+            data_dir: data_dir.to_path_buf(),
         })
     }
 
@@ -644,8 +698,11 @@ impl IndexManager {
         writer.delete_term(term);
         debug!(session_id = %manifest.session_id, "deleted old index entry");
 
+        // Load anti-pattern content from sidecar file
+        let anti_pattern_content = load_antipattern_content(&self.data_dir, &manifest.session_id);
+
         // Build and add new document
-        let doc = build_session_document(&self.fields, events, manifest);
+        let doc = build_session_document(&self.fields, events, manifest, &anti_pattern_content);
         writer
             .add_document(doc)
             .map_err(|e| AgentScribeError::DataDir(format!("Failed to add document: {}", e)))?;
@@ -824,7 +881,7 @@ mod tests {
         manifest.turns = 2;
         manifest.project = Some("/home/user/project".to_string());
 
-        let doc = build_session_document(&fields, &events, &manifest);
+        let doc = build_session_document(&fields, &events, &manifest, "");
 
         assert!(doc.len() > 0);
         assert_eq!(
@@ -917,7 +974,7 @@ mod tests {
         ];
 
         let manifest = SessionManifest::new("test/1".to_string(), "test".to_string());
-        let doc = build_session_document(&fields, &events, &manifest);
+        let doc = build_session_document(&fields, &events, &manifest, "");
 
         // We can't easily inspect multi-valued fields from Document directly,
         // but the build should succeed without errors
@@ -1083,7 +1140,7 @@ mod tests {
         let (_schema, fields) = build_schema();
         let events: Vec<Event> = vec![];
         let manifest = SessionManifest::new("test/empty".to_string(), "claude".to_string());
-        let doc = build_session_document(&fields, &events, &manifest);
+        let doc = build_session_document(&fields, &events, &manifest, "");
         assert_eq!(
             doc.get_first(fields.session_id).unwrap().as_str().unwrap(),
             "test/empty"
@@ -1469,7 +1526,7 @@ mod tests {
         // appended externally (the pattern used by the enrichment pipeline).
         let (_, fields) = build_schema();
         let manifest = SessionManifest::new("test/1".to_string(), "claude".to_string());
-        let mut doc = build_session_document(&fields, &[], &manifest);
+        let mut doc = build_session_document(&fields, &[], &manifest, "");
 
         // Not set by default
         assert!(doc.get_first(fields.solution_summary).is_none());
@@ -1616,7 +1673,7 @@ mod tests {
         // exists in the schema and can be added externally (consistent with manifest enrichment).
         let (_, fields) = build_schema();
         let manifest = SessionManifest::new("test/git".to_string(), "claude".to_string());
-        let mut doc = build_session_document(&fields, &[], &manifest);
+        let mut doc = build_session_document(&fields, &[], &manifest, "");
         // Externally add git commits (pattern used by enrichment pipeline)
         doc.add_text(fields.git_commits, "abc1234");
         doc.add_text(fields.git_commits, "def5678");

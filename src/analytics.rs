@@ -902,7 +902,7 @@ mod tests {
         let mut writer = index.writer(50_000_000).unwrap();
 
         for (manifest, events) in &sessions {
-            let doc = build_session_document(&fields, events, manifest);
+            let doc = build_session_document(&fields, events, manifest, "");
             writer.add_document(doc).unwrap();
         }
 

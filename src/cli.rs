@@ -133,6 +133,14 @@ enum Commands {
         #[arg(long)]
         model: Option<String>,
 
+        /// Filter by session type (debug, feature, refactor, investigation, configuration, documentation)
+        #[arg(long)]
+        session_type: Option<String>,
+
+        /// Filter to sessions with anti-patterns detected
+        #[arg(long)]
+        anti_patterns: bool,
+
         /// Enable fuzzy matching on all query terms
         #[arg(long)]
         fuzzy: bool,
@@ -532,6 +540,8 @@ pub fn run() -> Result<()> {
             outcome,
             r#type,
             model,
+            session_type,
+            anti_patterns,
             fuzzy,
             edit_distance,
             max_results,
@@ -557,6 +567,8 @@ pub fn run() -> Result<()> {
             outcome,
             r#type,
             model,
+            session_type,
+            anti_patterns,
             fuzzy,
             edit_distance,
             max_results,
@@ -1057,6 +1069,8 @@ fn run_search(
     outcome: Option<String>,
     doc_type_filter: Option<String>,
     model: Option<String>,
+    session_type: Option<String>,
+    anti_patterns: bool,
     fuzzy: bool,
     edit_distance: Option<u8>,
     max_results: usize,
@@ -1097,6 +1111,7 @@ fn run_search(
         outcome,
         doc_type_filter,
         model,
+        session_type,
         file_path: None,
         git_commit: None,
         fuzzy,
@@ -1106,6 +1121,7 @@ fn run_search(
         token_budget,
         offset,
         sort: sort_order,
+        anti_patterns,
     };
 
     let output = search::execute_search(&data_dir, &opts)?;
