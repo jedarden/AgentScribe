@@ -75,6 +75,7 @@ pub struct SearchOptions {
     pub outcome: Option<String>,
     pub doc_type_filter: Option<String>,
     pub model: Option<String>,
+    pub session_type: Option<String>,
     pub fuzzy: bool,
     pub fuzzy_distance: u8,
     pub max_results: usize,
@@ -86,6 +87,8 @@ pub struct SearchOptions {
     pub file_path: Option<String>,
     /// Filter to sessions associated with this exact git commit hash.
     pub git_commit: Option<String>,
+    /// Filter to sessions that have anti-pattern content (prefix-matched on "anti-pattern:")
+    pub anti_patterns: bool,
 }
 
 impl Default for SearchOptions {
@@ -106,6 +109,7 @@ impl Default for SearchOptions {
             outcome: None,
             doc_type_filter: None,
             model: None,
+            session_type: None,
             fuzzy: false,
             fuzzy_distance: 1,
             max_results: 10,
@@ -115,6 +119,7 @@ impl Default for SearchOptions {
             sort: SortOrder::default(),
             file_path: None,
             git_commit: None,
+            anti_patterns: false,
         }
     }
 }
@@ -209,8 +214,10 @@ pub fn execute_search(data_dir: &Path, opts: &SearchOptions) -> Result<SearchOut
             outcome: opts.outcome.clone(),
             doc_type_filter: opts.doc_type_filter.clone(),
             model: opts.model.clone(),
+            session_type: opts.session_type.clone(),
             file_path: opts.file_path.clone(),
             git_commit: opts.git_commit.clone(),
+            anti_patterns: opts.anti_patterns,
             max_results: opts.max_results,
             snippet_length: opts.snippet_length,
             token_budget: opts.token_budget,
@@ -292,9 +299,10 @@ fn build_query(
         && opts.like_session.is_none()
         && opts.file_path.is_none()
         && opts.git_commit.is_none()
+        && !opts.anti_patterns
     {
         return Err(AgentScribeError::DataDir(
-            "No search query provided. Use <query>, --error, --code, --like, or a filter."
+            "No search query provided. Use <query>, --error, --code, --like, --anti-patterns, or a filter."
                 .to_string(),
         ));
     }
@@ -485,6 +493,18 @@ fn build_query(
         ));
     }
 
+    // Session type filter
+    if let Some(ref session_type) = opts.session_type {
+        let term = tantivy::schema::Term::from_field_text(fields.session_type, session_type);
+        clauses.push((
+            Occur::Must,
+            Box::new(TermQuery::new(
+                term,
+                tantivy::schema::IndexRecordOption::Basic,
+            )),
+        ));
+    }
+
     // File path filter (exact term match on stored file_paths values)
     if let Some(ref fp) = opts.file_path {
         let term = tantivy::schema::Term::from_field_text(fields.file_paths, fp);
@@ -500,6 +520,20 @@ fn build_query(
     // Git commit filter (exact term match on stored git_commits values)
     if let Some(ref commit) = opts.git_commit {
         let term = tantivy::schema::Term::from_field_text(fields.git_commits, commit);
+        clauses.push((
+            Occur::Must,
+            Box::new(TermQuery::new(
+                term,
+                tantivy::schema::IndexRecordOption::Basic,
+            )),
+        ));
+    }
+
+    // Anti-patterns filter: require content field to contain "anti-pattern:" prefix
+    // Anti-pattern content is indexed with the "anti-pattern:" prefix in load_antipattern_content()
+    if opts.anti_patterns {
+        let term = tantivy::schema::Term::from_field_text(fields.content, "anti-pattern:");
+        // Use exact term match for the "anti-pattern:" prefix
         clauses.push((
             Occur::Must,
             Box::new(TermQuery::new(
@@ -912,6 +946,7 @@ fn lookup_session(
             outcome: None,
             doc_type_filter: None,
             model: None,
+            session_type: None,
             file_path: None,
             git_commit: None,
             fuzzy: false,
@@ -921,6 +956,7 @@ fn lookup_session(
             token_budget: None,
             offset: 0,
             sort: SortOrder::Relevance,
+            anti_patterns: false,
         };
         if let Some(result) = doc_to_search_result(searcher, &fields, *doc_addr, *score, &opts) {
             results.push(result);
@@ -1827,7 +1863,7 @@ mod tests {
             ),
         ];
 
-        let doc1 = build_session_document(&fields, &events1, &manifest1);
+        let doc1 = build_session_document(&fields, &events1, &manifest1, "");
         writer.add_document(doc1).unwrap();
 
         let manifest2 = {
@@ -1858,7 +1894,7 @@ mod tests {
             ),
         ];
 
-        let doc2 = build_session_document(&fields, &events2, &manifest2);
+        let doc2 = build_session_document(&fields, &events2, &manifest2, "");
         writer.add_document(doc2).unwrap();
 
         writer.commit().unwrap();
@@ -1946,7 +1982,7 @@ mod tests {
             ),
         ];
         writer
-            .add_document(build_session_document(&fields, &e1, &m1))
+            .add_document(build_session_document(&fields, &e1, &m1, ""))
             .unwrap();
 
         // Session 2: aider, failure
@@ -1976,7 +2012,7 @@ mod tests {
             ),
         ];
         writer
-            .add_document(build_session_document(&fields, &e2, &m2))
+            .add_document(build_session_document(&fields, &e2, &m2, ""))
             .unwrap();
 
         writer.commit().unwrap();
@@ -2050,7 +2086,7 @@ mod tests {
             ),
         ];
         writer
-            .add_document(build_session_document(&fields, &e, &m))
+            .add_document(build_session_document(&fields, &e, &m, ""))
             .unwrap();
         writer.commit().unwrap();
         writer.wait_merging_threads().unwrap();
@@ -2105,7 +2141,7 @@ mod tests {
             ),
         ];
         writer
-            .add_document(build_session_document(&fields, &e, &m))
+            .add_document(build_session_document(&fields, &e, &m, ""))
             .unwrap();
         writer.commit().unwrap();
         writer.wait_merging_threads().unwrap();
@@ -2154,7 +2190,7 @@ mod tests {
             "old stuff".to_string(),
         )];
         writer
-            .add_document(build_session_document(&fields, &e1, &m1))
+            .add_document(build_session_document(&fields, &e1, &m1, ""))
             .unwrap();
 
         // Recent session
@@ -2172,7 +2208,7 @@ mod tests {
             "new stuff".to_string(),
         )];
         writer
-            .add_document(build_session_document(&fields, &e2, &m2))
+            .add_document(build_session_document(&fields, &e2, &m2, ""))
             .unwrap();
 
         writer.commit().unwrap();
@@ -2289,7 +2325,7 @@ mod tests {
                 "The migration ran successfully using ALTER TABLE and pg_dump for backup".to_string()),
         ];
         writer
-            .add_document(build_session_document(&fields, &e1, &m1))
+            .add_document(build_session_document(&fields, &e1, &m1, ""))
             .unwrap();
 
         // Similar session: also postgres work
@@ -2320,7 +2356,7 @@ mod tests {
             ),
         ];
         writer
-            .add_document(build_session_document(&fields, &e2, &m2))
+            .add_document(build_session_document(&fields, &e2, &m2, ""))
             .unwrap();
 
         // Dissimilar session: completely different topic
@@ -2351,7 +2387,7 @@ mod tests {
             ),
         ];
         writer
-            .add_document(build_session_document(&fields, &e3, &m3))
+            .add_document(build_session_document(&fields, &e3, &m3, ""))
             .unwrap();
 
         writer.commit().unwrap();
@@ -2423,7 +2459,7 @@ mod tests {
             "hello".to_string(),
         )];
         writer
-            .add_document(build_session_document(&fields, &e, &m))
+            .add_document(build_session_document(&fields, &e, &m, ""))
             .unwrap();
         writer.commit().unwrap();
         writer.wait_merging_threads().unwrap();
@@ -2479,7 +2515,7 @@ mod tests {
             ),
         ];
         writer
-            .add_document(build_session_document(&fields, &e1, &m1))
+            .add_document(build_session_document(&fields, &e1, &m1, ""))
             .unwrap();
 
         // Similar: aider session about postgres
@@ -2507,7 +2543,7 @@ mod tests {
             ),
         ];
         writer
-            .add_document(build_session_document(&fields, &e2, &m2))
+            .add_document(build_session_document(&fields, &e2, &m2, ""))
             .unwrap();
 
         writer.commit().unwrap();
@@ -2568,7 +2604,7 @@ mod tests {
             ),
         ];
         writer
-            .add_document(build_session_document(&fields, &e1, &m1))
+            .add_document(build_session_document(&fields, &e1, &m1, ""))
             .unwrap();
 
         // Cross-agent similar: aider session about kubernetes deployment
@@ -2598,7 +2634,7 @@ mod tests {
             ),
         ];
         writer
-            .add_document(build_session_document(&fields, &e2, &m2))
+            .add_document(build_session_document(&fields, &e2, &m2, ""))
             .unwrap();
 
         // Unrelated session to dilute common terms
@@ -2629,7 +2665,7 @@ mod tests {
             ),
         ];
         writer
-            .add_document(build_session_document(&fields, &e3, &m3))
+            .add_document(build_session_document(&fields, &e3, &m3, ""))
             .unwrap();
 
         writer.commit().unwrap();
@@ -2928,7 +2964,7 @@ mod tests {
             .with_error_fingerprints(vec!["connectionrefusederror".to_string()]),
         ];
         writer
-            .add_document(build_session_document(&fields, &e1, &m1))
+            .add_document(build_session_document(&fields, &e1, &m1, ""))
             .unwrap();
 
         // Session without the error fingerprint
@@ -2952,7 +2988,7 @@ mod tests {
             ),
         ];
         writer
-            .add_document(build_session_document(&fields, &e2, &m2))
+            .add_document(build_session_document(&fields, &e2, &m2, ""))
             .unwrap();
         writer.commit().unwrap();
         writer.wait_merging_threads().unwrap();
@@ -2992,7 +3028,7 @@ mod tests {
             "write a function".to_string(),
         )];
         writer
-            .add_document(build_session_document(&fields, &e, &m))
+            .add_document(build_session_document(&fields, &e, &m, ""))
             .unwrap();
 
         // Code artifact document
@@ -3121,7 +3157,7 @@ mod tests {
             ),
         ];
         writer
-            .add_document(build_session_document(&fields, &e1, &m1))
+            .add_document(build_session_document(&fields, &e1, &m1, ""))
             .unwrap();
 
         let mut m2 = SessionManifest::new("claude/2".to_string(), "claude-code".to_string());
@@ -3145,7 +3181,7 @@ mod tests {
             ),
         ];
         writer
-            .add_document(build_session_document(&fields, &e2, &m2))
+            .add_document(build_session_document(&fields, &e2, &m2, ""))
             .unwrap();
         writer.commit().unwrap();
         writer.wait_merging_threads().unwrap();
@@ -3200,7 +3236,7 @@ mod tests {
             ),
         ];
         writer
-            .add_document(build_session_document(&fields, &e1, &m1))
+            .add_document(build_session_document(&fields, &e1, &m1, ""))
             .unwrap();
 
         let mut m2 = SessionManifest::new("claude/opus-1".to_string(), "claude-code".to_string());
@@ -3224,7 +3260,7 @@ mod tests {
             ),
         ];
         writer
-            .add_document(build_session_document(&fields, &e2, &m2))
+            .add_document(build_session_document(&fields, &e2, &m2, ""))
             .unwrap();
         writer.commit().unwrap();
         writer.wait_merging_threads().unwrap();
@@ -3282,7 +3318,7 @@ mod tests {
             ),
         ];
         writer
-            .add_document(build_session_document(&fields, &e1, &m1))
+            .add_document(build_session_document(&fields, &e1, &m1, ""))
             .unwrap();
 
         // Wrong outcome (failure instead of success)
@@ -3311,7 +3347,7 @@ mod tests {
             ),
         ];
         writer
-            .add_document(build_session_document(&fields, &e2, &m2))
+            .add_document(build_session_document(&fields, &e2, &m2, ""))
             .unwrap();
 
         // Wrong agent (aider instead of claude-code)
@@ -3337,7 +3373,7 @@ mod tests {
             ),
         ];
         writer
-            .add_document(build_session_document(&fields, &e3, &m3))
+            .add_document(build_session_document(&fields, &e3, &m3, ""))
             .unwrap();
 
         // Wrong tag (python instead of rust)
@@ -3364,7 +3400,7 @@ mod tests {
             ),
         ];
         writer
-            .add_document(build_session_document(&fields, &e4, &m4))
+            .add_document(build_session_document(&fields, &e4, &m4, ""))
             .unwrap();
 
         writer.commit().unwrap();
@@ -3417,7 +3453,7 @@ mod tests {
             ),
         ];
         writer
-            .add_document(build_session_document(&fields, &e, &m))
+            .add_document(build_session_document(&fields, &e, &m, ""))
             .unwrap();
         writer.commit().unwrap();
         writer.wait_merging_threads().unwrap();
@@ -3450,7 +3486,7 @@ mod tests {
         let m_empty = SessionManifest::new("claude/empty".to_string(), "claude-code".to_string());
         let e_empty: Vec<Event> = vec![];
         writer
-            .add_document(build_session_document(&fields, &e_empty, &m_empty))
+            .add_document(build_session_document(&fields, &e_empty, &m_empty, ""))
             .unwrap();
 
         // Normal session to ensure it still finds the right one
@@ -3466,7 +3502,7 @@ mod tests {
             "fix the auth bug".to_string(),
         )];
         writer
-            .add_document(build_session_document(&fields, &e_normal, &m_normal))
+            .add_document(build_session_document(&fields, &e_normal, &m_normal, ""))
             .unwrap();
         writer.commit().unwrap();
         writer.wait_merging_threads().unwrap();
@@ -3509,7 +3545,7 @@ mod tests {
                 "debug the authentication code".to_string(),
             )];
             writer
-                .add_document(build_session_document(&fields, &e, &m))
+                .add_document(build_session_document(&fields, &e, &m, ""))
                 .unwrap();
         }
         writer.commit().unwrap();
@@ -3577,7 +3613,7 @@ mod tests {
             ),
         ];
         writer
-            .add_document(build_session_document(&fields, &e1, &m1))
+            .add_document(build_session_document(&fields, &e1, &m1, ""))
             .unwrap();
 
         // Session with only rust tag
@@ -3603,7 +3639,7 @@ mod tests {
             ),
         ];
         writer
-            .add_document(build_session_document(&fields, &e2, &m2))
+            .add_document(build_session_document(&fields, &e2, &m2, ""))
             .unwrap();
         writer.commit().unwrap();
         writer.wait_merging_threads().unwrap();
@@ -3645,7 +3681,7 @@ mod tests {
             "write function to validate input data".to_string(),
         )];
         writer
-            .add_document(build_session_document(&fields, &e, &m))
+            .add_document(build_session_document(&fields, &e, &m, ""))
             .unwrap();
 
         writer
@@ -3722,7 +3758,7 @@ mod tests {
             ),
         ];
         writer
-            .add_document(build_session_document(&fields, &e, &m))
+            .add_document(build_session_document(&fields, &e, &m, ""))
             .unwrap();
         writer.commit().unwrap();
         writer.wait_merging_threads().unwrap();
@@ -3803,7 +3839,7 @@ mod tests {
             ),
         ];
         writer
-            .add_document(build_session_document(&fields, &e, &m))
+            .add_document(build_session_document(&fields, &e, &m, ""))
             .unwrap();
         writer.commit().unwrap();
         writer.wait_merging_threads().unwrap();
@@ -3861,7 +3897,7 @@ mod tests {
                 "Rate limiting has been added to the authentication endpoints.".to_string()),
         ];
         writer
-            .add_document(build_session_document(&fields, &e, &m))
+            .add_document(build_session_document(&fields, &e, &m, ""))
             .unwrap();
         writer.commit().unwrap();
         writer.wait_merging_threads().unwrap();
@@ -3919,7 +3955,7 @@ mod tests {
             ),
         ];
         writer
-            .add_document(build_session_document(&fields, &e, &m))
+            .add_document(build_session_document(&fields, &e, &m, ""))
             .unwrap();
         writer.commit().unwrap();
         writer.wait_merging_threads().unwrap();
@@ -3982,7 +4018,7 @@ mod tests {
                 ),
             ];
             writer
-                .add_document(build_session_document(&fields, &e, &m))
+                .add_document(build_session_document(&fields, &e, &m, ""))
                 .unwrap();
         }
         writer.commit().unwrap();
@@ -4061,7 +4097,7 @@ mod tests {
             ),
         ];
         writer
-            .add_document(build_session_document(&fields, &e1, &m1))
+            .add_document(build_session_document(&fields, &e1, &m1, ""))
             .unwrap();
 
         // Session 2: touches a different file
@@ -4086,7 +4122,7 @@ mod tests {
             ),
         ];
         writer
-            .add_document(build_session_document(&fields, &e2, &m2))
+            .add_document(build_session_document(&fields, &e2, &m2, ""))
             .unwrap();
         writer.commit().unwrap();
         writer.wait_merging_threads().unwrap();
@@ -4137,7 +4173,7 @@ mod tests {
             ),
         ];
         writer
-            .add_document(build_session_document(&fields, &e, &m))
+            .add_document(build_session_document(&fields, &e, &m, ""))
             .unwrap();
         writer.commit().unwrap();
         writer.wait_merging_threads().unwrap();
@@ -4229,7 +4265,7 @@ mod tests {
             ),
         ];
         // Build the session doc and manually attach a solution_summary
-        let mut doc = build_session_document(&fields, &e, &m);
+        let mut doc = build_session_document(&fields, &e, &m, "");
         doc.add_text(
             fields.solution_summary,
             "SOLUTION: use stateless JWT tokens with 1h expiry for authentication",
@@ -4288,7 +4324,7 @@ mod tests {
             "historical session content".to_string(),
         )];
         writer
-            .add_document(build_session_document(&fields, &e_old, &m_old))
+            .add_document(build_session_document(&fields, &e_old, &m_old, ""))
             .unwrap();
 
         let mut m_new = SessionManifest::new("new/1".to_string(), "test".to_string());
@@ -4302,7 +4338,7 @@ mod tests {
             "historical session content".to_string(),
         )];
         writer
-            .add_document(build_session_document(&fields, &e_new, &m_new))
+            .add_document(build_session_document(&fields, &e_new, &m_new, ""))
             .unwrap();
         writer.commit().unwrap();
         writer.wait_merging_threads().unwrap();
@@ -4345,7 +4381,7 @@ mod tests {
             "write some code for me".to_string(),
         )];
         writer
-            .add_document(build_session_document(&fields, &e1, &m1))
+            .add_document(build_session_document(&fields, &e1, &m1, ""))
             .unwrap();
 
         let mut m2 = SessionManifest::new("aider/1".to_string(), "aider".to_string());
@@ -4359,7 +4395,7 @@ mod tests {
             "write some code for me".to_string(),
         )];
         writer
-            .add_document(build_session_document(&fields, &e2, &m2))
+            .add_document(build_session_document(&fields, &e2, &m2, ""))
             .unwrap();
         writer.commit().unwrap();
         writer.wait_merging_threads().unwrap();
@@ -4451,7 +4487,7 @@ mod tests {
             ),
         ];
         writer
-            .add_document(build_session_document(&fields, &e1, &m1))
+            .add_document(build_session_document(&fields, &e1, &m1, ""))
             .unwrap();
 
         // Session 2: Claude Code — older, failure, postgres migration
@@ -4498,7 +4534,7 @@ mod tests {
             ),
         ];
         writer
-            .add_document(build_session_document(&fields, &e2, &m2))
+            .add_document(build_session_document(&fields, &e2, &m2, ""))
             .unwrap();
 
         // Session 3: Aider — recent, success, python/jwt
@@ -4554,7 +4590,7 @@ mod tests {
             ),
         ];
         writer
-            .add_document(build_session_document(&fields, &e3, &m3))
+            .add_document(build_session_document(&fields, &e3, &m3, ""))
             .unwrap();
 
         // Session 4: Aider — old, success, css/frontend
@@ -4589,7 +4625,7 @@ mod tests {
             ),
         ];
         writer
-            .add_document(build_session_document(&fields, &e4, &m4))
+            .add_document(build_session_document(&fields, &e4, &m4, ""))
             .unwrap();
 
         writer.commit().unwrap();
@@ -5253,10 +5289,10 @@ mod tests {
         ];
 
         writer
-            .add_document(build_session_document(&fields, &e1, &m1))
+            .add_document(build_session_document(&fields, &e1, &m1, ""))
             .unwrap();
         writer
-            .add_document(build_session_document(&fields, &e2, &m2))
+            .add_document(build_session_document(&fields, &e2, &m2, ""))
             .unwrap();
         writer.commit().unwrap();
         writer.wait_merging_threads().unwrap();
@@ -5295,7 +5331,7 @@ mod tests {
         .with_file_paths(vec!["src/main.rs".to_string()])];
 
         writer
-            .add_document(build_session_document(&fields, &e, &m))
+            .add_document(build_session_document(&fields, &e, &m, ""))
             .unwrap();
         writer.commit().unwrap();
 
@@ -5340,7 +5376,7 @@ mod tests {
         ])];
 
         writer
-            .add_document(build_session_document(&fields, &e, &m))
+            .add_document(build_session_document(&fields, &e, &m, ""))
             .unwrap();
         writer.commit().unwrap();
 
@@ -5391,7 +5427,7 @@ mod tests {
         ])];
 
         writer
-            .add_document(build_session_document(&fields, &e, &m))
+            .add_document(build_session_document(&fields, &e, &m, ""))
             .unwrap();
         writer.commit().unwrap();
 
@@ -5457,7 +5493,7 @@ mod tests {
         .with_file_paths(vec!["src/main.rs".to_string()])];
 
         writer
-            .add_document(build_session_document(&fields, &e, &m))
+            .add_document(build_session_document(&fields, &e, &m, ""))
             .unwrap();
         writer.commit().unwrap();
 
