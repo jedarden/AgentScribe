@@ -1591,7 +1591,7 @@ mod tests {
             "tokio".to_string(),
             "docker".to_string(),
         ];
-        let doc = build_session_document(&fields, &[], &manifest);
+        let doc = build_session_document(&fields, &[], &manifest, "");
         let doc_tags: Vec<&str> = doc
             .get_all(fields.tags)
             .filter_map(|v| v.as_str())
@@ -1691,7 +1691,7 @@ mod tests {
         let (_, fields) = build_schema();
         let mut manifest = SessionManifest::new("test/turns".to_string(), "claude".to_string());
         manifest.turns = 7;
-        let doc = build_session_document(&fields, &[], &manifest);
+        let doc = build_session_document(&fields, &[], &manifest, "");
         assert_eq!(
             doc.get_first(fields.turn_count).unwrap().as_u64().unwrap(),
             7
