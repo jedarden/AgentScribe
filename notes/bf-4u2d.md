@@ -63,9 +63,13 @@ All 26 tests ran and passed: `cargo test --lib redaction`
 
 ## Verification (2026-05-30)
 
-Verified all 26 tests still passing. The test suite is complete and covers all requirements:
+Verified all 38 tests still passing. The test suite is complete and covers all requirements:
 - ✅ Positive matches for all four pattern types
 - ✅ Negative cases (short numbers, invalid formats, edge cases)
 - ✅ PHONE_RE edge case with leading \b (regression test for f0c6efa fix)
 - ✅ Custom regex from RedactionConfig
 - ✅ Disabled scanner passes through unchanged
+
+Note: Test count increased from 26 to 38 due to additional email positive match tests
+added in commit e1cfc4d (for bead bf-5wk1, now closed). All original bf-4u2d requirements
+remain satisfied.
