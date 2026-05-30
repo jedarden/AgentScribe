@@ -547,6 +547,7 @@ fn test_full_pipeline_end_to_end() {
         outcome: None,
         doc_type_filter: None,
         model: None,
+        session_type: None,
         fuzzy: false,
         fuzzy_distance: 1,
         max_results: 10,
@@ -556,6 +557,7 @@ fn test_full_pipeline_end_to_end() {
         sort: SortOrder::Relevance,
         file_path: None,
         git_commit: None,
+        anti_patterns: false,
     };
 
     let output = execute_search(data_dir.path(), &opts).expect("search failed");
@@ -600,6 +602,7 @@ fn test_pipeline_aider_search() {
         outcome: None,
         doc_type_filter: None,
         model: None,
+        session_type: None,
         fuzzy: false,
         fuzzy_distance: 1,
         max_results: 10,
@@ -609,6 +612,7 @@ fn test_pipeline_aider_search() {
         sort: SortOrder::Relevance,
         file_path: None,
         git_commit: None,
+        anti_patterns: false,
     };
 
     let output = execute_search(data_dir.path(), &opts).expect("search failed");
@@ -653,6 +657,7 @@ fn test_search_agent_filter() {
         outcome: None,
         doc_type_filter: None,
         model: None,
+        session_type: None,
         fuzzy: false,
         fuzzy_distance: 1,
         max_results: 20,
@@ -662,6 +667,7 @@ fn test_search_agent_filter() {
         sort: SortOrder::Relevance,
         file_path: None,
         git_commit: None,
+        anti_patterns: false,
     };
 
     let output = execute_search(data_dir.path(), &opts).expect("search failed");
@@ -702,6 +708,7 @@ fn test_search_outcome_filter() {
         tag: vec![],
         doc_type_filter: None,
         model: None,
+        session_type: None,
         fuzzy: false,
         fuzzy_distance: 1,
         max_results: 10,
@@ -711,6 +718,7 @@ fn test_search_outcome_filter() {
         sort: SortOrder::Relevance,
         file_path: None,
         git_commit: None,
+        anti_patterns: false,
     };
 
     let output = execute_search(data_dir.path(), &opts).expect("search failed");
@@ -1061,6 +1069,7 @@ fn test_search_latency_under_50ms() {
         outcome: None,
         doc_type_filter: None,
         model: None,
+        session_type: None,
         fuzzy: false,
         fuzzy_distance: 1,
         max_results: 10,
@@ -1070,6 +1079,7 @@ fn test_search_latency_under_50ms() {
         sort: SortOrder::Relevance,
         file_path: None,
         git_commit: None,
+        anti_patterns: false,
     };
 
     // Warm up the index reader
@@ -1125,6 +1135,7 @@ fn test_search_output_reports_latency() {
         outcome: None,
         doc_type_filter: None,
         model: None,
+        session_type: None,
         fuzzy: false,
         fuzzy_distance: 1,
         max_results: 5,
@@ -1134,6 +1145,7 @@ fn test_search_output_reports_latency() {
         sort: SortOrder::Relevance,
         file_path: None,
         git_commit: None,
+        anti_patterns: false,
     };
 
     let output = execute_search(data_dir.path(), &opts).expect("search failed");
@@ -1589,6 +1601,7 @@ fn test_fuzzy_search_finds_misspelled_term() {
         outcome: None,
         doc_type_filter: None,
         model: None,
+        session_type: None,
         max_results: 10,
         snippet_length: 200,
         token_budget: None,
@@ -1596,6 +1609,7 @@ fn test_fuzzy_search_finds_misspelled_term() {
         sort: SortOrder::Relevance,
         file_path: None,
         git_commit: None,
+        anti_patterns: false,
     };
 
     let output = execute_search(data_dir.path(), &opts).expect("search failed");
@@ -1644,6 +1658,7 @@ fn test_more_like_this_finds_similar_sessions() {
         outcome: None,
         doc_type_filter: None,
         model: None,
+        session_type: None,
         fuzzy: false,
         fuzzy_distance: 1,
         max_results: 10,
@@ -1653,6 +1668,7 @@ fn test_more_like_this_finds_similar_sessions() {
         sort: SortOrder::Relevance,
         file_path: None,
         git_commit: None,
+        anti_patterns: false,
     };
 
     let output = execute_search(data_dir.path(), &opts).expect("search failed");
@@ -1703,6 +1719,7 @@ fn test_token_budget_respects_limit() {
         outcome: None,
         doc_type_filter: None,
         model: None,
+        session_type: None,
         fuzzy: false,
         fuzzy_distance: 1,
         max_results: 50,
@@ -1711,6 +1728,7 @@ fn test_token_budget_respects_limit() {
         sort: SortOrder::Relevance,
         file_path: None,
         git_commit: None,
+        anti_patterns: false,
     };
 
     let output = execute_search(data_dir.path(), &opts).expect("search failed");
