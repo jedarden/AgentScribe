@@ -100,7 +100,7 @@ name = "claude-code"
 version = "1.0"
 
 [source]
-paths = ["~/.claude/projects/*/*.jsonl"]
+paths = ["~/.claude/projects/**/*.jsonl"]
 exclude = ["*/subagents/*"]
 format = "jsonl"
 
