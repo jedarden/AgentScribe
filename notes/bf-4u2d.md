@@ -3,8 +3,9 @@
 ## Summary
 
 The task requested adding tests for `src/redaction.rs`. Upon investigation, all required
-tests were already present — added in commit `089cea0 test(redaction): add comprehensive
-PII pattern tests`.
+tests were already present — added in two commits:
+- `089cea0` (2026-05-03): "test(redaction): add comprehensive PII pattern tests"
+- `c9ac211` (2026-05-22): "test(redaction): add comprehensive PII pattern edge case tests"
 
 ## Tests verified (18 total, all passing)
 
