@@ -1917,6 +1917,7 @@ mod tests {
             outcome: None,
             doc_type_filter: None,
             model: None,
+            session_type: None,
             file_path: None,
             git_commit: None,
             fuzzy: false,
@@ -1926,6 +1927,7 @@ mod tests {
             token_budget: None,
             offset: 0,
             sort: SortOrder::Relevance,
+            anti_patterns: false,
         };
 
         let result = execute_search(temp_dir.path(), &opts).unwrap();
@@ -2261,6 +2263,7 @@ mod tests {
             outcome: None,
             doc_type_filter: None,
             model: None,
+            session_type: None,
             file_path: None,
             git_commit: None,
             fuzzy: false,
@@ -2270,6 +2273,7 @@ mod tests {
             token_budget: None,
             offset: 0,
             sort: SortOrder::Relevance,
+            anti_patterns: false,
         };
 
         let result = execute_search(temp_dir.path(), &opts);
@@ -2784,6 +2788,7 @@ mod tests {
             outcome: None,
             doc_type_filter: None,
             model: None,
+            session_type: None,
             file_path: None,
             git_commit: None,
             fuzzy: false,
@@ -2793,6 +2798,7 @@ mod tests {
             token_budget: None,
             offset: 0,
             sort: SortOrder::Relevance,
+            anti_patterns: false,
         }
     }
 
