@@ -548,4 +548,161 @@ mod tests {
         assert!(!result.contains("SECRET[passw0rd]"));
         assert_eq!(result.matches("[REDACTED]").count(), 3);
     }
+
+    // ─── Email positive match tests ─────────────────────────────────────────
+
+    /// Positive match test: Standard email format user@domain.com
+    #[test]
+    fn test_email_positive_match_standard_format() {
+        let s = default_scanner();
+        let input = "Contact test@example.com for details";
+        let result = s.redact(input);
+
+        assert!(result.contains("[EMAIL]"), "Expected [EMAIL] placeholder");
+        assert!(!result.contains("test@example.com"), "Email should be redacted");
+        assert!(!result.contains("@"), "No @ symbol should remain");
+    }
+
+    /// Positive match test: Email with dots in local part
+    #[test]
+    fn test_email_positive_match_dotted_local_part() {
+        let s = default_scanner();
+        let input = "Email user.name@domain.co.uk for support";
+        let result = s.redact(input);
+
+        assert!(result.contains("[EMAIL]"), "Expected [EMAIL] placeholder");
+        assert!(!result.contains("user.name@domain.co.uk"), "Email should be redacted");
+        assert!(!result.contains("@"), "No @ symbol should remain");
+    }
+
+    /// Positive match test: Email with plus addressing
+    #[test]
+    fn test_email_positive_match_plus_addressing() {
+        let s = default_scanner();
+        let input = "Send to user+tag@example.org";
+        let result = s.redact(input);
+
+        assert!(result.contains("[EMAIL]"), "Expected [EMAIL] placeholder");
+        assert!(!result.contains("user+tag@example.org"), "Email should be redacted");
+        assert!(!result.contains("@"), "No @ symbol should remain");
+    }
+
+    /// Positive match test: Email with numbers in local part
+    #[test]
+    fn test_email_positive_match_numeric_local_part() {
+        let s = default_scanner();
+        let input = "Contact 123user@example.com or user456@test.io";
+        let result = s.redact(input);
+
+        assert!(result.contains("[EMAIL]"), "Expected [EMAIL] placeholder");
+        assert!(!result.contains("123user@example.com"), "First email should be redacted");
+        assert!(!result.contains("user456@test.io"), "Second email should be redacted");
+        assert!(!result.contains("@"), "No @ symbol should remain");
+    }
+
+    /// Positive match test: Email with hyphens in domain
+    #[test]
+    fn test_email_positive_match_hyphenated_domain() {
+        let s = default_scanner();
+        let input = "Email admin@my-domain.com for access";
+        let result = s.redact(input);
+
+        assert!(result.contains("[EMAIL]"), "Expected [EMAIL] placeholder");
+        assert!(!result.contains("admin@my-domain.com"), "Email should be redacted");
+        assert!(!result.contains("@"), "No @ symbol should remain");
+    }
+
+    /// Positive match test: Email with multi-part TLD
+    #[test]
+    fn test_email_positive_match_multi_part_tld() {
+        let s = default_scanner();
+        let test_cases = vec![
+            "user@example.co.uk",
+            "admin@domain.gov.au",
+            "support@service.ac.nz",
+        ];
+
+        for email in test_cases {
+            let result = s.redact(email);
+            assert!(result.contains("[EMAIL]"), "Expected [EMAIL] for {}", email);
+            assert!(!result.contains(email), "Email {} should be redacted", email);
+            assert!(!result.contains("@"), "No @ symbol should remain for {}", email);
+        }
+    }
+
+    /// Positive match test: Email with underscores in local part
+    #[test]
+    fn test_email_positive_match_underscore_local_part() {
+        let s = default_scanner();
+        let input = "Contact user_name@example.com";
+        let result = s.redact(input);
+
+        assert!(result.contains("[EMAIL]"), "Expected [EMAIL] placeholder");
+        assert!(!result.contains("user_name@example.com"), "Email should be redacted");
+        assert!(!result.contains("@"), "No @ symbol should remain");
+    }
+
+    /// Positive match test: Multiple emails in single text
+    #[test]
+    fn test_email_positive_match_multiple_emails() {
+        let s = default_scanner();
+        let input = "Contact alice@example.com, bob@corp.co.uk, or carol@domain.org";
+        let result = s.redact(input);
+
+        assert_eq!(result.matches("[EMAIL]").count(), 3, "Expected 3 [EMAIL] placeholders");
+        assert!(!result.contains("alice@example.com"), "First email should be redacted");
+        assert!(!result.contains("bob@corp.co.uk"), "Second email should be redacted");
+        assert!(!result.contains("carol@domain.org"), "Third email should be redacted");
+        assert!(!result.contains("@"), "No @ symbol should remain");
+    }
+
+    /// Positive match test: Email at start of text
+    #[test]
+    fn test_email_positive_match_at_start() {
+        let s = default_scanner();
+        let input = "test@example.com is my email";
+        let result = s.redact(input);
+
+        assert!(result.contains("[EMAIL]"), "Expected [EMAIL] placeholder");
+        assert!(!result.contains("test@example.com"), "Email should be redacted");
+    }
+
+    /// Positive match test: Email at end of text
+    #[test]
+    fn test_email_positive_match_at_end() {
+        let s = default_scanner();
+        let input = "My email is test@example.com";
+        let result = s.redact(input);
+
+        assert!(result.contains("[EMAIL]"), "Expected [EMAIL] placeholder");
+        assert!(!result.contains("test@example.com"), "Email should be redacted");
+    }
+
+    /// Positive match test: Email with subdomain in domain
+    #[test]
+    fn test_email_positive_match_subdomain() {
+        let s = default_scanner();
+        let input = "Email user@sub.domain.example.com";
+        let result = s.redact(input);
+
+        assert!(result.contains("[EMAIL]"), "Expected [EMAIL] placeholder");
+        assert!(!result.contains("user@sub.domain.example.com"), "Email should be redacted");
+        assert!(!result.contains("@"), "No @ symbol should remain");
+    }
+
+    /// Positive match test: has_pii returns true for emails
+    #[test]
+    fn test_email_positive_match_has_pii() {
+        let s = default_scanner();
+
+        // All these should be detected as containing PII
+        assert!(s.has_pii("test@example.com"));
+        assert!(s.has_pii("user.name@domain.co.uk"));
+        assert!(s.has_pii("user+tag@example.org"));
+        assert!(s.has_pii("Contact me at admin@example.com for details"));
+
+        // Text without email should not be detected
+        assert!(!s.has_pii("No sensitive data here"));
+        assert!(!s.has_pii("Just regular text without PII"));
+    }
 }
