@@ -69,7 +69,8 @@ agentscribe <command>
 ├── plugins      # Manage scraper plugin definitions (list|validate|show)
 ├── scrape       # Discover and read agent log files from known locations
 ├── index        # Manage the Tantivy search index (rebuild|stats|optimize)
-├── search       # Query the index — primary interface for agents
+├── search       # Query the index — primary interface for agents (BM25 + optional --semantic)
+├── embed        # Manage the vector index: build, rebuild, stats (Phase 8)
 ├── blame        # Bidirectional git commit ↔ session linking
 ├── file         # File knowledge map — show all sessions that touched a file
 ├── recurring    # Surface problems that keep being solved repeatedly
@@ -184,7 +185,10 @@ Bundled plugins ship for Claude Code, Aider, OpenCode, and Codex. Cursor and Win
 │   ├── <agent>/<session-id>.jsonl # Normalized conversation logs (source of truth)
 │   └── <agent>/<session-id>.md    # Markdown summary (human/agent readable)
 ├── index/
-│   └── tantivy/                   # Tantivy search index (rebuildable from sessions)
+│   ├── tantivy/                   # Tantivy BM25 search index (rebuildable from sessions)
+│   └── vector/                    # turbovec quantized vector index (rebuildable from sessions)
+│       ├── sessions.tvim          # IdMapIndex — session-level embeddings, keyed by session_id hash
+│       └── chunks.tvim            # IdMapIndex — chunk-level embeddings for finer retrieval
 └── state/
     └── scrape-state.json          # Per-source-file tracking (see below)
 ```
@@ -244,6 +248,16 @@ max_session_age_days = 0              # 0 = no limit; >0 = ignore sessions older
 
 [index]
 tantivy_heap_size_mb = 50             # IndexWriter memory budget
+
+[vector]
+enabled = false                       # Enable semantic vector index (Phase 8)
+bit_width = 4                         # turbovec quantization: 2 or 4 (4 recommended)
+embedding_model = "nomic-embed-text"  # Local Ollama model, or "openai:text-embedding-3-small"
+ollama_url = "http://localhost:11434" # Ollama endpoint for local embedding
+chunk_size_tokens = 512               # Tokens per indexed chunk
+chunk_overlap_tokens = 64             # Overlap between adjacent chunks
+index_sessions = true                 # Index session-level embeddings (summary + solution)
+index_chunks = true                   # Index chunk-level embeddings (finer retrieval)
 
 [search]
 default_max_results = 10
@@ -615,6 +629,7 @@ Rust, primarily because of **Tantivy** — the best embeddable full-text search 
 | Component | Crate | Purpose |
 |-----------|-------|---------|
 | Full-text search | `tantivy` | Inverted index, BM25, faceted search, fuzzy/phrase queries |
+| Vector search | `turbovec` | Flat quantized SIMD scan (TurboQuant, 2/4-bit), disk persistence |
 | JSON parsing | `serde_json` / `simd-json` | Streaming JSONL, zero-copy deserialization |
 | File watching | `notify` | Cross-platform inotify/kqueue/FSEvents |
 | Markdown parsing | `pulldown-cmark` | Streaming CommonMark parser for Aider logs |
@@ -623,6 +638,17 @@ Rust, primarily because of **Tantivy** — the best embeddable full-text search 
 | CLI framework | `clap` | Command/subcommand parsing, shell completions |
 | Async runtime | `tokio` | Daemon mode, file watcher event loop |
 | Glob matching | `globset` | Source path expansion in plugin definitions |
+| HTTP client | `reqwest` | Ollama / OpenAI embedding API calls (Phase 8) |
+
+### Vector Index: turbovec (Phase 8)
+
+`turbovec` (crates.io, MIT) implements the TurboQuant quantization algorithm — a flat SIMD-accelerated exhaustive scan over 2-bit or 4-bit compressed vectors. Chosen over alternatives for three reasons:
+
+1. **No training step** — new sessions embed and insert immediately; IVF-family indexes (FAISS, ScaNN) require periodic k-means rebuilds when new vectors arrive
+2. **Built-in disk persistence** — `.write()` / `.load()` with stable external IDs via `IdMapIndex`; no external process or server needed
+3. **Scale fit** — at ~500K sessions the corpus fits in ~192–384 MB RAM (4-bit, 768-dim nomic embeddings); O(n) linear scan is ~5ms/query with AVX-512 SIMD — acceptable for pre-task priming, not a latency-critical path
+
+**Upgrade path:** When corpus exceeds ~5M sessions, swap to `usearch` (crates.io, Apache-2.0) — native Rust HNSW with memory-mapped persistence and O(log n) query complexity. The vector index module is isolated so the swap requires no changes to the search, context, or daemon layers.
 
 ### Search Engine: Tantivy (Meilisearch-inspired)
 
@@ -1411,6 +1437,108 @@ agentscribe render <session-id> [--output <path>] [--format html|markdown]
 **Linking from commits:** The intended workflow is `agentscribe render <session-id> --output /tmp/session.html && gh gist create /tmp/session.html`, producing a permanent URL to link from a commit message or PR description. This makes the AI session a first-class artifact of the change.
 
 **Implementation:** New `Commands::Render` variant in `src/cli.rs`. Reads normalized session JSONL from `~/.agentscribe/sessions/<agent>/<session-id>.jsonl`. New `src/render.rs` with `render_html` and `render_markdown` functions. The highlight.js subset is embedded as a `static str` constant. ~300 lines of new code. No new dependencies beyond what's already in `Cargo.toml`.
+
+---
+
+## Phase 8: Semantic Vector Index
+
+BM25 (Tantivy) handles keyword search well. It misses semantic similarity — a past session that fixed "could not connect to postgres" won't surface for a query about "database connection timing out" even though they are the same class of problem. Phase 8 adds a vector index tier alongside Tantivy, enabling hybrid retrieval.
+
+### What Changes
+
+**New index tier:** turbovec `IdMapIndex` stores 4-bit quantized embeddings for each indexed session. A session-level index holds one embedding per session (summary + solution_summary concatenated). A chunk-level index holds embeddings for overlapping 512-token windows of the conversation, enabling retrieval of the specific moment in a session that's relevant rather than the whole session.
+
+**Why turbovec:** Zero training step — new sessions embed and upsert immediately after scrape, with no k-means rebuild. Disk persistence built in (`.tvim` files). Pure Rust, MIT license. At 4-bit quantization, 500K sessions × 1536 dims ≈ 384 MB RAM — well within daemon budget. Linear scan latency at that scale is ~5ms/query on modern SIMD hardware. When corpus exceeds ~5M sessions, swap the backend to `usearch` (HNSW, sub-linear) with minimal API surface change.
+
+**Embedding model:** Two options:
+- **Local (preferred):** `nomic-embed-text` via Ollama (`ollama pull nomic-embed-text`). No external dependency, 768-dim output, free. If Ollama is not running, embedding is skipped and the session is queued for retry on next daemon wake.
+- **Cloud fallback:** `text-embedding-3-small` (OpenAI API, 1536-dim, $0.02/M tokens). At ~320 new chunks/day, ~$0.007/day. Configured via `[vector] embedding_model = "openai:text-embedding-3-small"` + `OPENAI_API_KEY`.
+
+### New: `agentscribe embed` Subcommand
+
+```bash
+agentscribe embed build          # Embed all unembedded sessions (batch, one-time)
+agentscribe embed rebuild        # Rebuild the vector index from scratch
+agentscribe embed stats          # Sessions embedded, model used, index size, coverage
+agentscribe embed missing        # List sessions in Tantivy that have no vector embedding
+```
+
+### Updated: `agentscribe search --semantic`
+
+```bash
+agentscribe search --semantic "database connection timing out" --json
+agentscribe search --hybrid "postgres migration" --json     # BM25 + semantic, RRF-merged
+```
+
+- `--semantic`: pure vector search — embed the query, scan the turbovec index, return top-K by cosine similarity
+- `--hybrid`: run BM25 and semantic in parallel, merge results via Reciprocal Rank Fusion (RRF). This is the recommended mode for most queries.
+- `--semantic` and `--hybrid` require `[vector] enabled = true` in config and at least one embedding model reachable.
+
+Output format is identical to the existing `search --json` schema — same fields, just a different ranking signal. Callers need no changes.
+
+### Updated: `agentscribe context` — Hybrid by Default
+
+The `context` subcommand (Phase 7) is upgraded to run hybrid retrieval when the vector index is present:
+
+1. BM25 search (Tantivy) — keyword ranking
+2. Semantic search (turbovec) — embedding similarity
+3. RRF merge of both result sets
+4. Pack to `--token-budget` using merged rank
+
+When the vector index is absent (disabled or not yet built), `context` falls back to BM25-only silently. NEEDLE workers and the Claude Code Stop hook need no changes — the improvement is transparent.
+
+### Embedding Pipeline in the Daemon
+
+After each successful scrape, the daemon queues new sessions for embedding:
+
+1. Scrape produces normalized JSONL → session indexed in Tantivy
+2. Daemon picks session from embedding queue
+3. Calls embedding model (Ollama or OpenAI)
+4. Upserts vector into `sessions.tvim` (session-level) and `chunks.tvim` (chunk-level)
+5. Flushes turbovec index to disk
+
+Embedding is async and never blocks the scrape path. If the embedding model is unreachable, the session is retried on next daemon tick. A `state/embed-state.json` tracks which session IDs have been embedded — same pattern as scrape state.
+
+### Data Flow
+
+```
+Scrape → Tantivy (BM25) index          ← already Phase 2
+       → Embedding queue
+           → Embedding model (Ollama/OpenAI)
+               → turbovec IdMapIndex    ← Phase 8
+```
+
+### Chunking Strategy
+
+For `chunks.tvim`, each session is split into overlapping windows before embedding:
+
+1. Serialize session events with role prefixes: `user: ...`, `assistant: ...`, `tool_call: ...`
+2. Split at ~512 token boundaries (estimated by `ceil(chars/4)`) with 64-token overlap
+3. `tool_result` events truncated to 500 chars per event before chunking (same policy as Tantivy)
+4. Each chunk gets an ID: `{session_id}#{chunk_index}`; mapped to `u64` via FNV hash for turbovec
+
+Chunk-level retrieval is used by `context` when the session is long — it surfaces the specific exchange in the session that's relevant, not just the session summary.
+
+### Crate
+
+```toml
+[dependencies]
+turbovec = "0.1"   # https://crates.io/crates/turbovec — MIT, native Rust, AVX-512/NEON SIMD
+```
+
+Research note: `turbovec` implements Google Research's TurboQuant algorithm (arXiv 2504.19874). The algorithm's advantage over RaBitQ is disputed in peer literature (arXiv 2604.19528), but the crate's value here is operational simplicity (zero training, incremental adds, built-in persistence) rather than squeezing the last 0.5% of recall. See `~/research/chat-log-search/turbovec-turboquant.md` for full analysis.
+
+### Memory Budget Impact
+
+| Component | Added RSS |
+|-----------|-----------|
+| turbovec sessions index (500K sessions, 4-bit, 768-dim nomic) | ~192 MB |
+| turbovec chunks index (3M chunks, 4-bit, 768-dim) | ~1.15 GB |
+| Embedding model (Ollama, external process) | 0 (out-of-process) |
+
+**Important:** The chunk index grows with corpus size and will eventually dominate memory. Mitigation: load the chunk index only during `context` and `search --semantic` queries; drop it when idle (same mmap-on-demand pattern as Tantivy segments). Session-level index (smaller) stays resident.
+
+An alternative: skip the chunk index and use session-level only. For a 500K-session corpus this recovers 80%+ of the chunk-level recall benefit at 1/6th the memory. Make chunk indexing opt-in via `[vector] index_chunks = false` (default until memory budget is re-evaluated).
 
 ---
 
