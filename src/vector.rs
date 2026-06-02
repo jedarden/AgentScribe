@@ -73,25 +73,46 @@ impl EmbedState {
             return Ok(EmbedState::default());
         }
 
-        let content = fs::read_to_string(path)
-            .map_err(|e| AgentScribeError::State(format!("Failed to read embed state from {}: {}", path.display(), e)))?;
+        let content = fs::read_to_string(path).map_err(|e| {
+            AgentScribeError::State(format!(
+                "Failed to read embed state from {}: {}",
+                path.display(),
+                e
+            ))
+        })?;
 
-        serde_json::from_str(&content)
-            .map_err(|e| AgentScribeError::State(format!("Failed to parse embed state from {}: {}", path.display(), e)))
+        serde_json::from_str(&content).map_err(|e| {
+            AgentScribeError::State(format!(
+                "Failed to parse embed state from {}: {}",
+                path.display(),
+                e
+            ))
+        })
     }
 
     /// Save embed state to file
     pub fn save(&self, path: &Path) -> Result<()> {
         if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)
-                .map_err(|e| AgentScribeError::State(format!("Failed to create embed state directory: {}: {}", path.display(), e)))?;
+            fs::create_dir_all(parent).map_err(|e| {
+                AgentScribeError::State(format!(
+                    "Failed to create embed state directory: {}: {}",
+                    path.display(),
+                    e
+                ))
+            })?;
         }
 
-        let content = serde_json::to_string_pretty(self)
-            .map_err(|e| AgentScribeError::State(format!("Failed to serialize embed state: {}", e)))?;
+        let content = serde_json::to_string_pretty(self).map_err(|e| {
+            AgentScribeError::State(format!("Failed to serialize embed state: {}", e))
+        })?;
 
-        fs::write(path, content)
-            .map_err(|e| AgentScribeError::State(format!("Failed to write embed state to {}: {}", path.display(), e)))?;
+        fs::write(path, content).map_err(|e| {
+            AgentScribeError::State(format!(
+                "Failed to write embed state to {}: {}",
+                path.display(),
+                e
+            ))
+        })?;
 
         Ok(())
     }
@@ -102,21 +123,12 @@ impl EmbedState {
 /// Maps string IDs to vector indices in the TurboQuantIndex.
 /// Since TurboQuantIndex uses flat array storage, we maintain this
 /// mapping to retrieve vectors by their string IDs.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 struct IdMap {
     /// Maps string ID to vector index in the flat array
     id_to_index: HashMap<String, usize>,
     /// Maps vector index back to string ID (for search results)
     index_to_id: HashMap<usize, String>,
-}
-
-impl Default for IdMap {
-    fn default() -> Self {
-        Self {
-            id_to_index: HashMap::new(),
-            index_to_id: HashMap::new(),
-        }
-    }
 }
 
 impl IdMap {
@@ -137,19 +149,22 @@ impl IdMap {
     }
 
     /// Get the number of entries
+    #[allow(dead_code)]
     fn len(&self) -> usize {
         self.id_to_index.len()
     }
 
     /// Check if empty
+    #[allow(dead_code)]
     fn is_empty(&self) -> bool {
         self.id_to_index.is_empty()
     }
 
     /// Save to file
     fn save(&self, path: &Path) -> Result<()> {
-        let content = serde_json::to_string_pretty(self)
-            .map_err(|e| AgentScribeError::VectorIndex(format!("Failed to serialize ID map: {}", e)))?;
+        let content = serde_json::to_string_pretty(self).map_err(|e| {
+            AgentScribeError::VectorIndex(format!("Failed to serialize ID map: {}", e))
+        })?;
         fs::write(path, content)
             .map_err(|e| AgentScribeError::VectorIndex(format!("Failed to write ID map: {}", e)))?;
         Ok(())
@@ -209,12 +224,21 @@ impl VectorIndex {
     /// - Load existing indexes if they exist
     /// - Create new indexes if they don't
     /// - Return an error if the index file exists but is corrupted
-    pub fn load_or_create(data_dir: PathBuf, config: VectorConfig, embedding_dim: usize) -> Result<Self> {
+    pub fn load_or_create(
+        data_dir: PathBuf,
+        config: VectorConfig,
+        embedding_dim: usize,
+    ) -> Result<Self> {
         let index_dir = data_dir.join("index").join("vector");
 
         // Ensure index directory exists
-        fs::create_dir_all(&index_dir)
-            .map_err(|e| AgentScribeError::VectorIndex(format!("Failed to create vector index directory: {}: {}", index_dir.display(), e)))?;
+        fs::create_dir_all(&index_dir).map_err(|e| {
+            AgentScribeError::VectorIndex(format!(
+                "Failed to create vector index directory: {}: {}",
+                index_dir.display(),
+                e
+            ))
+        })?;
 
         let sessions_path = index_dir.join(SESSIONS_INDEX_FILE);
         let sessions_map_path = index_dir.join("sessions_").join(ID_MAP_FILE);
@@ -223,8 +247,9 @@ impl VectorIndex {
 
         // Load or create session index
         let (sessions_index, sessions_id_map) = if sessions_path.exists() {
-            let index = TurboQuantIndex::load(&sessions_path)
-                .map_err(|e| AgentScribeError::VectorIndex(format!("Failed to load session index: {}", e)))?;
+            let index = TurboQuantIndex::load(&sessions_path).map_err(|e| {
+                AgentScribeError::VectorIndex(format!("Failed to load session index: {}", e))
+            })?;
             let id_map = if sessions_map_path.exists() {
                 IdMap::load(&sessions_map_path)?
             } else {
@@ -239,8 +264,9 @@ impl VectorIndex {
         // Load or create chunk index
         let (chunks_index, chunks_id_map) = if config.index_chunks {
             if chunks_path.exists() {
-                let index = TurboQuantIndex::load(&chunks_path)
-                    .map_err(|e| AgentScribeError::VectorIndex(format!("Failed to load chunk index: {}", e)))?;
+                let index = TurboQuantIndex::load(&chunks_path).map_err(|e| {
+                    AgentScribeError::VectorIndex(format!("Failed to load chunk index: {}", e))
+                })?;
                 let id_map = if chunks_map_path.exists() {
                     IdMap::load(&chunks_map_path)?
                 } else {
@@ -277,7 +303,7 @@ impl VectorIndex {
         }
 
         // Validate dimension (must be multiple of 8)
-        if dim % 8 != 0 {
+        if !dim.is_multiple_of(8) {
             return Err(AgentScribeError::VectorIndex(format!(
                 "Invalid dimension: {}. Must be a multiple of 8",
                 dim
@@ -295,30 +321,45 @@ impl VectorIndex {
         let index_dir = self.data_dir.join("index").join("vector");
 
         // Ensure index directory exists
-        fs::create_dir_all(&index_dir)
-            .map_err(|e| AgentScribeError::VectorIndex(format!("Failed to create vector index directory: {}: {}", index_dir.display(), e)))?;
+        fs::create_dir_all(&index_dir).map_err(|e| {
+            AgentScribeError::VectorIndex(format!(
+                "Failed to create vector index directory: {}: {}",
+                index_dir.display(),
+                e
+            ))
+        })?;
 
         // Save session index and ID map
         if let Some(ref sessions_index) = self.sessions_index {
             let sessions_path = index_dir.join(SESSIONS_INDEX_FILE);
-            sessions_index.write(&sessions_path)
-                .map_err(|e| AgentScribeError::VectorIndex(format!("Failed to save session index: {}", e)))?;
+            sessions_index.write(&sessions_path).map_err(|e| {
+                AgentScribeError::VectorIndex(format!("Failed to save session index: {}", e))
+            })?;
 
             let sessions_map_path = index_dir.join("sessions_").join(ID_MAP_FILE);
-            fs::create_dir_all(index_dir.join("sessions_"))
-                .map_err(|e| AgentScribeError::VectorIndex(format!("Failed to create sessions map directory: {}", e)))?;
+            fs::create_dir_all(index_dir.join("sessions_")).map_err(|e| {
+                AgentScribeError::VectorIndex(format!(
+                    "Failed to create sessions map directory: {}",
+                    e
+                ))
+            })?;
             self.sessions_id_map.save(&sessions_map_path)?;
         }
 
         // Save chunk index and ID map
         if let Some(ref chunks_index) = self.chunks_index {
             let chunks_path = index_dir.join(CHUNKS_INDEX_FILE);
-            chunks_index.write(&chunks_path)
-                .map_err(|e| AgentScribeError::VectorIndex(format!("Failed to save chunk index: {}", e)))?;
+            chunks_index.write(&chunks_path).map_err(|e| {
+                AgentScribeError::VectorIndex(format!("Failed to save chunk index: {}", e))
+            })?;
 
             let chunks_map_path = index_dir.join("chunks_").join(ID_MAP_FILE);
-            fs::create_dir_all(index_dir.join("chunks_"))
-                .map_err(|e| AgentScribeError::VectorIndex(format!("Failed to create chunks map directory: {}", e)))?;
+            fs::create_dir_all(index_dir.join("chunks_")).map_err(|e| {
+                AgentScribeError::VectorIndex(format!(
+                    "Failed to create chunks map directory: {}",
+                    e
+                ))
+            })?;
             self.chunks_id_map.save(&chunks_map_path)?;
         }
 
@@ -478,7 +519,10 @@ impl VectorIndex {
 
     /// Get the number of sessions in the index
     pub fn session_count(&self) -> usize {
-        self.sessions_index.as_ref().map(|idx| idx.len()).unwrap_or(0)
+        self.sessions_index
+            .as_ref()
+            .map(|idx| idx.len())
+            .unwrap_or(0)
     }
 
     /// Get the number of chunks in the index
@@ -532,13 +576,23 @@ impl VectorIndex {
     pub fn delete_sessions_index(&self) -> Result<()> {
         let path = self.sessions_index_path();
         if path.exists() {
-            fs::remove_file(&path)
-                .map_err(|e| AgentScribeError::VectorIndex(format!("Failed to delete session index: {}: {}", path.display(), e)))?;
+            fs::remove_file(&path).map_err(|e| {
+                AgentScribeError::VectorIndex(format!(
+                    "Failed to delete session index: {}: {}",
+                    path.display(),
+                    e
+                ))
+            })?;
         }
         let map_path = self.index_dir().join("sessions_").join(ID_MAP_FILE);
         if map_path.exists() {
-            fs::remove_file(&map_path)
-                .map_err(|e| AgentScribeError::VectorIndex(format!("Failed to delete sessions ID map: {}: {}", map_path.display(), e)))?;
+            fs::remove_file(&map_path).map_err(|e| {
+                AgentScribeError::VectorIndex(format!(
+                    "Failed to delete sessions ID map: {}: {}",
+                    map_path.display(),
+                    e
+                ))
+            })?;
         }
         Ok(())
     }
@@ -549,13 +603,23 @@ impl VectorIndex {
     pub fn delete_chunks_index(&self) -> Result<()> {
         let path = self.chunks_index_path();
         if path.exists() {
-            fs::remove_file(&path)
-                .map_err(|e| AgentScribeError::VectorIndex(format!("Failed to delete chunk index: {}: {}", path.display(), e)))?;
+            fs::remove_file(&path).map_err(|e| {
+                AgentScribeError::VectorIndex(format!(
+                    "Failed to delete chunk index: {}: {}",
+                    path.display(),
+                    e
+                ))
+            })?;
         }
         let map_path = self.index_dir().join("chunks_").join(ID_MAP_FILE);
         if map_path.exists() {
-            fs::remove_file(&map_path)
-                .map_err(|e| AgentScribeError::VectorIndex(format!("Failed to delete chunks ID map: {}: {}", map_path.display(), e)))?;
+            fs::remove_file(&map_path).map_err(|e| {
+                AgentScribeError::VectorIndex(format!(
+                    "Failed to delete chunks ID map: {}: {}",
+                    map_path.display(),
+                    e
+                ))
+            })?;
         }
         Ok(())
     }
@@ -642,7 +706,8 @@ mod tests {
         let temp = TempDir::new().unwrap();
         let config = create_test_config();
 
-        let mut index = VectorIndex::load_or_create(temp.path().to_path_buf(), config, 128).unwrap();
+        let mut index =
+            VectorIndex::load_or_create(temp.path().to_path_buf(), config, 128).unwrap();
 
         // Insert a session
         let embedding1 = create_dummy_embedding(128);
@@ -666,7 +731,8 @@ mod tests {
         let temp = TempDir::new().unwrap();
         let config = create_test_config();
 
-        let mut index = VectorIndex::load_or_create(temp.path().to_path_buf(), config, 128).unwrap();
+        let mut index =
+            VectorIndex::load_or_create(temp.path().to_path_buf(), config, 128).unwrap();
 
         // Insert a chunk
         let embedding1 = create_dummy_embedding(128);
@@ -689,7 +755,8 @@ mod tests {
         let temp = TempDir::new().unwrap();
         let config = create_test_config();
 
-        let mut index = VectorIndex::load_or_create(temp.path().to_path_buf(), config, 128).unwrap();
+        let mut index =
+            VectorIndex::load_or_create(temp.path().to_path_buf(), config, 128).unwrap();
 
         // Try to insert embedding with wrong dimension
         let wrong_dim_embedding = vec![0.0; 256];
@@ -746,7 +813,8 @@ mod tests {
         let mut config = create_test_config();
         config.index_chunks = false;
 
-        let mut index = VectorIndex::load_or_create(temp.path().to_path_buf(), config, 128).unwrap();
+        let mut index =
+            VectorIndex::load_or_create(temp.path().to_path_buf(), config, 128).unwrap();
 
         // Chunk index should not be created
         assert!(index.chunks_index.is_none());
@@ -764,9 +832,12 @@ mod tests {
         let config = create_test_config();
 
         // Create and populate index
-        let mut index = VectorIndex::load_or_create(temp.path().to_path_buf(), config.clone(), 128).unwrap();
+        let mut index =
+            VectorIndex::load_or_create(temp.path().to_path_buf(), config.clone(), 128).unwrap();
         let embedding = create_dummy_embedding(128);
-        index.upsert_session("session-1", embedding.clone()).unwrap();
+        index
+            .upsert_session("session-1", embedding.clone())
+            .unwrap();
         index.upsert_session("session-2", embedding).unwrap();
         index.save().unwrap();
 
@@ -774,7 +845,9 @@ mod tests {
         let index2 = VectorIndex::load_or_create(temp.path().to_path_buf(), config, 128).unwrap();
         assert_eq!(index2.session_count(), 2);
 
-        let results = index2.search_sessions(&create_dummy_embedding(128), 5).unwrap();
+        let results = index2
+            .search_sessions(&create_dummy_embedding(128), 5)
+            .unwrap();
         assert_eq!(results.len(), 2);
     }
 }
