@@ -171,6 +171,84 @@ impl Default for WhisperConfig {
     }
 }
 
+/// Vector index configuration.
+///
+/// Maps to `[vector]` in `config.toml`. Controls semantic search using
+/// quantized vector embeddings (turbovec).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VectorConfig {
+    /// Enable semantic vector index (default: false).
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// Quantization bit width: 2 or 4 (default: 4).
+    /// 4-bit provides better accuracy, 2-bit uses half the memory.
+    #[serde(default = "default_vector_bit_width")]
+    pub bit_width: u8,
+
+    /// Embedding model to use.
+    /// - Local: "nomic-embed-text" (via Ollama)
+    /// - Cloud: "openai:text-embedding-3-small"
+    #[serde(default = "default_vector_embedding_model")]
+    pub embedding_model: String,
+
+    /// Ollama endpoint for local embedding (default: http://localhost:11434).
+    #[serde(default = "default_vector_ollama_url")]
+    pub ollama_url: String,
+
+    /// Tokens per indexed chunk (default: 512).
+    #[serde(default = "default_vector_chunk_size")]
+    pub chunk_size_tokens: usize,
+
+    /// Overlap between adjacent chunks in tokens (default: 64).
+    #[serde(default = "default_vector_chunk_overlap")]
+    pub chunk_overlap_tokens: usize,
+
+    /// Index session-level embeddings (default: true).
+    #[serde(default = "default_true")]
+    pub index_sessions: bool,
+
+    /// Index chunk-level embeddings (default: true).
+    /// Set to false to save memory at the cost of finer retrieval.
+    #[serde(default = "default_true")]
+    pub index_chunks: bool,
+}
+
+fn default_vector_bit_width() -> u8 {
+    4
+}
+
+fn default_vector_embedding_model() -> String {
+    "nomic-embed-text".to_string()
+}
+
+fn default_vector_ollama_url() -> String {
+    "http://localhost:11434".to_string()
+}
+
+fn default_vector_chunk_size() -> usize {
+    512
+}
+
+fn default_vector_chunk_overlap() -> usize {
+    64
+}
+
+impl Default for VectorConfig {
+    fn default() -> Self {
+        VectorConfig {
+            enabled: false,
+            bit_width: 4,
+            embedding_model: "nomic-embed-text".to_string(),
+            ollama_url: "http://localhost:11434".to_string(),
+            chunk_size_tokens: 512,
+            chunk_overlap_tokens: 64,
+            index_sessions: true,
+            index_chunks: true,
+        }
+    }
+}
+
 /// Privacy redaction configuration.
 ///
 /// Transcripts are scanned for PII before storage and indexing.
@@ -235,6 +313,8 @@ pub struct Config {
     pub whisper: WhisperConfig,
     #[serde(default)]
     pub redaction: RedactionConfig,
+    #[serde(default)]
+    pub vector: VectorConfig,
 }
 
 /// General configuration
@@ -311,6 +391,7 @@ impl Default for Config {
             error_patterns: ErrorPatternsConfig::default(),
             whisper: WhisperConfig::default(),
             redaction: RedactionConfig::default(),
+            vector: VectorConfig::default(),
         }
     }
 }

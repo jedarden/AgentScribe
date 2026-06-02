@@ -55,6 +55,9 @@ path-absolutize = "3.1"
 # Full-text search
 tantivy = "0.22"
 
+# Vector search (quantized embeddings for semantic search)
+turbovec = "0.1"
+
 # SQLite (bundled - no system dependency)
 rusqlite = { version = "0.32", features = ["bundled"] }
 

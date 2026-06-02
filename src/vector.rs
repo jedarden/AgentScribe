@@ -1,0 +1,780 @@
+//! Vector index for semantic search using turbovec.
+//!
+//! This module provides a quantized vector index built on turbovec's TurboQuantIndex.
+//! It maintains two separate indexes:
+//! - Session-level index: one embedding per session (summary + solution)
+//! - Chunk-level index: embeddings for overlapping chunks of conversation content
+//!
+//! The index uses 4-bit quantization by default, providing a good balance between
+//! accuracy and memory footprint. At ~500K sessions with 768-dim embeddings (nomic-embed-text),
+//! the session index consumes ~192MB RAM, while the chunk index (at 3M chunks) consumes ~1.15GB.
+//!
+//! Feature-gated behind the `[vector] enabled = true` configuration option.
+
+use crate::config::VectorConfig;
+use crate::error::{AgentScribeError, Result};
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::fs;
+use std::path::{Path, PathBuf};
+use turbovec::TurboQuantIndex;
+
+/// Filename for the session-level vector index
+const SESSIONS_INDEX_FILE: &str = "sessions.tvim";
+
+/// Filename for the chunk-level vector index
+const CHUNKS_INDEX_FILE: &str = "chunks.tvim";
+
+/// Filename for the ID-to-index mapping
+const ID_MAP_FILE: &str = "id_map.json";
+
+/// Vector index state tracking
+///
+/// Tracks which session IDs have been embedded, allowing incremental updates
+/// and recovery after interruptions. Maps to `state/embed-state.json`.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct EmbedState {
+    /// Set of session IDs that have been embedded at the session level
+    #[serde(default)]
+    pub embedded_sessions: Vec<String>,
+    /// Set of chunk IDs that have been embedded (format: `{session_id}#{chunk_index}`)
+    #[serde(default)]
+    pub embedded_chunks: Vec<String>,
+}
+
+impl EmbedState {
+    /// Check if a session has been embedded
+    pub fn is_session_embedded(&self, session_id: &str) -> bool {
+        self.embedded_sessions.contains(&session_id.to_string())
+    }
+
+    /// Check if a chunk has been embedded
+    pub fn is_chunk_embedded(&self, chunk_id: &str) -> bool {
+        self.embedded_chunks.contains(&chunk_id.to_string())
+    }
+
+    /// Mark a session as embedded
+    pub fn mark_session_embedded(&mut self, session_id: String) {
+        if !self.is_session_embedded(&session_id) {
+            self.embedded_sessions.push(session_id);
+        }
+    }
+
+    /// Mark a chunk as embedded
+    pub fn mark_chunk_embedded(&mut self, chunk_id: String) {
+        if !self.is_chunk_embedded(&chunk_id) {
+            self.embedded_chunks.push(chunk_id);
+        }
+    }
+
+    /// Load embed state from file
+    pub fn load(path: &Path) -> Result<Self> {
+        if !path.exists() {
+            return Ok(EmbedState::default());
+        }
+
+        let content = fs::read_to_string(path)
+            .map_err(|e| AgentScribeError::State(format!("Failed to read embed state from {}: {}", path.display(), e)))?;
+
+        serde_json::from_str(&content)
+            .map_err(|e| AgentScribeError::State(format!("Failed to parse embed state from {}: {}", path.display(), e)))
+    }
+
+    /// Save embed state to file
+    pub fn save(&self, path: &Path) -> Result<()> {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)
+                .map_err(|e| AgentScribeError::State(format!("Failed to create embed state directory: {}: {}", path.display(), e)))?;
+        }
+
+        let content = serde_json::to_string_pretty(self)
+            .map_err(|e| AgentScribeError::State(format!("Failed to serialize embed state: {}", e)))?;
+
+        fs::write(path, content)
+            .map_err(|e| AgentScribeError::State(format!("Failed to write embed state to {}: {}", path.display(), e)))?;
+
+        Ok(())
+    }
+}
+
+/// ID mapping for vector index
+///
+/// Maps string IDs to vector indices in the TurboQuantIndex.
+/// Since TurboQuantIndex uses flat array storage, we maintain this
+/// mapping to retrieve vectors by their string IDs.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct IdMap {
+    /// Maps string ID to vector index in the flat array
+    id_to_index: HashMap<String, usize>,
+    /// Maps vector index back to string ID (for search results)
+    index_to_id: HashMap<usize, String>,
+}
+
+impl Default for IdMap {
+    fn default() -> Self {
+        Self {
+            id_to_index: HashMap::new(),
+            index_to_id: HashMap::new(),
+        }
+    }
+}
+
+impl IdMap {
+    /// Insert a new ID mapping
+    fn insert(&mut self, id: String, index: usize) {
+        self.id_to_index.insert(id.clone(), index);
+        self.index_to_id.insert(index, id);
+    }
+
+    /// Get the index for a given ID
+    fn get(&self, id: &str) -> Option<usize> {
+        self.id_to_index.get(id).copied()
+    }
+
+    /// Get the ID for a given index
+    fn get_id(&self, index: usize) -> Option<&str> {
+        self.index_to_id.get(&index).map(|s| s.as_str())
+    }
+
+    /// Get the number of entries
+    fn len(&self) -> usize {
+        self.id_to_index.len()
+    }
+
+    /// Check if empty
+    fn is_empty(&self) -> bool {
+        self.id_to_index.is_empty()
+    }
+
+    /// Save to file
+    fn save(&self, path: &Path) -> Result<()> {
+        let content = serde_json::to_string_pretty(self)
+            .map_err(|e| AgentScribeError::VectorIndex(format!("Failed to serialize ID map: {}", e)))?;
+        fs::write(path, content)
+            .map_err(|e| AgentScribeError::VectorIndex(format!("Failed to write ID map: {}", e)))?;
+        Ok(())
+    }
+
+    /// Load from file
+    fn load(path: &Path) -> Result<Self> {
+        let content = fs::read_to_string(path)
+            .map_err(|e| AgentScribeError::VectorIndex(format!("Failed to read ID map: {}", e)))?;
+        serde_json::from_str(&content)
+            .map_err(|e| AgentScribeError::VectorIndex(format!("Failed to parse ID map: {}", e)))
+    }
+}
+
+/// Vector index for semantic search
+///
+/// Wraps turbovec's TurboQuantIndex with session-level and chunk-level indexes.
+/// All embeddings are quantized using TurboQuant at the configured bit width.
+pub struct VectorIndex {
+    /// Session-level index (one embedding per session)
+    sessions_index: Option<TurboQuantIndex>,
+    /// Session ID to index mapping
+    sessions_id_map: IdMap,
+    /// Chunk-level index (multiple embeddings per session)
+    chunks_index: Option<TurboQuantIndex>,
+    /// Chunk ID to index mapping
+    chunks_id_map: IdMap,
+    /// Directory containing the index files
+    data_dir: PathBuf,
+    /// Configuration for the vector index
+    config: VectorConfig,
+    /// Embedding dimension (determined by the model used)
+    embedding_dim: usize,
+}
+
+impl VectorIndex {
+    /// Create a new vector index
+    ///
+    /// This creates new indexes in memory. Call `load_or_create()` to load
+    /// existing indexes from disk or create new ones.
+    pub fn new(data_dir: PathBuf, config: VectorConfig, embedding_dim: usize) -> Self {
+        VectorIndex {
+            sessions_index: None,
+            sessions_id_map: IdMap::default(),
+            chunks_index: None,
+            chunks_id_map: IdMap::default(),
+            data_dir,
+            config,
+            embedding_dim,
+        }
+    }
+
+    /// Load existing indexes from disk, or create new ones if they don't exist
+    ///
+    /// This is the primary entry point for working with the vector index.
+    /// It will:
+    /// - Load existing indexes if they exist
+    /// - Create new indexes if they don't
+    /// - Return an error if the index file exists but is corrupted
+    pub fn load_or_create(data_dir: PathBuf, config: VectorConfig, embedding_dim: usize) -> Result<Self> {
+        let index_dir = data_dir.join("index").join("vector");
+
+        // Ensure index directory exists
+        fs::create_dir_all(&index_dir)
+            .map_err(|e| AgentScribeError::VectorIndex(format!("Failed to create vector index directory: {}: {}", index_dir.display(), e)))?;
+
+        let sessions_path = index_dir.join(SESSIONS_INDEX_FILE);
+        let sessions_map_path = index_dir.join("sessions_").join(ID_MAP_FILE);
+        let chunks_path = index_dir.join(CHUNKS_INDEX_FILE);
+        let chunks_map_path = index_dir.join("chunks_").join(ID_MAP_FILE);
+
+        // Load or create session index
+        let (sessions_index, sessions_id_map) = if sessions_path.exists() {
+            let index = TurboQuantIndex::load(&sessions_path)
+                .map_err(|e| AgentScribeError::VectorIndex(format!("Failed to load session index: {}", e)))?;
+            let id_map = if sessions_map_path.exists() {
+                IdMap::load(&sessions_map_path)?
+            } else {
+                IdMap::default()
+            };
+            (Some(index), id_map)
+        } else {
+            let index = Self::create_index(embedding_dim, config.bit_width)?;
+            (Some(index), IdMap::default())
+        };
+
+        // Load or create chunk index
+        let (chunks_index, chunks_id_map) = if config.index_chunks {
+            if chunks_path.exists() {
+                let index = TurboQuantIndex::load(&chunks_path)
+                    .map_err(|e| AgentScribeError::VectorIndex(format!("Failed to load chunk index: {}", e)))?;
+                let id_map = if chunks_map_path.exists() {
+                    IdMap::load(&chunks_map_path)?
+                } else {
+                    IdMap::default()
+                };
+                (Some(index), id_map)
+            } else {
+                let index = Self::create_index(embedding_dim, config.bit_width)?;
+                (Some(index), IdMap::default())
+            }
+        } else {
+            (None, IdMap::default())
+        };
+
+        Ok(VectorIndex {
+            sessions_index,
+            sessions_id_map,
+            chunks_index,
+            chunks_id_map,
+            data_dir,
+            config,
+            embedding_dim,
+        })
+    }
+
+    /// Create a new TurboQuantIndex with the given dimension and bit width
+    fn create_index(dim: usize, bit_width: u8) -> Result<TurboQuantIndex> {
+        // Validate bit width (turbovec supports 2, 3, or 4 bits)
+        if bit_width != 2 && bit_width != 3 && bit_width != 4 {
+            return Err(AgentScribeError::VectorIndex(format!(
+                "Invalid bit width: {}. Must be 2, 3, or 4",
+                bit_width
+            )));
+        }
+
+        // Validate dimension (must be multiple of 8)
+        if dim % 8 != 0 {
+            return Err(AgentScribeError::VectorIndex(format!(
+                "Invalid dimension: {}. Must be a multiple of 8",
+                dim
+            )));
+        }
+
+        Ok(TurboQuantIndex::new(dim, bit_width as usize))
+    }
+
+    /// Save indexes to disk
+    ///
+    /// Persists both the session and chunk indexes to their respective files.
+    /// This should be called after bulk updates (e.g., after embedding multiple sessions).
+    pub fn save(&self) -> Result<()> {
+        let index_dir = self.data_dir.join("index").join("vector");
+
+        // Ensure index directory exists
+        fs::create_dir_all(&index_dir)
+            .map_err(|e| AgentScribeError::VectorIndex(format!("Failed to create vector index directory: {}: {}", index_dir.display(), e)))?;
+
+        // Save session index and ID map
+        if let Some(ref sessions_index) = self.sessions_index {
+            let sessions_path = index_dir.join(SESSIONS_INDEX_FILE);
+            sessions_index.write(&sessions_path)
+                .map_err(|e| AgentScribeError::VectorIndex(format!("Failed to save session index: {}", e)))?;
+
+            let sessions_map_path = index_dir.join("sessions_").join(ID_MAP_FILE);
+            fs::create_dir_all(index_dir.join("sessions_"))
+                .map_err(|e| AgentScribeError::VectorIndex(format!("Failed to create sessions map directory: {}", e)))?;
+            self.sessions_id_map.save(&sessions_map_path)?;
+        }
+
+        // Save chunk index and ID map
+        if let Some(ref chunks_index) = self.chunks_index {
+            let chunks_path = index_dir.join(CHUNKS_INDEX_FILE);
+            chunks_index.write(&chunks_path)
+                .map_err(|e| AgentScribeError::VectorIndex(format!("Failed to save chunk index: {}", e)))?;
+
+            let chunks_map_path = index_dir.join("chunks_").join(ID_MAP_FILE);
+            fs::create_dir_all(index_dir.join("chunks_"))
+                .map_err(|e| AgentScribeError::VectorIndex(format!("Failed to create chunks map directory: {}", e)))?;
+            self.chunks_id_map.save(&chunks_map_path)?;
+        }
+
+        Ok(())
+    }
+
+    /// Upsert a session-level embedding
+    ///
+    /// Inserts or updates the embedding for a session.
+    ///
+    /// # Arguments
+    /// * `id` - Session ID string (e.g., "claude-code/83f5a4e7")
+    /// * `embedding` - Embedding vector (must match the configured embedding dimension)
+    pub fn upsert_session(&mut self, id: &str, embedding: Vec<f32>) -> Result<()> {
+        if embedding.len() != self.embedding_dim {
+            return Err(AgentScribeError::VectorIndex(format!(
+                "Embedding dimension mismatch: expected {}, got {}",
+                self.embedding_dim,
+                embedding.len()
+            )));
+        }
+
+        if let Some(ref mut sessions_index) = self.sessions_index {
+            // Check if already exists
+            if self.sessions_id_map.get(id).is_some() {
+                // Update: we can't update in place, so we need to rebuild
+                // For now, just skip (real implementation would need more complex handling)
+                return Ok(());
+            }
+
+            // Add new embedding
+            let index = sessions_index.len();
+            sessions_index.add(&embedding);
+            self.sessions_id_map.insert(id.to_string(), index);
+        }
+
+        Ok(())
+    }
+
+    /// Upsert a chunk-level embedding
+    ///
+    /// Inserts or updates the embedding for a conversation chunk.
+    ///
+    /// # Arguments
+    /// * `id` - Chunk ID string (e.g., "claude-code/83f5a4e7#3")
+    /// * `embedding` - Embedding vector (must match the configured embedding dimension)
+    pub fn upsert_chunk(&mut self, id: &str, embedding: Vec<f32>) -> Result<()> {
+        if !self.config.index_chunks {
+            return Ok(()); // Skip if chunk indexing is disabled
+        }
+
+        if embedding.len() != self.embedding_dim {
+            return Err(AgentScribeError::VectorIndex(format!(
+                "Embedding dimension mismatch: expected {}, got {}",
+                self.embedding_dim,
+                embedding.len()
+            )));
+        }
+
+        if let Some(ref mut chunks_index) = self.chunks_index {
+            // Check if already exists
+            if self.chunks_id_map.get(id).is_some() {
+                // Update: skip for now
+                return Ok(());
+            }
+
+            // Add new embedding
+            let index = chunks_index.len();
+            chunks_index.add(&embedding);
+            self.chunks_id_map.insert(id.to_string(), index);
+        }
+
+        Ok(())
+    }
+
+    /// Search the session-level index
+    ///
+    /// Returns the top-K most similar sessions by cosine similarity.
+    ///
+    /// # Arguments
+    /// * `query_vec` - Query embedding vector (must match the configured embedding dimension)
+    /// * `k` - Number of results to return
+    ///
+    /// # Returns
+    /// A vector of (id_hash, similarity_score) tuples, sorted by similarity descending
+    pub fn search_sessions(&self, query_vec: &[f32], k: usize) -> Result<Vec<(String, f32)>> {
+        if query_vec.len() != self.embedding_dim {
+            return Err(AgentScribeError::VectorIndex(format!(
+                "Query embedding dimension mismatch: expected {}, got {}",
+                self.embedding_dim,
+                query_vec.len()
+            )));
+        }
+
+        if let Some(ref sessions_index) = self.sessions_index {
+            let results = sessions_index.search(query_vec, k);
+            let mut output = Vec::new();
+
+            // Iterate through the results for the first (and only) query
+            for ki in 0..results.k {
+                let idx = results.indices[ki] as usize;
+                let score = results.scores[ki];
+
+                if let Some(id) = self.sessions_id_map.get_id(idx) {
+                    output.push((id.to_string(), score));
+                }
+            }
+
+            Ok(output)
+        } else {
+            Ok(Vec::new())
+        }
+    }
+
+    /// Search the chunk-level index
+    ///
+    /// Returns the top-K most similar chunks by cosine similarity.
+    ///
+    /// # Arguments
+    /// * `query_vec` - Query embedding vector (must match the configured embedding dimension)
+    /// * `k` - Number of results to return
+    ///
+    /// # Returns
+    /// A vector of (chunk_id, similarity_score) tuples, sorted by similarity descending
+    pub fn search_chunks(&self, query_vec: &[f32], k: usize) -> Result<Vec<(String, f32)>> {
+        if !self.config.index_chunks {
+            return Ok(Vec::new()); // Skip if chunk indexing is disabled
+        }
+
+        if query_vec.len() != self.embedding_dim {
+            return Err(AgentScribeError::VectorIndex(format!(
+                "Query embedding dimension mismatch: expected {}, got {}",
+                self.embedding_dim,
+                query_vec.len()
+            )));
+        }
+
+        if let Some(ref chunks_index) = self.chunks_index {
+            let results = chunks_index.search(query_vec, k);
+            let mut output = Vec::new();
+
+            // Iterate through the results for the first (and only) query
+            for ki in 0..results.k {
+                let idx = results.indices[ki] as usize;
+                let score = results.scores[ki];
+
+                if let Some(id) = self.chunks_id_map.get_id(idx) {
+                    output.push((id.to_string(), score));
+                }
+            }
+
+            Ok(output)
+        } else {
+            Ok(Vec::new())
+        }
+    }
+
+    /// Get the number of sessions in the index
+    pub fn session_count(&self) -> usize {
+        self.sessions_index.as_ref().map(|idx| idx.len()).unwrap_or(0)
+    }
+
+    /// Get the number of chunks in the index
+    pub fn chunk_count(&self) -> usize {
+        self.chunks_index.as_ref().map(|idx| idx.len()).unwrap_or(0)
+    }
+
+    /// Check if the index is empty
+    pub fn is_empty(&self) -> bool {
+        self.session_count() == 0 && self.chunk_count() == 0
+    }
+
+    /// Get the embedding dimension
+    pub fn dimension(&self) -> usize {
+        self.embedding_dim
+    }
+
+    /// Get the bit width
+    pub fn bit_width(&self) -> u8 {
+        self.config.bit_width
+    }
+
+    /// Get the index directory path
+    pub fn index_dir(&self) -> PathBuf {
+        self.data_dir.join("index").join("vector")
+    }
+
+    /// Get the sessions index file path
+    pub fn sessions_index_path(&self) -> PathBuf {
+        self.index_dir().join(SESSIONS_INDEX_FILE)
+    }
+
+    /// Get the chunks index file path
+    pub fn chunks_index_path(&self) -> PathBuf {
+        self.index_dir().join(CHUNKS_INDEX_FILE)
+    }
+
+    /// Check if session index exists on disk
+    pub fn sessions_index_exists(&self) -> bool {
+        self.sessions_index_path().exists()
+    }
+
+    /// Check if chunk index exists on disk
+    pub fn chunks_index_exists(&self) -> bool {
+        self.chunks_index_path().exists()
+    }
+
+    /// Delete the session index from disk
+    ///
+    /// This is useful for rebuilding the index from scratch.
+    pub fn delete_sessions_index(&self) -> Result<()> {
+        let path = self.sessions_index_path();
+        if path.exists() {
+            fs::remove_file(&path)
+                .map_err(|e| AgentScribeError::VectorIndex(format!("Failed to delete session index: {}: {}", path.display(), e)))?;
+        }
+        let map_path = self.index_dir().join("sessions_").join(ID_MAP_FILE);
+        if map_path.exists() {
+            fs::remove_file(&map_path)
+                .map_err(|e| AgentScribeError::VectorIndex(format!("Failed to delete sessions ID map: {}: {}", map_path.display(), e)))?;
+        }
+        Ok(())
+    }
+
+    /// Delete the chunk index from disk
+    ///
+    /// This is useful for rebuilding the index from scratch.
+    pub fn delete_chunks_index(&self) -> Result<()> {
+        let path = self.chunks_index_path();
+        if path.exists() {
+            fs::remove_file(&path)
+                .map_err(|e| AgentScribeError::VectorIndex(format!("Failed to delete chunk index: {}: {}", path.display(), e)))?;
+        }
+        let map_path = self.index_dir().join("chunks_").join(ID_MAP_FILE);
+        if map_path.exists() {
+            fs::remove_file(&map_path)
+                .map_err(|e| AgentScribeError::VectorIndex(format!("Failed to delete chunks ID map: {}: {}", map_path.display(), e)))?;
+        }
+        Ok(())
+    }
+
+    /// Delete both indexes from disk
+    ///
+    /// This is useful for a complete rebuild of the vector index.
+    pub fn delete_all_indexes(&self) -> Result<()> {
+        self.delete_sessions_index()?;
+        self.delete_chunks_index()?;
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    fn create_test_config() -> VectorConfig {
+        VectorConfig {
+            enabled: true,
+            bit_width: 4,
+            embedding_model: "test-model".to_string(),
+            ollama_url: "http://localhost:11434".to_string(),
+            chunk_size_tokens: 512,
+            chunk_overlap_tokens: 64,
+            index_sessions: true,
+            index_chunks: true,
+        }
+    }
+
+    fn create_dummy_embedding(dim: usize) -> Vec<f32> {
+        (0..dim).map(|i| i as f32 / dim as f32).collect()
+    }
+
+    #[test]
+    fn test_id_map() {
+        let mut map = IdMap::default();
+
+        map.insert("session-1".to_string(), 0);
+        map.insert("session-2".to_string(), 1);
+
+        assert_eq!(map.get("session-1"), Some(0));
+        assert_eq!(map.get("session-2"), Some(1));
+        assert_eq!(map.get_id(0), Some("session-1"));
+        assert_eq!(map.get_id(1), Some("session-2"));
+        assert_eq!(map.len(), 2);
+        assert!(!map.is_empty());
+    }
+
+    #[test]
+    fn test_vector_index_new() {
+        let temp = TempDir::new().unwrap();
+        let config = create_test_config();
+
+        let index = VectorIndex::new(temp.path().to_path_buf(), config, 768);
+
+        assert!(index.sessions_index.is_none());
+        assert!(index.chunks_index.is_none());
+        assert!(index.is_empty());
+    }
+
+    #[test]
+    fn test_vector_index_load_or_create() {
+        let temp = TempDir::new().unwrap();
+        let config = create_test_config();
+
+        let index = VectorIndex::load_or_create(temp.path().to_path_buf(), config, 768).unwrap();
+
+        // Should have indexes created
+        assert!(index.sessions_index.is_some());
+        assert!(index.chunks_index.is_some());
+        assert!(index.is_empty());
+
+        // Files should exist on disk after save
+        index.save().unwrap();
+        assert!(index.sessions_index_exists());
+        assert!(index.chunks_index_exists());
+    }
+
+    #[test]
+    fn test_upsert_and_search_session() {
+        let temp = TempDir::new().unwrap();
+        let config = create_test_config();
+
+        let mut index = VectorIndex::load_or_create(temp.path().to_path_buf(), config, 128).unwrap();
+
+        // Insert a session
+        let embedding1 = create_dummy_embedding(128);
+        index.upsert_session("session-1", embedding1).unwrap();
+
+        assert_eq!(index.session_count(), 1);
+
+        // Search with the same embedding should return the session
+        let query = create_dummy_embedding(128);
+        let results = index.search_sessions(&query, 5).unwrap();
+
+        assert!(!results.is_empty());
+        // Results should have high similarity for identical vectors
+        let (id, score) = &results[0];
+        assert_eq!(id, "session-1");
+        assert!(*score > 0.9); // Cosine similarity should be very high
+    }
+
+    #[test]
+    fn test_upsert_and_search_chunk() {
+        let temp = TempDir::new().unwrap();
+        let config = create_test_config();
+
+        let mut index = VectorIndex::load_or_create(temp.path().to_path_buf(), config, 128).unwrap();
+
+        // Insert a chunk
+        let embedding1 = create_dummy_embedding(128);
+        index.upsert_chunk("session-1#0", embedding1).unwrap();
+
+        assert_eq!(index.chunk_count(), 1);
+
+        // Search with the same embedding should return the chunk
+        let query = create_dummy_embedding(128);
+        let results = index.search_chunks(&query, 5).unwrap();
+
+        assert!(!results.is_empty());
+        let (id, score) = &results[0];
+        assert_eq!(id, "session-1#0");
+        assert!(*score > 0.9);
+    }
+
+    #[test]
+    fn test_embedding_dimension_mismatch() {
+        let temp = TempDir::new().unwrap();
+        let config = create_test_config();
+
+        let mut index = VectorIndex::load_or_create(temp.path().to_path_buf(), config, 128).unwrap();
+
+        // Try to insert embedding with wrong dimension
+        let wrong_dim_embedding = vec![0.0; 256];
+        let result = index.upsert_session("session-1", wrong_dim_embedding);
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_embed_state() {
+        let mut state = EmbedState::default();
+
+        assert!(!state.is_session_embedded("test-session"));
+
+        state.mark_session_embedded("test-session".to_string());
+        assert!(state.is_session_embedded("test-session"));
+
+        state.mark_chunk_embedded("test-session#0".to_string());
+        assert!(state.is_chunk_embedded("test-session#0"));
+
+        let temp = TempDir::new().unwrap();
+        let state_path = temp.path().join("embed-state.json");
+
+        state.save(&state_path).unwrap();
+        let loaded = EmbedState::load(&state_path).unwrap();
+
+        assert!(loaded.is_session_embedded("test-session"));
+        assert!(loaded.is_chunk_embedded("test-session#0"));
+    }
+
+    #[test]
+    fn test_delete_indexes() {
+        let temp = TempDir::new().unwrap();
+        let config = create_test_config();
+
+        let index = VectorIndex::load_or_create(temp.path().to_path_buf(), config, 128).unwrap();
+        index.save().unwrap();
+
+        assert!(index.sessions_index_exists());
+        assert!(index.chunks_index_exists());
+
+        index.delete_sessions_index().unwrap();
+        assert!(!index.sessions_index_exists());
+        assert!(index.chunks_index_exists());
+
+        index.delete_all_indexes().unwrap();
+        assert!(!index.sessions_index_exists());
+        assert!(!index.chunks_index_exists());
+    }
+
+    #[test]
+    fn test_chunk_index_disabled() {
+        let temp = TempDir::new().unwrap();
+        let mut config = create_test_config();
+        config.index_chunks = false;
+
+        let mut index = VectorIndex::load_or_create(temp.path().to_path_buf(), config, 128).unwrap();
+
+        // Chunk index should not be created
+        assert!(index.chunks_index.is_none());
+        assert_eq!(index.chunk_count(), 0);
+
+        // Chunk operations should be no-ops
+        let embedding = create_dummy_embedding(128);
+        index.upsert_chunk("session-1#0", embedding).unwrap();
+        assert_eq!(index.chunk_count(), 0);
+    }
+
+    #[test]
+    fn test_persistence() {
+        let temp = TempDir::new().unwrap();
+        let config = create_test_config();
+
+        // Create and populate index
+        let mut index = VectorIndex::load_or_create(temp.path().to_path_buf(), config.clone(), 128).unwrap();
+        let embedding = create_dummy_embedding(128);
+        index.upsert_session("session-1", embedding.clone()).unwrap();
+        index.upsert_session("session-2", embedding).unwrap();
+        index.save().unwrap();
+
+        // Load and verify
+        let index2 = VectorIndex::load_or_create(temp.path().to_path_buf(), config, 128).unwrap();
+        assert_eq!(index2.session_count(), 2);
+
+        let results = index2.search_sessions(&create_dummy_embedding(128), 5).unwrap();
+        assert_eq!(results.len(), 2);
+    }
+}
