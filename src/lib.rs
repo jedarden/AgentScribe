@@ -28,4 +28,5 @@ pub mod search;
 pub mod shell_hook;
 pub mod tags;
 pub mod transcription;
+pub mod vector;
 pub mod write_guard;

@@ -76,6 +76,10 @@ pub enum AgentScribeError {
     /// Redaction errors
     #[error("Redaction error: {0}")]
     Redaction(String),
+
+    /// Vector index errors
+    #[error("Vector index error: {0}")]
+    VectorIndex(String),
 }
 
 impl AgentScribeError {
