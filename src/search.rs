@@ -89,6 +89,10 @@ pub struct SearchOptions {
     pub git_commit: Option<String>,
     /// Filter to sessions that have anti-pattern content (prefix-matched on "anti-pattern:")
     pub anti_patterns: bool,
+    /// Enable semantic vector search
+    pub semantic: bool,
+    /// Enable hybrid search (BM25 + semantic)
+    pub hybrid: bool,
 }
 
 impl Default for SearchOptions {
@@ -120,12 +124,14 @@ impl Default for SearchOptions {
             file_path: None,
             git_commit: None,
             anti_patterns: false,
+            semantic: false,
+            hybrid: false,
         }
     }
 }
 
 /// Sort order for results
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum SortOrder {
     #[default]
     Relevance,
@@ -165,6 +171,16 @@ pub fn execute_search(data_dir: &Path, opts: &SearchOptions) -> Result<SearchOut
     // Handle --session lookup
     if let Some(ref sid) = opts.session_id {
         return lookup_session(&searcher, sid, &start, total_docs);
+    }
+
+    // Handle --semantic search
+    if opts.semantic {
+        return execute_semantic_search(data_dir, opts, &start, total_docs);
+    }
+
+    // Handle --hybrid search
+    if opts.hybrid {
+        return execute_hybrid_search(data_dir, opts, &start, total_docs);
     }
 
     let (schema, fields) = build_schema();
@@ -223,6 +239,8 @@ pub fn execute_search(data_dir: &Path, opts: &SearchOptions) -> Result<SearchOut
             token_budget: opts.token_budget,
             offset: opts.offset,
             sort: opts.sort,
+            semantic: opts.semantic,
+            hybrid: opts.hybrid,
         };
         let fallback_query = build_query(&searcher, &fields, &fuzzy_opts, &schema)?;
         top_docs = searcher
@@ -957,6 +975,8 @@ fn lookup_session(
             offset: 0,
             sort: SortOrder::Relevance,
             anti_patterns: false,
+            semantic: false,
+            hybrid: false,
         };
         if let Some(result) = doc_to_search_result(searcher, &fields, *doc_addr, *score, &opts) {
             results.push(result);
@@ -1080,6 +1100,359 @@ fn knapsack_pack(results: Vec<SearchResult>, token_budget: usize) -> Vec<SearchR
     }
 
     selected
+}
+
+/// Execute semantic search using the vector index.
+///
+/// Embeds the query using the configured embedding model and searches
+/// the vector index for similar sessions by cosine similarity.
+fn execute_semantic_search(
+    data_dir: &Path,
+    opts: &SearchOptions,
+    start: &std::time::Instant,
+    total_docs: u64,
+) -> Result<SearchOutput> {
+    use crate::config::Config;
+    use crate::embedding::create_client;
+    use crate::vector::VectorIndex;
+
+    // Load config to get vector settings
+    let cfg_path = crate::config::config_path().unwrap_or_default();
+    let config = Config::load(&cfg_path).unwrap_or_default();
+
+    if !config.vector.enabled {
+        return Err(AgentScribeError::DataDir(
+            "Semantic search requires vector index to be enabled. Set [vector] enabled = true in config.toml.".to_string()
+        ));
+    }
+
+    // Create embedding client
+    let client = create_client(&config.vector).map_err(|e| {
+        AgentScribeError::DataDir(format!("Failed to create embedding client: {}", e))
+    })?;
+
+    // Get query text
+    let query_text = opts.query.as_ref().ok_or_else(|| {
+        AgentScribeError::DataDir("Semantic search requires a query string".to_string())
+    })?;
+
+    // Embed the query
+    let query_embedding = client
+        .embed(query_text)
+        .map_err(|e| AgentScribeError::DataDir(format!("Failed to embed query: {}", e)))?;
+
+    // Load vector index
+    let vector_index = VectorIndex::load_or_create(
+        data_dir.to_path_buf(),
+        config.vector.clone(),
+        client.dimension(),
+    )
+    .map_err(|e| AgentScribeError::DataDir(format!("Failed to load vector index: {}", e)))?;
+
+    // Search the session-level index
+    let raw_results = vector_index.search_sessions(&query_embedding, opts.max_results * 5)?;
+
+    if raw_results.is_empty() {
+        let elapsed = start.elapsed();
+        return Ok(SearchOutput {
+            query: query_text.clone(),
+            total_matches: 0,
+            search_time_ms: elapsed.as_millis() as u64,
+            sessions_searched: total_docs,
+            results: Vec::new(),
+            fuzzy_fallback: false,
+        });
+    }
+
+    // Convert vector results to SearchResults by fetching from Tantivy
+    let index = open_index(data_dir)?;
+    let reader = index
+        .reader()
+        .map_err(|e| AgentScribeError::DataDir(format!("Failed to create index reader: {}", e)))?;
+    let searcher = reader.searcher();
+    let (_schema, fields) = build_schema();
+
+    let mut results = Vec::new();
+    for (session_id, similarity_score) in raw_results {
+        // Look up the session in Tantivy to get full metadata
+        let term = tantivy::schema::Term::from_field_text(fields.session_id, &session_id);
+        let query = tantivy::query::TermQuery::new(term, tantivy::schema::IndexRecordOption::Basic);
+
+        let docs: Vec<(f32, DocAddress)> = searcher
+            .search(&query, &tantivy::collector::TopDocs::with_limit(1))
+            .map_err(|e| AgentScribeError::DataDir(format!("Search failed: {}", e)))?;
+
+        if let Some((_, doc_addr)) = docs.first() {
+            // Use the similarity score as the result score
+            if let Some(mut result) =
+                doc_to_search_result(&searcher, &fields, *doc_addr, similarity_score, opts)
+            {
+                result.score = similarity_score;
+                results.push(result);
+            }
+        }
+    }
+
+    // Apply filters from opts (agent, project, outcome, etc.)
+    results = apply_filters(results, opts);
+
+    // Apply sort order
+    apply_sort(&mut results, opts.sort);
+
+    // Apply token budget if specified
+    if let Some(budget) = opts.token_budget {
+        results = knapsack_pack(results, budget);
+    }
+
+    // Cap at max_results
+    results.truncate(opts.max_results);
+
+    let elapsed = start.elapsed();
+
+    Ok(SearchOutput {
+        query: query_text.clone(),
+        total_matches: results.len(),
+        search_time_ms: elapsed.as_millis() as u64,
+        sessions_searched: total_docs,
+        results,
+        fuzzy_fallback: false,
+    })
+}
+
+/// Execute hybrid search combining BM25 and semantic results.
+///
+/// Runs both BM25 and semantic search in parallel, then merges results
+/// using Reciprocal Rank Fusion (RRF) for combined ranking.
+fn execute_hybrid_search(
+    data_dir: &Path,
+    opts: &SearchOptions,
+    start: &std::time::Instant,
+    total_docs: u64,
+) -> Result<SearchOutput> {
+    use crate::config::Config;
+    use crate::embedding::create_client;
+    use crate::vector::VectorIndex;
+
+    // Load config to get vector settings
+    let cfg_path = crate::config::config_path().unwrap_or_default();
+    let config = Config::load(&cfg_path).unwrap_or_default();
+
+    if !config.vector.enabled {
+        // Fall back to BM25 if vector index is not available
+        let index = open_index(data_dir)?;
+        let reader = index.reader().map_err(|e| {
+            AgentScribeError::DataDir(format!("Failed to create index reader: {}", e))
+        })?;
+        let searcher = reader.searcher();
+
+        let (schema, fields) = build_schema();
+        let query = build_query(&searcher, &fields, opts, &schema)?;
+
+        let fetch_limit = if opts.token_budget.is_some() {
+            opts.max_results * 5
+        } else {
+            opts.max_results + opts.offset
+        };
+
+        let top_docs: Vec<(f32, DocAddress)> = searcher
+            .search(
+                &query,
+                &tantivy::collector::TopDocs::with_limit(fetch_limit),
+            )
+            .map_err(|e| AgentScribeError::DataDir(format!("Search failed: {}", e)))?;
+
+        let top_docs: Vec<_> = top_docs.into_iter().skip(opts.offset).collect();
+
+        let mut results: Vec<SearchResult> = Vec::new();
+        for (score, doc_addr) in &top_docs {
+            if results.len() >= opts.max_results {
+                break;
+            }
+            if let Some(result) = doc_to_search_result(&searcher, &fields, *doc_addr, *score, opts)
+            {
+                results.push(result);
+            }
+        }
+
+        apply_sort(&mut results, opts.sort);
+
+        if let Some(budget) = opts.token_budget {
+            results = knapsack_pack(results, budget);
+        }
+
+        let elapsed = start.elapsed();
+        let query_display = opts.query.clone().unwrap_or_default();
+
+        return Ok(SearchOutput {
+            query: query_display,
+            total_matches: results.len(),
+            search_time_ms: elapsed.as_millis() as u64,
+            sessions_searched: total_docs,
+            results,
+            fuzzy_fallback: false,
+        });
+    }
+
+    // Get query text
+    let query_text = opts.query.as_ref().ok_or_else(|| {
+        AgentScribeError::DataDir("Hybrid search requires a query string".to_string())
+    })?;
+
+    // Run BM25 search
+    let index = open_index(data_dir)?;
+    let reader = index
+        .reader()
+        .map_err(|e| AgentScribeError::DataDir(format!("Failed to create index reader: {}", e)))?;
+    let searcher = reader.searcher();
+
+    let (schema, fields) = build_schema();
+    let bm25_query = build_query(&searcher, &fields, opts, &schema)?;
+
+    let bm25_docs: Vec<(f32, DocAddress)> = searcher
+        .search(
+            &bm25_query,
+            &tantivy::collector::TopDocs::with_limit(opts.max_results * 5),
+        )
+        .map_err(|e| AgentScribeError::DataDir(format!("BM25 search failed: {}", e)))?;
+
+    // Create embedding client and run semantic search
+    let client = create_client(&config.vector).map_err(|e| {
+        AgentScribeError::DataDir(format!("Failed to create embedding client: {}", e))
+    })?;
+
+    let query_embedding = client
+        .embed(query_text)
+        .map_err(|e| AgentScribeError::DataDir(format!("Failed to embed query: {}", e)))?;
+
+    let vector_index = VectorIndex::load_or_create(
+        data_dir.to_path_buf(),
+        config.vector.clone(),
+        client.dimension(),
+    )
+    .map_err(|e| AgentScribeError::DataDir(format!("Failed to load vector index: {}", e)))?;
+
+    let semantic_results = vector_index.search_sessions(&query_embedding, opts.max_results * 5)?;
+
+    // Merge results using Reciprocal Rank Fusion
+    // RRF score = sum(rank_weight / (k + rank_position))
+    // where k = 60 (standard RRF constant)
+    const RRF_K: f32 = 60.0;
+
+    let mut rrf_scores: std::collections::HashMap<String, f32> = std::collections::HashMap::new();
+    let mut session_docs: std::collections::HashMap<String, (f32, DocAddress)> =
+        std::collections::HashMap::new();
+
+    // Add BM25 contributions
+    for (rank, (score, doc_addr)) in bm25_docs.iter().enumerate() {
+        // We need to get the session_id from the doc
+        if let Ok(doc) = searcher.doc::<tantivy::TantivyDocument>(*doc_addr) {
+            if let Some(session_id) = doc.get_first(fields.session_id).and_then(|v| v.as_str()) {
+                let rank_score = 1.0 / (RRF_K + rank as f32);
+                *rrf_scores.entry(session_id.to_string()).or_insert(0.0) += rank_score;
+                session_docs.insert(session_id.to_string(), (*score, *doc_addr));
+            }
+        }
+    }
+
+    // Add semantic contributions
+    for (rank, (session_id, _similarity)) in semantic_results.iter().enumerate() {
+        let rank_score = 1.0 / (RRF_K + rank as f32);
+        *rrf_scores.entry(session_id.clone()).or_insert(0.0) += rank_score;
+    }
+
+    // Convert to results sorted by RRF score
+    let mut merged_results: Vec<_> = rrf_scores.into_iter().collect();
+    merged_results.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+
+    // Build SearchResult list
+    let mut results = Vec::new();
+    for (session_id, rrf_score) in merged_results {
+        if let Some((_, doc_addr)) = session_docs.get(&session_id) {
+            if let Some(mut result) =
+                doc_to_search_result(&searcher, &fields, *doc_addr, rrf_score, opts)
+            {
+                result.score = rrf_score;
+                results.push(result);
+            }
+        }
+    }
+
+    // Apply filters
+    results = apply_filters(results, opts);
+
+    // Apply sort order (already sorted by RRF score, but respect if user wants different)
+    if opts.sort != SortOrder::Relevance {
+        apply_sort(&mut results, opts.sort);
+    }
+
+    // Apply token budget
+    if let Some(budget) = opts.token_budget {
+        results = knapsack_pack(results, budget);
+    }
+
+    results.truncate(opts.max_results);
+
+    let elapsed = start.elapsed();
+
+    Ok(SearchOutput {
+        query: query_text.clone(),
+        total_matches: results.len(),
+        search_time_ms: elapsed.as_millis() as u64,
+        sessions_searched: total_docs,
+        results,
+        fuzzy_fallback: false,
+    })
+}
+
+/// Apply filters to search results.
+fn apply_filters(mut results: Vec<SearchResult>, opts: &SearchOptions) -> Vec<SearchResult> {
+    // Agent filter
+    if !opts.agent.is_empty() {
+        results.retain(|r| opts.agent.contains(&r.source_agent));
+    }
+
+    // Project filter
+    if let Some(ref project) = opts.project {
+        results.retain(|r| r.project.as_ref().map(|p| p == project).unwrap_or(false));
+    }
+
+    // Outcome filter
+    if let Some(ref outcome) = opts.outcome {
+        results.retain(|r| r.outcome.as_ref().map(|o| o == outcome).unwrap_or(false));
+    }
+
+    // Model filter
+    if let Some(ref model) = opts.model {
+        results.retain(|r| r.model.as_ref().map(|m| m == model).unwrap_or(false));
+    }
+
+    // Since/before date filters
+    if let Some(since) = opts.since {
+        results.retain(|r| {
+            r.timestamp
+                .as_ref()
+                .and_then(|ts| DateTime::parse_from_rfc3339(ts).ok())
+                .map(|dt| dt > since)
+                .unwrap_or(false)
+        });
+    }
+
+    if let Some(before) = opts.before {
+        results.retain(|r| {
+            r.timestamp
+                .as_ref()
+                .and_then(|ts| DateTime::parse_from_rfc3339(ts).ok())
+                .map(|dt| dt < before)
+                .unwrap_or(false)
+        });
+    }
+
+    // Tag filter (AND logic - all tags must be present)
+    if !opts.tag.is_empty() {
+        results.retain(|r| opts.tag.iter().all(|tag| r.tags.contains(tag)));
+    }
+
+    results
 }
 
 /// Format search results for human-readable output.
@@ -1384,7 +1757,10 @@ pub fn collect_all_file_paths(data_dir: &Path) -> Result<std::collections::HashS
 /// - The index is empty
 /// - No paths match the pattern
 /// - The glob pattern is invalid
-pub fn expand_file_glob(data_dir: &Path, pattern: &str) -> Result<std::collections::HashSet<String>> {
+pub fn expand_file_glob(
+    data_dir: &Path,
+    pattern: &str,
+) -> Result<std::collections::HashSet<String>> {
     let all_paths = collect_all_file_paths(data_dir)?;
 
     if all_paths.is_empty() {
@@ -1467,9 +1843,44 @@ pub fn extract_file_paths(task: &str) -> Vec<String> {
     paths
 }
 
+/// Check if the vector index is available for hybrid search.
+fn check_vector_index_available(data_dir: &Path) -> bool {
+    use crate::config::Config;
+    use crate::vector::VectorIndex;
+
+    // Load config to check if vector is enabled
+    let cfg_path = crate::config::config_path().unwrap_or_default();
+    let config = match Config::load(&cfg_path) {
+        Ok(c) => c,
+        Err(_) => return false,
+    };
+
+    if !config.vector.enabled || !config.vector.index_sessions {
+        return false;
+    }
+
+    // Check if the vector index exists and has sessions
+    let sessions_index_path = data_dir.join("index").join("vector").join("sessions.tvim");
+    if !sessions_index_path.exists() {
+        return false;
+    }
+
+    // Try to load the index and verify it has embeddings
+    match VectorIndex::load_or_create(
+        data_dir.to_path_buf(),
+        config.vector.clone(),
+        768, // Will be updated when client is created
+    ) {
+        Ok(idx) => !idx.is_empty(),
+        Err(_) => false,
+    }
+}
+
 /// Pack context for a task description: past solutions, conventions, and file notes.
 ///
 /// This is the main entry point for the `context` subcommand.
+/// Uses hybrid search (BM25 + semantic) when the vector index is available,
+/// falling back to BM25-only if the vector index is disabled or not built.
 pub fn context_pack(
     data_dir: &Path,
     task: &str,
@@ -1478,6 +1889,10 @@ pub fn context_pack(
 ) -> Result<ContextPack> {
     // Step 1: Past solutions (60% of budget by default)
     let solution_budget = (token_budget * 3) / 5;
+
+    // Check if vector index is available for hybrid search
+    let vector_available = check_vector_index_available(data_dir);
+
     let search_opts = SearchOptions {
         query: Some(task.to_string()),
         solution_only: true,
@@ -1485,6 +1900,7 @@ pub fn context_pack(
         token_budget: Some(solution_budget),
         max_results: 10,
         snippet_length: 300,
+        hybrid: vector_available, // Use hybrid search if vector index is available
         ..Default::default()
     };
 
@@ -1928,6 +2344,8 @@ mod tests {
             offset: 0,
             sort: SortOrder::Relevance,
             anti_patterns: false,
+            semantic: false,
+            hybrid: false,
         };
 
         let result = execute_search(temp_dir.path(), &opts).unwrap();
@@ -2274,6 +2692,8 @@ mod tests {
             offset: 0,
             sort: SortOrder::Relevance,
             anti_patterns: false,
+            semantic: false,
+            hybrid: false,
         };
 
         let result = execute_search(temp_dir.path(), &opts);
@@ -2799,6 +3219,8 @@ mod tests {
             offset: 0,
             sort: SortOrder::Relevance,
             anti_patterns: false,
+            semantic: false,
+            hybrid: false,
         }
     }
 
@@ -5276,9 +5698,24 @@ mod tests {
             m
         };
         let e1 = vec![
-            Event::new(now, "test/1".to_string(), "test".to_string(), Role::User, "fix auth".to_string())
-                .with_file_paths(vec!["src/auth.rs".to_string(), "src/auth/mod.rs".to_string()]),
-            Event::new(now, "test/1".to_string(), "test".to_string(), Role::Assistant, "done".to_string()),
+            Event::new(
+                now,
+                "test/1".to_string(),
+                "test".to_string(),
+                Role::User,
+                "fix auth".to_string(),
+            )
+            .with_file_paths(vec![
+                "src/auth.rs".to_string(),
+                "src/auth/mod.rs".to_string(),
+            ]),
+            Event::new(
+                now,
+                "test/1".to_string(),
+                "test".to_string(),
+                Role::Assistant,
+                "done".to_string(),
+            ),
         ];
 
         // Session 2 with different files
@@ -5289,9 +5726,24 @@ mod tests {
             m
         };
         let e2 = vec![
-            Event::new(now, "test/2".to_string(), "test".to_string(), Role::User, "fix db".to_string())
-                .with_file_paths(vec!["src/db.rs".to_string(), "src/db/connection.rs".to_string()]),
-            Event::new(now, "test/2".to_string(), "test".to_string(), Role::Assistant, "done".to_string()),
+            Event::new(
+                now,
+                "test/2".to_string(),
+                "test".to_string(),
+                Role::User,
+                "fix db".to_string(),
+            )
+            .with_file_paths(vec![
+                "src/db.rs".to_string(),
+                "src/db/connection.rs".to_string(),
+            ]),
+            Event::new(
+                now,
+                "test/2".to_string(),
+                "test".to_string(),
+                Role::Assistant,
+                "done".to_string(),
+            ),
         ];
 
         writer

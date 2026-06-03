@@ -294,6 +294,8 @@ async fn handle_search(data_dir: Arc<PathBuf>, args: Value) -> Value {
             file_path,
             git_commit: None,
             anti_patterns: false,
+            semantic: false,
+            hybrid: false,
         };
 
         execute_search(&data_dir, &opts)
@@ -485,6 +487,8 @@ fn file_search_opts(
         file_path: Some(file_path),
         git_commit: None,
         anti_patterns: false,
+        semantic: false,
+        hybrid: false,
     }
 }
 

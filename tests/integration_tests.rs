@@ -558,6 +558,8 @@ fn test_full_pipeline_end_to_end() {
         file_path: None,
         git_commit: None,
         anti_patterns: false,
+        semantic: false,
+        hybrid: false,
     };
 
     let output = execute_search(data_dir.path(), &opts).expect("search failed");
@@ -613,6 +615,8 @@ fn test_pipeline_aider_search() {
         file_path: None,
         git_commit: None,
         anti_patterns: false,
+        semantic: false,
+        hybrid: false,
     };
 
     let output = execute_search(data_dir.path(), &opts).expect("search failed");
@@ -668,6 +672,8 @@ fn test_search_agent_filter() {
         file_path: None,
         git_commit: None,
         anti_patterns: false,
+        semantic: false,
+        hybrid: false,
     };
 
     let output = execute_search(data_dir.path(), &opts).expect("search failed");
@@ -719,6 +725,8 @@ fn test_search_outcome_filter() {
         file_path: None,
         git_commit: None,
         anti_patterns: false,
+        semantic: false,
+        hybrid: false,
     };
 
     let output = execute_search(data_dir.path(), &opts).expect("search failed");
@@ -1080,6 +1088,8 @@ fn test_search_latency_under_50ms() {
         file_path: None,
         git_commit: None,
         anti_patterns: false,
+        semantic: false,
+        hybrid: false,
     };
 
     // Warm up the index reader
@@ -1146,6 +1156,8 @@ fn test_search_output_reports_latency() {
         file_path: None,
         git_commit: None,
         anti_patterns: false,
+        semantic: false,
+        hybrid: false,
     };
 
     let output = execute_search(data_dir.path(), &opts).expect("search failed");
@@ -1444,24 +1456,30 @@ fn test_codex_companion_metadata_enrichment() {
 
     // Events should be enriched with model from companion metadata
     // The companion index has model: "gpt-4o-2024-05-13" for thread-success-001
-    let has_model_from_companion = events.iter().any(|e| {
-        e.model.as_deref() == Some("gpt-4o-2024-05-13")
-    });
+    let has_model_from_companion = events
+        .iter()
+        .any(|e| e.model.as_deref() == Some("gpt-4o-2024-05-13"));
     assert!(
         has_model_from_companion,
         "codex events should have model from companion metadata, found models: {:?}",
-        events.iter().filter_map(|e| e.model.as_deref()).collect::<Vec<_>>()
+        events
+            .iter()
+            .filter_map(|e| e.model.as_deref())
+            .collect::<Vec<_>>()
     );
 
     // Events should be enriched with cwd from companion metadata
     // The companion index has cwd: "/home/user/backend" for thread-success-001
-    let has_cwd_from_companion = events.iter().any(|e| {
-        e.project.as_deref() == Some("/home/user/backend")
-    });
+    let has_cwd_from_companion = events
+        .iter()
+        .any(|e| e.project.as_deref() == Some("/home/user/backend"));
     assert!(
         has_cwd_from_companion,
         "codex events should have cwd from companion metadata, found projects: {:?}",
-        events.iter().filter_map(|e| e.project.as_deref()).collect::<Vec<_>>()
+        events
+            .iter()
+            .filter_map(|e| e.project.as_deref())
+            .collect::<Vec<_>>()
     );
 }
 
@@ -1610,6 +1628,8 @@ fn test_fuzzy_search_finds_misspelled_term() {
         file_path: None,
         git_commit: None,
         anti_patterns: false,
+        semantic: false,
+        hybrid: false,
     };
 
     let output = execute_search(data_dir.path(), &opts).expect("search failed");
@@ -1669,6 +1689,8 @@ fn test_more_like_this_finds_similar_sessions() {
         file_path: None,
         git_commit: None,
         anti_patterns: false,
+        semantic: false,
+        hybrid: false,
     };
 
     let output = execute_search(data_dir.path(), &opts).expect("search failed");
@@ -1729,6 +1751,8 @@ fn test_token_budget_respects_limit() {
         file_path: None,
         git_commit: None,
         anti_patterns: false,
+        semantic: false,
+        hybrid: false,
     };
 
     let output = execute_search(data_dir.path(), &opts).expect("search failed");
