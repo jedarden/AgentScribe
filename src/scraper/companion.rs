@@ -32,18 +32,17 @@ impl CompanionIndex {
     /// Each line should be a JSON object with at least a "thread_id" or "session_id" field
     /// and optional metadata fields like "model", "cwd", etc.
     pub fn load_from_file(path: &Path) -> Result<Self> {
-        let file = File::open(path).map_err(|_e| AgentScribeError::FileNotFound(path.to_path_buf()))?;
+        let file =
+            File::open(path).map_err(|_e| AgentScribeError::FileNotFound(path.to_path_buf()))?;
         let reader = BufReader::new(file);
         let mut entries = HashMap::new();
 
         for (line_num, line_result) in reader.lines().enumerate() {
             let line_num = line_num + 1;
-            let line = line_result.map_err(|e| {
-                AgentScribeError::Parse {
-                    file: path.display().to_string(),
-                    line: Some(line_num),
-                    message: format!("Read error: {}", e),
-                }
+            let line = line_result.map_err(|e| AgentScribeError::Parse {
+                file: path.display().to_string(),
+                line: Some(line_num),
+                message: format!("Read error: {}", e),
             })?;
 
             let line = line.trim();
@@ -181,9 +180,21 @@ mod tests {
 
         // Write test data
         let mut file = File::create(path).unwrap();
-        writeln!(file, r#"{{"thread_id": "abc123", "model": "gpt-4", "cwd": "/home/user/project"}}"#).unwrap();
-        writeln!(file, r#"{{"thread_id": "def456", "model": "gpt-3.5-turbo", "cwd": "/home/user/other"}}"#).unwrap();
-        writeln!(file, r#"{{"thread_id": "ghi789", "model": "gpt-4", "cwd": "/home/user/test"}}"#).unwrap();
+        writeln!(
+            file,
+            r#"{{"thread_id": "abc123", "model": "gpt-4", "cwd": "/home/user/project"}}"#
+        )
+        .unwrap();
+        writeln!(
+            file,
+            r#"{{"thread_id": "def456", "model": "gpt-3.5-turbo", "cwd": "/home/user/other"}}"#
+        )
+        .unwrap();
+        writeln!(
+            file,
+            r#"{{"thread_id": "ghi789", "model": "gpt-4", "cwd": "/home/user/test"}}"#
+        )
+        .unwrap();
 
         // Load the index
         let index = CompanionIndex::load_from_file(path).unwrap();
@@ -198,7 +209,10 @@ mod tests {
         let metadata = index.get("abc123").unwrap();
         assert_eq!(metadata.get("thread_id").unwrap().as_str(), Some("abc123"));
         assert_eq!(metadata.get("model").unwrap().as_str(), Some("gpt-4"));
-        assert_eq!(metadata.get("cwd").unwrap().as_str(), Some("/home/user/project"));
+        assert_eq!(
+            metadata.get("cwd").unwrap().as_str(),
+            Some("/home/user/project")
+        );
     }
 
     #[test]
@@ -224,9 +238,13 @@ mod tests {
         // Write test data with some invalid lines
         let mut file = File::create(path).unwrap();
         writeln!(file, r#"{{"thread_id": "abc123", "model": "gpt-4"}}"#).unwrap();
-        writeln!(file, "").unwrap(); // Empty line
+        writeln!(file).unwrap(); // Empty line
         writeln!(file, "not json").unwrap(); // Invalid JSON
-        writeln!(file, r#"{{"thread_id": "def456", "model": "gpt-3.5-turbo"}}"#).unwrap();
+        writeln!(
+            file,
+            r#"{{"thread_id": "def456", "model": "gpt-3.5-turbo"}}"#
+        )
+        .unwrap();
         writeln!(file, r#"{{"no_id": "true"}}"#).unwrap(); // No thread_id or session_id
 
         // Load the index
