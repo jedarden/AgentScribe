@@ -72,6 +72,7 @@ impl MarkdownParser {
         Ok(())
     }
 
+    #[allow(dead_code)]
     fn parse_markdown(
         &self,
         content: &str,

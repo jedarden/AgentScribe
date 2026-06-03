@@ -35,7 +35,11 @@ impl SqliteParser {
     /// Returns `Ok(None)` for binary blobs (prints a warning).
     /// Returns `Ok(Some(text))` for valid UTF-8 text.
     /// Returns `Err` for other SQLite errors.
-    fn get_column_as_string(row: &rusqlite::Row, col_idx: usize, key: &str) -> Result<Option<String>> {
+    fn get_column_as_string(
+        row: &rusqlite::Row,
+        col_idx: usize,
+        key: &str,
+    ) -> Result<Option<String>> {
         // First try to get as String (handles TEXT columns correctly)
         match row.get::<_, String>(col_idx) {
             Ok(text) => {
@@ -45,7 +49,7 @@ impl SqliteParser {
                     // Text doesn't look like JSON - could be a text-stored protobuf
                     // Check if the original bytes were valid UTF-8 by trying to get as blob
                     if let Ok(blob) = row.get::<_, Vec<u8>>(col_idx) {
-                        if blob.first().map_or(false, |&b| b != b'{' && b != b'[') {
+                        if blob.first().is_some_and(|&b| b != b'{' && b != b'[') {
                             eprintln!(
                                 "Warning: key '{}' has non-JSON text value (may be text-encoded protobuf), skipping",
                                 key
@@ -62,7 +66,7 @@ impl SqliteParser {
                 match row.get::<_, Vec<u8>>(col_idx) {
                     Ok(blob) => {
                         // Check if this looks like JSON (starts with '{' or '[')
-                        let is_likely_json = blob.first().map_or(false, |&b| b == b'{' || b == b'[');
+                        let is_likely_json = blob.first().is_some_and(|&b| b == b'{' || b == b'[');
 
                         if !is_likely_json {
                             // This appears to be binary data (e.g., protobuf)
@@ -359,10 +363,10 @@ impl super::FormatParser for SqliteParser {
             //   1 column   → col[0] = value (no key filter applicable)
             let (key, value_str): (String, Option<String>) = if col_count >= 2 {
                 let k: String = row.get::<_, String>(0).unwrap_or_default();
-                let v = Self::get_column_as_string(&row, 1, &k)?;
+                let v = Self::get_column_as_string(row, 1, &k)?;
                 (k, v)
             } else {
-                let v = Self::get_column_as_string(&row, 0, "")?;
+                let v = Self::get_column_as_string(row, 0, "")?;
                 (String::new(), v)
             };
 
@@ -468,7 +472,7 @@ impl super::FormatParser for SqliteParser {
                 };
 
                 // Skip rows with binary blobs in the key column
-                if let Some(k_bytes) = row.get::<_, Vec<u8>>(0).ok() {
+                if let Ok(k_bytes) = row.get::<_, Vec<u8>>(0) {
                     if std::str::from_utf8(&k_bytes).is_err() {
                         continue; // Skip binary key
                     }
@@ -846,10 +850,7 @@ mod tests {
         // JSON object starting with '{'
         conn.execute(
             "INSERT INTO cursorDiskKV VALUES (?1, ?2)",
-            rusqlite::params![
-                "history.session1",
-                r#"{"role":"user","text":"hello"}"#
-            ],
+            rusqlite::params!["history.session1", r#"{"role":"user","text":"hello"}"#],
         )
         .unwrap();
 

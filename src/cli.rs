@@ -11,6 +11,7 @@ use clap_complete::{generate, Shell};
 use std::io;
 use std::path::PathBuf;
 use tabled::{Table, Tabled};
+use tantivy::schema::Value;
 
 /// AgentScribe - Archive, search, and learn from coding agent conversations
 #[derive(Parser, Debug)]
@@ -61,6 +62,11 @@ enum Commands {
     Index {
         #[command(subcommand)]
         action: IndexAction,
+    },
+    /// Manage the vector index for semantic search
+    Embed {
+        #[command(subcommand)]
+        action: EmbedAction,
     },
     /// Show tracked agents and session counts
     Status {
@@ -140,6 +146,14 @@ enum Commands {
         /// Filter to sessions with anti-patterns detected
         #[arg(long)]
         anti_patterns: bool,
+
+        /// Enable semantic vector search (requires vector index)
+        #[arg(long)]
+        semantic: bool,
+
+        /// Enable hybrid search (BM25 + semantic, requires vector index)
+        #[arg(long)]
+        hybrid: bool,
 
         /// Enable fuzzy matching on all query terms
         #[arg(long)]
@@ -469,6 +483,39 @@ enum IndexAction {
     Optimize,
 }
 
+/// Embed subcommands
+#[derive(Subcommand, Debug)]
+enum EmbedAction {
+    /// Embed all unembedded sessions (batch, one-time)
+    Build {
+        /// Only embed sessions from this plugin
+        #[arg(short, long)]
+        plugin: Option<String>,
+
+        /// Maximum concurrent embedding requests
+        #[arg(long, default_value = "5")]
+        concurrent: usize,
+    },
+    /// Rebuild the vector index from scratch
+    Rebuild {
+        /// Only re-embed sessions from this plugin
+        #[arg(short, long)]
+        plugin: Option<String>,
+
+        /// Maximum concurrent embedding requests
+        #[arg(long, default_value = "5")]
+        concurrent: usize,
+    },
+    /// Show vector index statistics
+    Stats,
+    /// List sessions in Tantivy that have no vector embedding
+    Missing {
+        /// JSON output
+        #[arg(long)]
+        json: bool,
+    },
+}
+
 /// Daemon subcommands
 #[derive(Subcommand, Debug)]
 enum DaemonAction {
@@ -524,6 +571,7 @@ pub fn run() -> Result<()> {
         } => run_scrape(plugin, file, dry_run, output_events, json),
         Commands::Status { json, plugin } => run_status(json, plugin),
         Commands::Index { action } => run_index(action),
+        Commands::Embed { action } => run_embed(action),
         Commands::Search {
             query,
             error,
@@ -551,6 +599,8 @@ pub fn run() -> Result<()> {
             sort,
             hint,
             json,
+            semantic,
+            hybrid,
         } => run_search(
             query,
             error,
@@ -578,6 +628,8 @@ pub fn run() -> Result<()> {
             sort,
             hint,
             json,
+            semantic,
+            hybrid,
         ),
         Commands::Recurring {
             since,
@@ -1080,6 +1132,8 @@ fn run_search(
     sort: String,
     hint: bool,
     json: bool,
+    semantic: bool,
+    hybrid: bool,
 ) -> Result<()> {
     let config = load_config()?;
     let data_dir = config.data_dir()?;
@@ -1122,6 +1176,8 @@ fn run_search(
         offset,
         sort: sort_order,
         anti_patterns,
+        semantic,
+        hybrid,
     };
 
     let output = search::execute_search(&data_dir, &opts)?;
@@ -1619,6 +1675,394 @@ fn run_status(json: bool, plugin_filter: Option<String>) -> Result<()> {
     Ok(())
 }
 
+/// Run embed subcommands
+fn run_embed(action: EmbedAction) -> Result<()> {
+    let config = load_config()?;
+    let data_dir = config.data_dir()?;
+
+    if !data_dir.exists() {
+        eprintln!("AgentScribe not initialized. Run 'agentscribe config init' to set up.");
+        std::process::exit(1);
+    }
+
+    // Check if vector index is enabled
+    if !config.vector.enabled {
+        eprintln!("Vector index is disabled. Enable it in config.toml:");
+        eprintln!("\n[vector]");
+        eprintln!("enabled = true");
+        eprintln!("\nThen run 'agentscribe embed build' again.");
+        std::process::exit(1);
+    }
+
+    match action {
+        EmbedAction::Build { plugin, concurrent } => {
+            run_embed_build(&data_dir, &config, plugin.as_deref(), concurrent)
+        }
+        EmbedAction::Rebuild { plugin, concurrent } => {
+            run_embed_rebuild(&data_dir, &config, plugin.as_deref(), concurrent)
+        }
+        EmbedAction::Stats => run_embed_stats(&data_dir, &config),
+        EmbedAction::Missing { json } => run_embed_missing(&data_dir, json),
+    }
+}
+
+/// Build embeddings for unembedded sessions
+fn run_embed_build(
+    data_dir: &std::path::Path,
+    config: &crate::config::Config,
+    plugin_filter: Option<&str>,
+    _concurrent: usize,
+) -> Result<()> {
+    use crate::vector::EmbedState;
+
+    let vector_config = config.vector.clone();
+
+    println!("Building vector index...");
+    println!("  Model: {}", vector_config.embedding_model);
+    println!(
+        "  Dimension: {}",
+        if vector_config.embedding_model.starts_with("openai:") {
+            1536
+        } else {
+            768
+        }
+    );
+    println!("  Chunk size: {} tokens", vector_config.chunk_size_tokens);
+
+    // Load embed state to track progress
+    let state_path = data_dir.join("state").join("embed-state.json");
+    let mut embed_state = EmbedState::load(&state_path).unwrap_or_default();
+
+    // Create embedding client
+    let client = crate::embedding::create_client(&vector_config)?;
+    let embedding_dim = client.dimension();
+
+    // Load or create vector index
+    let mut vector_index = crate::vector::VectorIndex::load_or_create(
+        data_dir.to_path_buf(),
+        vector_config.clone(),
+        embedding_dim,
+    )?;
+
+    // Get sessions directory
+    let sessions_dir = data_dir.join("sessions");
+    if !sessions_dir.exists() {
+        eprintln!("No sessions directory found. Run 'agentscribe scrape' first.");
+        std::process::exit(1);
+    }
+
+    // Collect session IDs to embed
+    let mut sessions_to_embed = Vec::new();
+
+    for agent_entry in std::fs::read_dir(&sessions_dir)? {
+        let agent_entry = match agent_entry {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        let agent_path = agent_entry.path();
+        if !agent_path.is_dir() {
+            continue;
+        }
+
+        let agent_name = match agent_path.file_name().and_then(|n| n.to_str()) {
+            Some(n) => n.to_string(),
+            None => continue,
+        };
+
+        // Apply plugin filter
+        if let Some(filter) = plugin_filter {
+            if agent_name != *filter {
+                continue;
+            }
+        }
+
+        // Walk session files
+        if let Ok(session_entries) = std::fs::read_dir(&agent_path) {
+            for session_entry in session_entries.flatten() {
+                let session_path = session_entry.path();
+                if session_path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
+                    continue;
+                }
+
+                let session_id = format!(
+                    "{}/{}",
+                    agent_name,
+                    session_path
+                        .file_stem()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("unknown")
+                );
+
+                // Skip if already embedded
+                if embed_state.is_session_embedded(&session_id) {
+                    continue;
+                }
+
+                sessions_to_embed.push((session_id, session_path));
+            }
+        }
+    }
+
+    if sessions_to_embed.is_empty() {
+        println!("All sessions already embedded.");
+        return Ok(());
+    }
+
+    println!("Found {} sessions to embed", sessions_to_embed.len());
+
+    // Embed sessions
+    let mut embedded_count = 0;
+    let mut error_count = 0;
+
+    let total_sessions = sessions_to_embed.len();
+    for (session_id, session_path) in sessions_to_embed {
+        // Read session events
+        let events = match read_session_events(&sessions_dir, &session_id) {
+            Ok(e) if !e.is_empty() => e,
+            Ok(_) => continue,
+            Err(e) => {
+                eprintln!("Error reading {}: {}", session_path.display(), e);
+                error_count += 1;
+                continue;
+            }
+        };
+
+        // Build session text for embedding
+        let session_text = crate::vector::build_session_text(&events);
+
+        // Embed session-level
+        if vector_config.index_sessions {
+            match client.embed(&session_text) {
+                Ok(embedding) => {
+                    vector_index.upsert_session(&session_id, embedding)?;
+                    embed_state.mark_session_embedded(session_id.clone());
+                }
+                Err(e) => {
+                    eprintln!("Error embedding {}: {}", session_id, e);
+                    error_count += 1;
+                    continue;
+                }
+            }
+        }
+
+        // Embed chunks if enabled
+        if vector_config.index_chunks {
+            let chunks = crate::vector::chunk_session_text(
+                &session_text,
+                vector_config.chunk_size_tokens,
+                vector_config.chunk_overlap_tokens,
+            );
+
+            for (idx, chunk_text) in chunks.into_iter().enumerate() {
+                let chunk_id = format!("{}#{}", session_id, idx);
+
+                match client.embed(&chunk_text) {
+                    Ok(embedding) => {
+                        vector_index.upsert_chunk(&chunk_id, embedding)?;
+                        embed_state.mark_chunk_embedded(chunk_id);
+                    }
+                    Err(e) => {
+                        eprintln!("Error embedding chunk {}: {}", chunk_id, e);
+                        error_count += 1;
+                    }
+                }
+            }
+        }
+
+        embedded_count += 1;
+
+        // Save index periodically
+        if embedded_count % 10 == 0 {
+            vector_index.save()?;
+            embed_state.save(&state_path)?;
+            println!("  Progress: {}/{}", embedded_count, total_sessions);
+        }
+    }
+
+    // Final save
+    vector_index.save()?;
+    embed_state.save(&state_path)?;
+
+    println!("Embedded {} sessions", embedded_count);
+    if error_count > 0 {
+        eprintln!("Errors: {}", error_count);
+    }
+
+    Ok(())
+}
+
+/// Rebuild the entire vector index
+fn run_embed_rebuild(
+    data_dir: &std::path::Path,
+    config: &crate::config::Config,
+    plugin_filter: Option<&str>,
+    _concurrent: usize,
+) -> Result<()> {
+    println!("Rebuilding vector index from scratch...");
+
+    let vector_config = config.vector.clone();
+
+    // Delete existing indexes
+    let temp_index = crate::vector::VectorIndex::new(
+        data_dir.to_path_buf(),
+        vector_config.clone(),
+        768, // Will be updated when client is created
+    );
+
+    if temp_index.sessions_index_exists() {
+        println!("  Deleting existing session index...");
+        temp_index.delete_sessions_index()?;
+    }
+
+    if temp_index.chunks_index_exists() {
+        println!("  Deleting existing chunk index...");
+        temp_index.delete_chunks_index()?;
+    }
+
+    // Reset embed state
+    let state_path = data_dir.join("state").join("embed-state.json");
+    let _ = std::fs::remove_file(&state_path);
+
+    // Run build with all sessions
+    run_embed_build(data_dir, config, plugin_filter, 1)?;
+
+    println!("Rebuild complete.");
+
+    Ok(())
+}
+
+/// Show vector index statistics
+fn run_embed_stats(data_dir: &std::path::Path, config: &crate::config::Config) -> Result<()> {
+    let vector_config = config.vector.clone();
+
+    // Create embedding client to get dimension
+    let client = crate::embedding::create_client(&vector_config)?;
+    let embedding_dim = client.dimension();
+
+    // Load vector index
+    let vector_index = match crate::vector::VectorIndex::load_or_create(
+        data_dir.to_path_buf(),
+        vector_config.clone(),
+        embedding_dim,
+    ) {
+        Ok(idx) => idx,
+        Err(_) => {
+            println!("Vector index not found. Run 'agentscribe embed build' first.");
+            return Ok(());
+        }
+    };
+
+    // Load embed state
+    let state_path = data_dir.join("state").join("embed-state.json");
+    let embed_state = crate::vector::EmbedState::load(&state_path).unwrap_or_default();
+
+    println!("Vector index statistics");
+    println!("  Model: {}", vector_config.embedding_model);
+    println!("  Dimension: {}", embedding_dim);
+    println!("  Bit width: {}-bit", vector_config.bit_width);
+    println!("  Sessions embedded: {}", vector_index.session_count());
+    println!("  Chunks embedded: {}", vector_index.chunk_count());
+    println!(
+        "  Tracked in state: {} sessions, {} chunks",
+        embed_state.embedded_sessions.len(),
+        embed_state.embedded_chunks.len()
+    );
+
+    let index_dir = data_dir.join("index").join("vector");
+    if index_dir.exists() {
+        let size_bytes = dir_size(&index_dir);
+        println!("  Size on disk: {}", format_bytes(size_bytes));
+    }
+
+    Ok(())
+}
+
+/// List sessions missing embeddings
+fn run_embed_missing(data_dir: &std::path::Path, json: bool) -> Result<()> {
+    use crate::search::open_index;
+    use crate::vector::EmbedState;
+
+    let state_path = data_dir.join("state").join("embed-state.json");
+    let embed_state = EmbedState::load(&state_path).unwrap_or_default();
+
+    // Get all session IDs from Tantivy index
+    let tantivy_index = match open_index(data_dir) {
+        Ok(idx) => idx,
+        Err(_) => {
+            println!("Tantivy index not found. Run 'agentscribe scrape' first.");
+            return Ok(());
+        }
+    };
+
+    let reader = tantivy_index.reader().map_err(|e| {
+        crate::error::AgentScribeError::DataDir(format!("Failed to create reader: {}", e))
+    })?;
+    let searcher = reader.searcher();
+    let (_schema, fields) = crate::index::build_schema();
+
+    let mut missing_sessions = Vec::new();
+
+    // Collect all session IDs from Tantivy
+    use tantivy::collector::TopDocs;
+    use tantivy::query::AllQuery;
+
+    let all_docs: Vec<_> = searcher
+        .search(
+            &AllQuery,
+            &TopDocs::with_limit(searcher.num_docs() as usize),
+        )
+        .map_err(|e| crate::error::AgentScribeError::DataDir(format!("Search failed: {}", e)))?;
+
+    for (_score, doc_addr) in all_docs {
+        if let Ok(doc) = searcher.doc::<tantivy::TantivyDocument>(doc_addr) {
+            if let Some(session_id) = doc.get_first(fields.session_id).and_then(|v| v.as_str()) {
+                if !embed_state.is_session_embedded(session_id) {
+                    let project = doc
+                        .get_first(fields.project)
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string());
+                    let agent = doc
+                        .get_first(fields.source_agent)
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("unknown")
+                        .to_string();
+
+                    missing_sessions.push((session_id.to_string(), agent, project));
+                }
+            }
+        }
+    }
+
+    if json {
+        use serde_json::json;
+        let output: Vec<_> = missing_sessions
+            .into_iter()
+            .map(|(id, agent, project)| {
+                json!({
+                    "session_id": id,
+                    "agent": agent,
+                    "project": project
+                })
+            })
+            .collect();
+        println!("{}", serde_json::to_string_pretty(&output).unwrap());
+    } else {
+        if missing_sessions.is_empty() {
+            println!("All sessions have embeddings.");
+        } else {
+            println!("Sessions missing embeddings:");
+            for (id, agent, project) in &missing_sessions {
+                println!("  {} [{}]", id, agent);
+                if let Some(ref proj) = project {
+                    println!("    Project: {}", proj);
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
 /// Per-plugin status data
 struct PluginStatus {
     name: String,
@@ -2077,11 +2521,7 @@ fn run_file(path: String, max_results: usize, json: bool) -> Result<()> {
         // Show which files matched the pattern
         let paths_display: Vec<&str> = matched_paths.iter().map(|p| p.as_str()).collect();
         if paths_display.len() > 1 {
-            println!(
-                "Pattern '{}' matched {} files:",
-                path,
-                paths_display.len()
-            );
+            println!("Pattern '{}' matched {} files:", path, paths_display.len());
             for p in &paths_display {
                 println!("  - {}", p);
             }

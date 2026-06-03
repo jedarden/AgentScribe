@@ -634,6 +634,85 @@ impl VectorIndex {
     }
 }
 
+/// Build session text for embedding from events
+///
+/// Concatenates events with role prefixes to create a searchable text representation.
+pub fn build_session_text(events: &[crate::event::Event]) -> String {
+    let mut text = String::new();
+
+    for event in events {
+        // Skip tool_result events for embedding (they're noisy)
+        if event.role == crate::event::Role::ToolResult {
+            continue;
+        }
+
+        let prefix = match event.role {
+            crate::event::Role::User => "user: ",
+            crate::event::Role::Assistant => "assistant: ",
+            crate::event::Role::System => "system: ",
+            crate::event::Role::ToolCall => "tool: ",
+            crate::event::Role::ToolResult => continue, // already skipped above
+        };
+
+        text.push_str(prefix);
+        text.push_str(&event.content);
+        text.push('\n');
+    }
+
+    text
+}
+
+/// Chunk session text into overlapping windows
+///
+/// Splits text into chunks of approximately `chunk_size_tokens` tokens
+/// with `chunk_overlap_tokens` overlap between adjacent chunks.
+pub fn chunk_session_text(
+    text: &str,
+    chunk_size_tokens: usize,
+    chunk_overlap_tokens: usize,
+) -> Vec<String> {
+    if text.is_empty() {
+        return Vec::new();
+    }
+
+    // Estimate character count from tokens (roughly 4 chars per token)
+    let chunk_size_chars = chunk_size_tokens * 4;
+    let overlap_chars = chunk_overlap_tokens * 4;
+
+    if text.len() <= chunk_size_chars {
+        return vec![text.to_string()];
+    }
+
+    let mut chunks = Vec::new();
+    let mut start = 0;
+
+    while start < text.len() {
+        let end = (start + chunk_size_chars).min(text.len());
+
+        // Find a word boundary near the end
+        let chunk_end = if end < text.len() {
+            text[end..]
+                .find(' ')
+                .map(|offset| end + offset)
+                .unwrap_or(end)
+        } else {
+            end
+        };
+
+        chunks.push(text[start..chunk_end].trim().to_string());
+
+        // Move start with overlap
+        start = chunk_end.saturating_sub(overlap_chars);
+
+        // Prevent infinite loop
+        if start >= chunk_end {
+            break;
+        }
+    }
+
+    chunks
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -20,13 +20,12 @@ fn open_file_maybe_zst(path: &Path) -> Result<Box<dyn BufRead>> {
 
     if path.extension().and_then(|s| s.to_str()) == Some("zst") {
         // Use streaming zstd decompression
-        let decoder = zstd::stream::read::Decoder::new(file).map_err(|e| {
-            AgentScribeError::Parse {
+        let decoder =
+            zstd::stream::read::Decoder::new(file).map_err(|e| AgentScribeError::Parse {
                 file: path.display().to_string(),
                 line: Some(0),
                 message: format!("Zstd decompression error: {}", e),
-            }
-        })?;
+            })?;
         Ok(Box::new(BufReader::new(decoder)))
     } else {
         Ok(Box::new(BufReader::new(file)))
@@ -374,7 +373,8 @@ mod tests {
         let path = temp_file.path().with_extension("jsonl.zst");
 
         // Create a compressed JSONL file
-        let original_content = b"{\"ts\": \"2026-03-16T12:00:00Z\", \"role\": \"user\", \"content\": \"Hello\"}\n";
+        let original_content =
+            b"{\"ts\": \"2026-03-16T12:00:00Z\", \"role\": \"user\", \"content\": \"Hello\"}\n";
         let compressed = zstd::bulk::compress(original_content, 3).unwrap();
         std::fs::write(&path, compressed).unwrap();
 
@@ -384,7 +384,13 @@ mod tests {
         // Verify we can read the decompressed content
         let mut reader = result.unwrap();
         let mut line = String::new();
-        assert!(reader.read_line(&mut line).is_ok(), "Should read a line from decompressed file");
-        assert!(line.contains("Hello"), "Decompressed content should contain original data");
+        assert!(
+            reader.read_line(&mut line).is_ok(),
+            "Should read a line from decompressed file"
+        );
+        assert!(
+            line.contains("Hello"),
+            "Decompressed content should contain original data"
+        );
     }
 }

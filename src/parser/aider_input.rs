@@ -42,8 +42,8 @@ pub struct AiderInputHistory {
 impl AiderInputHistory {
     /// Parse a .aider.input.history file
     pub fn load_from_file(path: &Path) -> Result<Self> {
-        let file = File::open(path)
-            .map_err(|_| AgentScribeError::FileNotFound(path.to_path_buf()))?;
+        let file =
+            File::open(path).map_err(|_| AgentScribeError::FileNotFound(path.to_path_buf()))?;
         let reader = BufReader::new(file);
 
         let mut entries = HashMap::new();
@@ -52,12 +52,11 @@ impl AiderInputHistory {
         let mut input_lines = Vec::new();
 
         // Pattern: # timestamp (ISO 8601 or similar)
-        let ts_re = Regex::new(r#"^#\s*(.+)$"#)
-            .map_err(|e| AgentScribeError::Parse {
-                file: path.display().to_string(),
-                line: None,
-                message: format!("Invalid timestamp regex: {}", e),
-            })?;
+        let ts_re = Regex::new(r#"^#\s*(.+)$"#).map_err(|e| AgentScribeError::Parse {
+            file: path.display().to_string(),
+            line: None,
+            message: format!("Invalid timestamp regex: {}", e),
+        })?;
 
         for (line_num, line_result) in reader.lines().enumerate() {
             let line = line_result.map_err(|e| AgentScribeError::Parse {
@@ -140,11 +139,11 @@ impl AiderInputHistory {
 
         // Try common formats
         let formats = [
-            "%Y-%m-%d %H:%M:%S%.f",     // 2026-03-16 12:00:00.123456
-            "%Y-%m-%d %H:%M:%S",        // 2026-03-16 12:00:00
-            "%Y-%m-%dT%H:%M:%S%.f",     // 2026-03-16T12:00:00.123456
-            "%Y-%m-%dT%H:%M:%S",        // 2026-03-16T12:00:00
-            "%Y-%m-%d %H:%M:%S%.f %Z",  // with timezone
+            "%Y-%m-%d %H:%M:%S%.f",    // 2026-03-16 12:00:00.123456
+            "%Y-%m-%d %H:%M:%S",       // 2026-03-16 12:00:00
+            "%Y-%m-%dT%H:%M:%S%.f",    // 2026-03-16T12:00:00.123456
+            "%Y-%m-%dT%H:%M:%S",       // 2026-03-16T12:00:00
+            "%Y-%m-%d %H:%M:%S%.f %Z", // with timezone
         ];
 
         for fmt in &formats {
@@ -225,7 +224,8 @@ mod tests {
         assert!(ts1.is_some());
 
         // Check second entry (multiline)
-        let ts2 = history.find_timestamp_for_input("Update the auth middleware\nAdd JWT validation");
+        let ts2 =
+            history.find_timestamp_for_input("Update the auth middleware\nAdd JWT validation");
         assert!(ts2.is_some());
 
         // Timestamps should be in order
@@ -272,7 +272,8 @@ mod tests {
 
     #[test]
     fn test_missing_file() {
-        let history = AiderInputHistory::load_from_file(Path::new("/nonexistent/.aider.input.history"));
+        let history =
+            AiderInputHistory::load_from_file(Path::new("/nonexistent/.aider.input.history"));
         assert!(history.is_err());
     }
 }

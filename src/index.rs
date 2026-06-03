@@ -415,13 +415,19 @@ fn load_antipattern_content(data_dir: &Path, session_id: &str) -> String {
         if line.trim().is_empty() {
             continue;
         }
-        if let Ok(pattern) = serde_json::from_str::<crate::enrichment::antipatterns::AntiPattern>(line) {
+        if let Ok(pattern) =
+            serde_json::from_str::<crate::enrichment::antipatterns::AntiPattern>(line)
+        {
             // Format: anti-pattern: <pattern description>
             anti_pattern_lines.push(format!("anti-pattern: {}", pattern.pattern));
             // Include working alternatives if available
             for (i, alt_summary) in pattern.working_alternative_summaries.iter().enumerate() {
                 if !alt_summary.is_empty() {
-                    anti_pattern_lines.push(format!("  working alternative {}: {}", i + 1, alt_summary));
+                    anti_pattern_lines.push(format!(
+                        "  working alternative {}: {}",
+                        i + 1,
+                        alt_summary
+                    ));
                 }
             }
         }
