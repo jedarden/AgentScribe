@@ -8,6 +8,7 @@ pub mod cli;
 pub mod config;
 pub mod daemon;
 pub mod digest;
+pub mod embedding;
 pub mod enrichment;
 pub mod error;
 pub mod event;

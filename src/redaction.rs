@@ -473,7 +473,11 @@ mod tests {
         for email in test_cases {
             let result = s.redact(email);
             assert!(!result.contains(email), "Email not redacted: {}", email);
-            assert!(result.contains("[EMAIL]"), "No [EMAIL] placeholder for: {}", email);
+            assert!(
+                result.contains("[EMAIL]"),
+                "No [EMAIL] placeholder for: {}",
+                email
+            );
         }
     }
 
@@ -559,7 +563,10 @@ mod tests {
         let result = s.redact(input);
 
         assert!(result.contains("[EMAIL]"), "Expected [EMAIL] placeholder");
-        assert!(!result.contains("test@example.com"), "Email should be redacted");
+        assert!(
+            !result.contains("test@example.com"),
+            "Email should be redacted"
+        );
         assert!(!result.contains("@"), "No @ symbol should remain");
     }
 
@@ -571,7 +578,10 @@ mod tests {
         let result = s.redact(input);
 
         assert!(result.contains("[EMAIL]"), "Expected [EMAIL] placeholder");
-        assert!(!result.contains("user.name@domain.co.uk"), "Email should be redacted");
+        assert!(
+            !result.contains("user.name@domain.co.uk"),
+            "Email should be redacted"
+        );
         assert!(!result.contains("@"), "No @ symbol should remain");
     }
 
@@ -583,7 +593,10 @@ mod tests {
         let result = s.redact(input);
 
         assert!(result.contains("[EMAIL]"), "Expected [EMAIL] placeholder");
-        assert!(!result.contains("user+tag@example.org"), "Email should be redacted");
+        assert!(
+            !result.contains("user+tag@example.org"),
+            "Email should be redacted"
+        );
         assert!(!result.contains("@"), "No @ symbol should remain");
     }
 
@@ -595,8 +608,14 @@ mod tests {
         let result = s.redact(input);
 
         assert!(result.contains("[EMAIL]"), "Expected [EMAIL] placeholder");
-        assert!(!result.contains("123user@example.com"), "First email should be redacted");
-        assert!(!result.contains("user456@test.io"), "Second email should be redacted");
+        assert!(
+            !result.contains("123user@example.com"),
+            "First email should be redacted"
+        );
+        assert!(
+            !result.contains("user456@test.io"),
+            "Second email should be redacted"
+        );
         assert!(!result.contains("@"), "No @ symbol should remain");
     }
 
@@ -608,7 +627,10 @@ mod tests {
         let result = s.redact(input);
 
         assert!(result.contains("[EMAIL]"), "Expected [EMAIL] placeholder");
-        assert!(!result.contains("admin@my-domain.com"), "Email should be redacted");
+        assert!(
+            !result.contains("admin@my-domain.com"),
+            "Email should be redacted"
+        );
         assert!(!result.contains("@"), "No @ symbol should remain");
     }
 
@@ -625,8 +647,16 @@ mod tests {
         for email in test_cases {
             let result = s.redact(email);
             assert!(result.contains("[EMAIL]"), "Expected [EMAIL] for {}", email);
-            assert!(!result.contains(email), "Email {} should be redacted", email);
-            assert!(!result.contains("@"), "No @ symbol should remain for {}", email);
+            assert!(
+                !result.contains(email),
+                "Email {} should be redacted",
+                email
+            );
+            assert!(
+                !result.contains("@"),
+                "No @ symbol should remain for {}",
+                email
+            );
         }
     }
 
@@ -638,7 +668,10 @@ mod tests {
         let result = s.redact(input);
 
         assert!(result.contains("[EMAIL]"), "Expected [EMAIL] placeholder");
-        assert!(!result.contains("user_name@example.com"), "Email should be redacted");
+        assert!(
+            !result.contains("user_name@example.com"),
+            "Email should be redacted"
+        );
         assert!(!result.contains("@"), "No @ symbol should remain");
     }
 
@@ -649,10 +682,23 @@ mod tests {
         let input = "Contact alice@example.com, bob@corp.co.uk, or carol@domain.org";
         let result = s.redact(input);
 
-        assert_eq!(result.matches("[EMAIL]").count(), 3, "Expected 3 [EMAIL] placeholders");
-        assert!(!result.contains("alice@example.com"), "First email should be redacted");
-        assert!(!result.contains("bob@corp.co.uk"), "Second email should be redacted");
-        assert!(!result.contains("carol@domain.org"), "Third email should be redacted");
+        assert_eq!(
+            result.matches("[EMAIL]").count(),
+            3,
+            "Expected 3 [EMAIL] placeholders"
+        );
+        assert!(
+            !result.contains("alice@example.com"),
+            "First email should be redacted"
+        );
+        assert!(
+            !result.contains("bob@corp.co.uk"),
+            "Second email should be redacted"
+        );
+        assert!(
+            !result.contains("carol@domain.org"),
+            "Third email should be redacted"
+        );
         assert!(!result.contains("@"), "No @ symbol should remain");
     }
 
@@ -664,7 +710,10 @@ mod tests {
         let result = s.redact(input);
 
         assert!(result.contains("[EMAIL]"), "Expected [EMAIL] placeholder");
-        assert!(!result.contains("test@example.com"), "Email should be redacted");
+        assert!(
+            !result.contains("test@example.com"),
+            "Email should be redacted"
+        );
     }
 
     /// Positive match test: Email at end of text
@@ -675,7 +724,10 @@ mod tests {
         let result = s.redact(input);
 
         assert!(result.contains("[EMAIL]"), "Expected [EMAIL] placeholder");
-        assert!(!result.contains("test@example.com"), "Email should be redacted");
+        assert!(
+            !result.contains("test@example.com"),
+            "Email should be redacted"
+        );
     }
 
     /// Positive match test: Email with subdomain in domain
@@ -686,7 +738,10 @@ mod tests {
         let result = s.redact(input);
 
         assert!(result.contains("[EMAIL]"), "Expected [EMAIL] placeholder");
-        assert!(!result.contains("user@sub.domain.example.com"), "Email should be redacted");
+        assert!(
+            !result.contains("user@sub.domain.example.com"),
+            "Email should be redacted"
+        );
         assert!(!result.contains("@"), "No @ symbol should remain");
     }
 

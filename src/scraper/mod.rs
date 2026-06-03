@@ -123,18 +123,12 @@ impl Scraper {
     /// This reads the companion index file (if configured) and looks up metadata
     /// for the given session ID. Returns None if no companion index is configured
     /// or the session is not found.
-    fn load_companion_metadata(
-        &self,
-        session_id: &str,
-        plugin: &Plugin,
-    ) -> Result<Option<Value>> {
+    fn load_companion_metadata(&self, session_id: &str, plugin: &Plugin) -> Result<Option<Value>> {
         if let Some(ref metadata_config) = plugin.metadata {
             if let Some(ref companion_path) = metadata_config.companion_index {
                 // Expand ~ and environment variables
                 let expanded = shellexpand::full(companion_path)
-                    .map_err(|e| {
-                        AgentScribeError::Glob(format!("Path expansion error: {}", e))
-                    })?;
+                    .map_err(|e| AgentScribeError::Glob(format!("Path expansion error: {}", e)))?;
 
                 let path = PathBuf::from(expanded.as_ref());
 

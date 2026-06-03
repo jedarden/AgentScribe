@@ -9,9 +9,9 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
+use crate::enrichment::solution;
 use crate::event::{Event, Role, SessionManifest};
 use crate::scraper::Scraper;
-use crate::enrichment::solution;
 
 /// A detected anti-pattern with its rejection window and alternatives.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -70,7 +70,10 @@ pub fn detect_antipatterns(
             error_fingerprints: fps,
             session_ids: vec![manifest.session_id.clone()],
             alternative_session_ids: alternatives.iter().map(|(id, _)| id.clone()).collect(),
-            working_alternative_summaries: alternatives.into_iter().map(|(_, summary)| summary.unwrap_or_default()).collect(),
+            working_alternative_summaries: alternatives
+                .into_iter()
+                .map(|(_, summary)| summary.unwrap_or_default())
+                .collect(),
         });
     }
 
@@ -96,7 +99,10 @@ pub fn detect_antipatterns(
             error_fingerprints: fps,
             session_ids: vec![manifest.session_id.clone()],
             alternative_session_ids: alternatives.iter().map(|(id, _)| id.clone()).collect(),
-            working_alternative_summaries: alternatives.into_iter().map(|(_, summary)| summary.unwrap_or_default()).collect(),
+            working_alternative_summaries: alternatives
+                .into_iter()
+                .map(|(_, summary)| summary.unwrap_or_default())
+                .collect(),
         });
     }
 
