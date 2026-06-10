@@ -41,10 +41,26 @@ Every coding agent stores its conversation history differently — JSONL, Markdo
 - **Fields:** role, cost, tokens, timestamps; parts contain text, tool calls, tool results
 
 ### Codex (OpenAI)
-- **Location:** `~/.codex/sessions/YYYY/MM/DD/rollout-{session_id}.jsonl` (may be `.jsonl.zst`)
-- **Format:** JSONL, one event per line
-- **Schema:** Line 1 is `RolloutLine::Meta` with `{thread_id, cwd, model}`, subsequent lines are `RolloutLine::Item` events
-- **Note:** Internal format, subject to change; ephemeral mode writes no file
+- **Location:** `~/.codex/sessions/YYYY/MM/DD/rollout-{timestamp}-{uuid}.jsonl` (may be `.jsonl.zst`)
+- **Format:** JSONL, one envelope per line: `{timestamp, type, payload}`
+- **Schema:** Line 1 is `type: "session_meta"` (`payload: {id, cwd, cli_version, instructions, git}`); subsequent lines are `type: "response_item"` (`payload.type: "message"` with `role` + `content[]` blocks of `input_text`/`output_text`, or `function_call`/`function_call_output` for tool use), `type: "turn_context"` (`payload.model`), and `type: "event_msg"` noise
+- **Companion:** `~/.codex/history.jsonl` (cross-session user-prompt history)
+- **Note:** Internal format, subject to change; ephemeral mode writes no file. **The bundled v1.0 plugin maps a flat `{time, role, content}` shape that real rollouts do not use — fixed in Phase 9 via envelope unwrapping.**
+
+### Pi (badlogic/pi-mono)
+- **Location:** `~/.pi/agent/sessions/<path-encoded-project>/<timestamp>-<uuid>.jsonl` (layout mirrors Claude Code: one JSONL file per session, project dir path-encoded)
+- **Format:** JSONL, one event per line; first line is a session header, subsequent lines are messages with `role`/`content` and tool-call records
+- **Note:** No install present on this machine — field names must be verified against a real `~/.pi` tree before the plugin ships (Phase 9 bead includes this verification step)
+
+### Gemini CLI
+- **Location:** `~/.gemini/tmp/<project-hash>/logs.json` (rolling message log) and `~/.gemini/tmp/<project-hash>/chats/*.json` (saved checkpoints)
+- **Format:** Single JSON file containing an **array** of message objects (`{sessionId, messageId, type, message, timestamp}`) — not JSONL; requires the Phase 9 `json-array` format
+- **Note:** Project identity is a hash directory, not a path — project detection needs the checkpoint metadata or falls back to unknown
+
+### Goose
+- **Location:** `~/.local/share/goose/sessions/*.jsonl`
+- **Format:** JSONL; line 1 is session metadata (`{working_dir, description, ...}`), subsequent lines are messages with `role` + `content[]` blocks
+- **Note:** Fits the existing `jsonl` format with event expansion; no install present locally — verify field names before shipping
 
 ### Cursor
 - **Location:** `~/.config/Cursor/User/globalStorage/state.vscdb` + `workspaceStorage/{hash}/state.vscdb`
@@ -1539,6 +1555,93 @@ Research note: `turbovec` implements Google Research's TurboQuant algorithm (arX
 **Important:** The chunk index grows with corpus size and will eventually dominate memory. Mitigation: load the chunk index only during `context` and `search --semantic` queries; drop it when idle (same mmap-on-demand pattern as Tantivy segments). Session-level index (smaller) stays resident.
 
 An alternative: skip the chunk index and use session-level only. For a 500K-session corpus this recovers 80%+ of the chunk-level recall benefit at 1/6th the memory. Make chunk indexing opt-in via `[vector] index_chunks = false` (default until memory budget is re-evaluated).
+
+---
+
+## Phase 9: Universal Transcript Ingestion — Plugin Coverage & Hardening
+
+The plugin architecture (Phases 1 and 5) is real and working: declarative TOML manifests, four format parsers (`jsonl`, `markdown`, `json-tree`, `sqlite`), three session-detection strategies, incremental byte-offset tailing, and bundled plugins for Claude Code, Aider, OpenCode, Codex, Cursor, and Windsurf. Phase 9 closes the gap between *architecture* and *coverage*: the Codex plugin maps a flat schema that real rollout files do not use (its fixtures are synthetic), Pi / Gemini CLI / Goose have no plugins at all, Gemini's log format cannot be expressed in any existing format parser, and the Aider input-history parser (`src/parser/aider_input.rs`) is dead code. After Phase 9, every major local coding agent's transcripts ingest correctly from real on-disk files, proven by real-format fixtures.
+
+### Plugin Manifest Schema — Recap and Extensions
+
+The manifest (`src/plugin.rs`) already covers the five concerns a transcript plugin needs. Phase 9 adds two extensions (marked **new**):
+
+| Concern | Mechanism | Status |
+|---------|-----------|--------|
+| **Discovery** | `[source] paths` glob list + `exclude`, `~`/env expansion | exists |
+| **Format** | `format = "jsonl" \| "markdown" \| "json-tree" \| "sqlite"` | exists |
+| | `format = "json-array"` — single JSON file containing an array of message objects | **new** |
+| **Field mapping** | `[parser]` dot-path mapping to the canonical event schema (`timestamp`, `role`, `content`, `tool_name`, `tokens_*`), `role_map`, `include/exclude_types`, `static_fields`, project/model detection | exists |
+| | `[source.envelope]` — declarative unwrapping of `{timestamp, type, payload}` JSONL envelopes before field mapping (`payload_field`, `type_field`, `type_routing` map) | **new** |
+| **Multi-turn reconstruction** | session detection (`one-file-per-session`, `timestamp-gap`, `delimiter`), `[source.tree]` ordering fields, SQLite `rowid` ordering, parser-side event expansion for compound events | exists |
+| **Incremental tailing** | scrape state (`src/scraper/state.rs`) — per-file byte offsets for jsonl, delimiter offsets for markdown, `truncation_limit` full-rescan for rolling-window stores | exists |
+
+Design principle unchanged from Phase 1: **the TOML maps simple fields; structural transformations are parser code.** `[source.envelope]` is deliberately minimal — it unwraps one level of nesting and routes on a type field. Splitting Codex `content[]` block arrays or `function_call`/`function_call_output` pairs into atomic canonical events is event-expansion logic in `src/parser/jsonl.rs`, exactly like the existing Claude Code `tool_use` handling.
+
+### `json-array` Format Parser
+
+New `src/parser/json_array.rs` for agents that write one JSON document containing an array of messages (Gemini CLI's `logs.json`). Configuration:
+
+```toml
+[source]
+format = "json-array"
+
+[source.array]
+items_path = ""          # dot-path to the array within the document ("" = document root)
+
+[parser]
+timestamp = "timestamp"
+role = "type"
+content = "message"
+```
+
+Session detection works as for other formats — Gemini uses `session_id_from = "field"` on `sessionId`. Incremental tailing for `json-array` falls back to mtime-based full reparse of the file (the array is rewritten in place, so byte offsets are meaningless); per-event dedup uses the existing scrape-state event keys.
+
+### Envelope Unwrapping for JSONL
+
+```toml
+# plugins/codex.toml (v2.0)
+[source.envelope]
+payload_field = "payload"      # unwrap this object as the event body
+type_field = "type"            # envelope-level type discriminator
+type_routing = { session_meta = "meta", response_item = "event", turn_context = "meta", event_msg = "skip" }
+```
+
+- `"event"` routes → field mapping (with envelope-level fields like `timestamp` still addressable via `^timestamp`)
+- `"meta"` routes → session-level metadata accumulation (cwd → project, model, version)
+- `"skip"` routes → dropped
+
+### First-Party Plugin Work
+
+| Plugin | Work |
+|--------|------|
+| **codex** (fix) | Rewrite `plugins/codex.toml` against real rollout format using envelope unwrapping; parser-side expansion of `message.content[]`, `function_call` → `tool_call`, `function_call_output` → `tool_result`; model from `turn_context`/`session_meta` (drop the hardcoded `gpt-4` static); project from `session_meta.payload.cwd`. Replace synthetic fixtures with sanitized real-format captures. |
+| **pi** (new) | `plugins/pi.toml` — `~/.pi/agent/sessions/**/*.jsonl`, one-file-per-session. **First step of the bead: verify the real on-disk schema** (no local install; layout believed to mirror Claude Code). |
+| **gemini-cli** (new) | `plugins/gemini-cli.toml` — `json-array` format over `~/.gemini/tmp/*/logs.json` + `chats/*.json` checkpoints; session from `sessionId` field. |
+| **goose** (new) | `plugins/goose.toml` — `~/.local/share/goose/sessions/*.jsonl`, line-1 metadata (working_dir → project), `content[]` expansion. Schema verification step included. |
+| **aider** (harden) | Recursive discovery globs (`~/**/.aider.chat.history.md` with sane excludes — current globs miss repos nested deeper than one level); wire `src/parser/aider_input.rs` (`.aider.input.history` timestamps improve session boundaries) or delete it; optional `companion_index`-style consumption of `~/.aider.analytics.jsonl` for model/token metadata. |
+
+### Testing Strategy
+
+- **Fixture transcripts per format** under `tests/fixtures/<agent>/`, captured from real installs and sanitized (the provenance rule: every bundled plugin's fixtures must match the agent's *actual* current output — the Codex lesson). Each agent gets at minimum: one multi-turn session with tool use, one edge case (empty session, malformed line, truncated write).
+- **Conformance suite** `tests/plugin_conformance.rs`, parameterized over every bundled plugin: (1) `plugins validate` passes; (2) fixture parses to the expected canonical event sequence — roles, ordering, tool pairing, project/model detection asserted; (3) multi-turn reconstruction — events come out in conversation order; (4) incremental tailing — append events to a fixture copy, rescrape, assert only the new events are emitted (or full-rescan correctness for `json-array`/`truncation_limit` sources).
+- CI (`agentscribe-ci` on iad-ci) runs the suite via the existing `cargo test` path; fmt + clippy as today.
+
+### Publishing
+
+- `plugins/BUILDING_PLUGINS.md`: document `json-array` and `[source.envelope]`, refresh the format reference and the walkthrough, add a "capturing fixtures from a real install" section to the community contribution workflow.
+- `README.md`: supported-agents matrix (agent → format → plugin → status).
+- `CHANGELOG.md` + GitHub Release via `agentscribe-ci` with release notes naming the newly supported agents and the Codex fix (breaking for anyone who scraped with the broken v1.0 mapping — note that a re-scrape of `~/.codex/sessions` is recommended).
+- `docs/plan.md` Known Sources section kept current (done in this phase).
+
+### Agent-Facing Search Contract (NEEDLE Integration)
+
+NEEDLE Phase 4 learning consumes AgentScribe pre-dispatch: `agentscribe search --error <fingerprint> --json` and `agentscribe search --anti-patterns --json`. Both flags exist today; what's missing is a **stability guarantee**. Phase 9 scope (AgentScribe side only):
+
+- Document the `search --json` output schema (field names, types, nullability) in `docs/cli-reference.md` as a **stable contract**: fields may be added, never renamed/removed/retyped without a major version bump.
+- Exit-code contract: `0` = results, `0` with empty `results[]` = no matches (never an error), non-zero only for real failures — callers can fire-and-forget.
+- A schema snapshot test (`tests/search_contract.rs`) that fails CI if the JSON shape drifts.
+- Mirror the same guarantee on the MCP `agentscribe_search` tool (already a thin wrapper over the same code path).
 
 ---
 
