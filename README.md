@@ -22,12 +22,14 @@ Add new agents by writing a single TOML file — no code changes needed. See the
 - **Multi-agent archival** — Scrape and normalize conversations from any supported agent into a canonical JSONL format
 - **Incremental scraping** — Tracks file offsets; only processes new data on each run
 - **Full-text search** — BM25-ranked search with fuzzy matching, faceted filters, "more like this", and code search
+- **Semantic vector search** — Embedding-based similarity search using quantized vector indexes (4-bit quantization via turbovec); finds related sessions even when exact terms don't match
 - **Intelligence pipeline** — Outcome detection, solution extraction, error fingerprinting, anti-pattern detection
 - **Cross-agent analytics** — Compare success rates, specialization, cost efficiency across agents
 - **Recurring problems** — Detect errors that happen repeatedly, with links to sessions that fixed them
 - **Auto-generated rules** — Extract project conventions from past sessions into CLAUDE.md / .cursorrules / .aider.conf.yml
 - **Activity digests** — Weekly summaries of agent activity, recurring problems, and trends
 - **Background daemon** — Watches for new log data and scrapes automatically
+- **MCP server** — Exposes search and blame as Model Context Protocol tools over a Unix socket, so agents can query their own history during a session
 - **Plugin system** — Add support for new agents with a declarative TOML config
 
 ## Installation
@@ -37,9 +39,17 @@ Add new agents by writing a single TOML file — no code changes needed. See the
 Requires Rust 1.75+ and a C compiler (for `libsqlite3-sys`).
 
 ```bash
-git clone https://github.com/coding/AgentScribe.git
+git clone https://github.com/jedarden/AgentScribe.git
 cd AgentScribe
 cargo install --path .
+```
+
+Alternatively, use the bundled install script:
+
+```bash
+git clone https://github.com/jedarden/AgentScribe.git
+cd AgentScribe
+./install.sh
 ```
 
 ### Shell completions
@@ -112,6 +122,40 @@ Agent Logs (JSONL, Markdown, JSON-tree, SQLite)
    │    Search    │  Full-text, error lookup, code search,
    │              │  "more like this", session retrieval
    └─────────────┘
+```
+
+### MCP Server
+
+When the daemon is running, it can also expose a Model Context Protocol server over a Unix socket. This lets agents (Claude Code, Cursor, etc.) call AgentScribe tools directly during a session — searching past conversations or tracing which sessions touched a given file.
+
+Enable in `~/.agentscribe/config.toml`:
+
+```toml
+[daemon]
+mcp_enabled = true
+mcp_socket_path = "~/.agentscribe/mcp.sock"
+```
+
+Four MCP tools are exposed:
+
+| Tool | Description |
+|------|-------------|
+| `agentscribe_search` | Full-text and faceted search across all archived sessions |
+| `agentscribe_status` | Plugin list, session counts, daemon state, index stats |
+| `agentscribe_blame` | Given a file path (and optional line), find sessions that touched it |
+| `agentscribe_file` | Chronological session list for a file path |
+
+Connect via any MCP-compatible client:
+
+```json
+{
+  "mcpServers": {
+    "agentscribe": {
+      "command": "agentscribe",
+      "args": ["mcp", "--socket", "~/.agentscribe/mcp.sock"]
+    }
+  }
+}
 ```
 
 ### Data Directory Layout
