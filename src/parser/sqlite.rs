@@ -44,7 +44,7 @@ impl SqliteParser {
         match row.get::<_, String>(col_idx) {
             Ok(text) => {
                 // Check if this looks like JSON (starts with '{' or '[')
-                let is_likely_json = text.chars().next().map_or(false, |c| c == '{' || c == '[');
+                let is_likely_json = text.chars().next().is_some_and(|c| c == '{' || c == '[');
                 if !is_likely_json {
                     // Text doesn't look like JSON - could be a text-stored protobuf
                     // Check if the original bytes were valid UTF-8 by trying to get as blob
@@ -550,6 +550,7 @@ mod tests {
                 },
                 tree: None,
                 truncation_limit: None,
+                envelope: None,
             },
             parser: Parser {
                 query: Some(query.to_string()),
