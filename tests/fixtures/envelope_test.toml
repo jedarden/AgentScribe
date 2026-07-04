@@ -1,0 +1,36 @@
+# Envelope Test Plugin
+# Matches envelope_test.jsonl fixture schema
+
+[plugin]
+name = "envelope-test"
+version = "1.0"
+
+[source]
+paths = ["tests/fixtures/envelope_test.jsonl"]
+format = "jsonl"
+
+[source.session_detection]
+method = "one-file-per-session"
+session_id_from = "filename"
+
+[source.envelope]
+type_field = "type"
+payload_field = "payload"
+
+# Type routing: process messages and session, skip heartbeats and pings
+[source.envelope.type_routing]
+"message" = "event"
+"session" = "meta"
+"heartbeat" = "skip"
+"ping" = "skip"
+
+[parser]
+# Envelope fields (use ^ prefix)
+timestamp = "^timestamp"
+
+# Message fields (from payload)
+role = "payload.role"
+content = "payload.content"
+
+[parser.static]
+source_agent = "envelope-test"
