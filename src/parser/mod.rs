@@ -2,14 +2,12 @@
 //!
 //! Each format has a dedicated parser that normalizes events to the canonical schema.
 
-mod aider_input;
 mod json_array;
 mod json_tree;
 mod jsonl;
 mod markdown;
 mod sqlite;
 
-pub use aider_input::{AiderInputEntry, AiderInputHistory};
 pub use json_array::JsonArrayParser;
 pub use json_tree::JsonTreeParser;
 pub use jsonl::JsonlParser;
@@ -139,7 +137,11 @@ pub fn parse_timestamp(value: &Value, path: &str) -> Result<DateTime<Utc>> {
 /// - Supports dot notation for nested fields (e.g., `^outer.ts` or `user.role`)
 /// - If envelope is None but path starts with `^`, returns None
 /// - If envelope is None, falls back to payload extraction
-pub fn extract_with_envelope(path: &str, payload: &Value, envelope: Option<&Value>) -> Option<Value> {
+pub fn extract_with_envelope(
+    path: &str,
+    payload: &Value,
+    envelope: Option<&Value>,
+) -> Option<Value> {
     if path.starts_with('^') {
         // Extract from envelope
         let envelope_path = &path[1..]; // Remove the ^ prefix
@@ -153,6 +155,66 @@ pub fn extract_with_envelope(path: &str, payload: &Value, envelope: Option<&Valu
         // Extract from payload
         extract_field(payload, path)
     }
+}
+
+/// Extract a string field from either envelope or payload based on path prefix
+///
+/// Wrapper around `extract_with_envelope` that converts the raw `Value` to a string,
+/// following the same coercion rules as `extract_string` (String, Number, Bool, Null).
+pub fn extract_string_with_envelope(
+    path: &str,
+    payload: &Value,
+    envelope: Option<&Value>,
+) -> Option<String> {
+    let value = extract_with_envelope(path, payload, envelope)?;
+    match value {
+        Value::String(s) => Some(s),
+        Value::Number(n) => Some(n.to_string()),
+        Value::Bool(b) => Some(b.to_string()),
+        Value::Null => Some(String::new()),
+        _ => None,
+    }
+}
+
+/// Parse a timestamp from either envelope or payload based on path prefix
+///
+/// Wrapper around `extract_string_with_envelope` that parses the extracted string
+/// as a timestamp. Supports ISO 8601, Unix epoch (seconds/milliseconds), and
+/// UTC-naive formats.
+pub fn parse_timestamp_with_envelope(
+    path: &str,
+    payload: &Value,
+    envelope: Option<&Value>,
+) -> Result<DateTime<Utc>> {
+    let ts_str = extract_string_with_envelope(path, payload, envelope)
+        .ok_or_else(|| AgentScribeError::Timestamp(format!("Field '{}' not found", path)))?;
+
+    // Try ISO 8601 first
+    if let Ok(dt) = DateTime::parse_from_rfc3339(&ts_str) {
+        return Ok(dt.with_timezone(&Utc));
+    }
+
+    // Try parsing as Unix epoch (seconds)
+    if let Ok(seconds) = ts_str.parse::<i64>() {
+        let ts = if seconds > 1_000_000_000_000 {
+            // Milliseconds
+            DateTime::from_timestamp_millis(seconds)
+        } else {
+            // Seconds
+            DateTime::from_timestamp(seconds, 0)
+        };
+        return ts.ok_or_else(|| AgentScribeError::Timestamp("Invalid timestamp".to_string()));
+    }
+
+    // Try parsing without timezone (assume UTC)
+    if let Ok(dt) = ts_str.parse::<DateTime<Utc>>() {
+        return Ok(dt);
+    }
+
+    Err(AgentScribeError::Timestamp(format!(
+        "Cannot parse timestamp: {}",
+        ts_str
+    )))
 }
 
 /// Base trait for all format parsers
