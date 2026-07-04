@@ -416,6 +416,28 @@ enum Commands {
         #[arg(long, default_value = "html")]
         format: String,
     },
+    /// Export sessions with behavioral metadata for reflection analysis
+    Reflect {
+        #[command(subcommand)]
+        action: ReflectAction,
+    },
+    /// Add a tag annotation to a session
+    Annotate {
+        /// Session ID to annotate (format: <agent>/<session-id>)
+        session_id: String,
+
+        /// Tag to apply to the session
+        #[arg(long)]
+        tag: String,
+
+        /// Optional note explaining the annotation
+        #[arg(long)]
+        note: Option<String>,
+
+        /// Source of the annotation (default: human)
+        #[arg(long)]
+        created_by: Option<String>,
+    },
 }
 
 /// Config subcommands
@@ -545,6 +567,45 @@ enum DaemonAction {
     Install,
     /// Remove systemd user service unit
     Uninstall,
+}
+
+/// Reflect subcommands
+#[derive(Subcommand, Debug)]
+enum ReflectAction {
+    /// Export sessions with behavioral metadata for reflection analysis
+    Sessions {
+        /// Only include sessions after this timestamp (ISO 8601, or relative like 7d, 30d)
+        #[arg(long)]
+        since: Option<String>,
+
+        /// Only include sessions from this project path
+        #[arg(long)]
+        project: Option<String>,
+
+        /// Only include sessions with this outcome
+        #[arg(long)]
+        outcome: Option<String>,
+
+        /// Only include sessions where agent modified config files
+        #[arg(long)]
+        modified_config_only: bool,
+
+        /// Only include sessions where agent read config files
+        #[arg(long)]
+        read_config_only: bool,
+
+        /// Maximum number of sessions to return
+        #[arg(short = 'n', long)]
+        limit: Option<usize>,
+
+        /// Filter by annotation tags (AND logic: all tags must be present)
+        #[arg(short = 't', long)]
+        tags: Vec<String>,
+
+        /// JSON output (machine-readable schema)
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 /// Table row for plugin list output
@@ -705,6 +766,13 @@ pub fn run() -> Result<()> {
             output,
             format,
         } => run_render(session_id, output, format),
+        Commands::Reflect { action } => run_reflect(action),
+        Commands::Annotate {
+            session_id,
+            tag,
+            note,
+            created_by,
+        } => run_annotate(session_id, tag, note, created_by),
         Commands::Completions { shell } => {
             let mut cmd = Args::command();
             generate(shell, &mut cmd, "agentscribe", &mut io::stdout());
@@ -1350,6 +1418,7 @@ fn run_index_rebuild(
                 &agent_name,
                 first.project.as_deref(),
                 first.model.as_deref(),
+                None,
             );
 
             match manager.index_session(&events, &manifest) {
@@ -2587,6 +2656,7 @@ fn run_summarize(
             agent,
             events.first().and_then(|e| e.project.as_deref()),
             events.first().and_then(|e| e.model.as_deref()),
+            None,
         );
         let summary = crate::enrichment::generate_summary(&events, &manifest);
 
@@ -2624,6 +2694,7 @@ fn run_summarize(
                 agent,
                 events.first().and_then(|e| e.project.as_deref()),
                 events.first().and_then(|e| e.model.as_deref()),
+                None,
             );
 
             // Apply filters
@@ -2772,6 +2843,41 @@ fn read_session_events(
     }
 
     Ok(events)
+}
+
+/// Run annotate command: add a tag annotation to a session.
+fn run_annotate(
+    session_id: String,
+    tag: String,
+    note: Option<String>,
+    created_by: Option<String>,
+) -> Result<()> {
+    let config = load_config()?;
+    let data_dir = config.data_dir()?;
+
+    if !data_dir.exists() {
+        eprintln!("AgentScribe not initialized. Run 'agentscribe config init' to set up.");
+        std::process::exit(1);
+    }
+
+    // Validate session_id format (must contain '/' separator)
+    if !session_id.contains('/') {
+        eprintln!("Error: session-id must be in format <agent>/<session-id>");
+        eprintln!("Example: claude-code/abc123");
+        std::process::exit(1);
+    }
+
+    let sessions_dir = data_dir.join("sessions");
+
+    // Create the annotation
+    let annotation = crate::annotations::new_annotation(tag.clone(), note, created_by);
+
+    // Add the annotation to the session's sidecar file
+    crate::annotations::add_annotation(&sessions_dir, &session_id, annotation)?;
+
+    println!("Annotated {} with tag {}", session_id, tag);
+
+    Ok(())
 }
 
 /// Collect all session IDs by walking the sessions directory.
@@ -3273,6 +3379,115 @@ fn run_render(session_id: String, output: Option<PathBuf>, format: String) -> Re
         eprintln!("Rendered session '{}' to {}", session_id, path.display());
     } else {
         print!("{}", content);
+    }
+
+    Ok(())
+}
+
+/// Run reflect command: export sessions with behavioral metadata for reflection analysis
+fn run_reflect(action: ReflectAction) -> Result<()> {
+    let config = load_config()?;
+    let data_dir = config.data_dir()?;
+
+    if !data_dir.exists() {
+        eprintln!("AgentScribe not initialized. Run 'agentscribe config init' to set up.");
+        std::process::exit(1);
+    }
+
+    match action {
+        ReflectAction::Sessions {
+            since,
+            project,
+            outcome,
+            modified_config_only,
+            read_config_only,
+            limit,
+            tags,
+            json,
+        } => run_reflect_sessions(
+            &data_dir,
+            since,
+            project,
+            outcome,
+            modified_config_only,
+            read_config_only,
+            limit,
+            tags,
+            json,
+        ),
+    }
+}
+
+/// Run reflect sessions subcommand
+fn run_reflect_sessions(
+    data_dir: &std::path::Path,
+    since: Option<String>,
+    project: Option<String>,
+    outcome: Option<String>,
+    modified_config_only: bool,
+    read_config_only: bool,
+    limit: Option<usize>,
+    tags: Vec<String>,
+    json: bool,
+) -> Result<()> {
+    use crate::reflect::{export_reflect_sessions, parse_since_duration, ReflectFilter};
+
+    let sessions_dir = data_dir.join("sessions");
+    if !sessions_dir.exists() {
+        eprintln!("No sessions directory found. Run 'agentscribe scrape' first.");
+        std::process::exit(1);
+    }
+
+    // Parse since duration if provided
+    let since_dt = since
+        .map(|s| parse_since_duration(&s))
+        .transpose()
+        .map_err(|e| crate::error::AgentScribeError::Reflection(format!("{}", e)))?;
+
+    // Load all sessions
+    let sessions = crate::scraper::load_all_sessions(&sessions_dir)?;
+
+    // Build filter
+    let filter = ReflectFilter {
+        since: since_dt,
+        project,
+        outcome,
+        modified_config_only,
+        read_config_only,
+        limit,
+        tags,
+    };
+
+    // Export with behavioral metadata
+    let results = export_reflect_sessions(data_dir, &sessions, &filter)
+        .map_err(|e| crate::error::AgentScribeError::Reflection(format!("{}", e)))?;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&results).unwrap());
+    } else {
+        // Human-readable output
+        println!("Reflection sessions export: {} sessions", results.len());
+        for session in &results {
+            println!(
+                "  - {} ({}) - {} - {} turns",
+                session.session_id,
+                session.agent,
+                session.outcome,
+                session.duration_secs / 60
+            );
+            if let Some(ref proj) = session.project {
+                println!("    Project: {}", proj);
+            }
+            if let Some(ref summary) = session.summary {
+                println!("    Summary: {}", summary);
+            }
+            if !session.tags.is_empty() {
+                println!("    Tags: {}", session.tags.join(", "));
+            }
+            if !session.error_fingerprints.is_empty() {
+                println!("    Errors: {}", session.error_fingerprints.join(", "));
+            }
+        }
     }
 
     Ok(())
