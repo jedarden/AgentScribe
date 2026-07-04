@@ -1,0 +1,10 @@
+{"type":"session","version":3,"id":"sess-001","timestamp":"2025-01-15T09:00:00.000Z","message":{"cwd":"/home/user/project"}}
+{"type":"message","id":"m-001","parentId":null,"timestamp":"2025-01-15T09:00:01.000Z","message":{"role":"user","content":"Help me refactor the authentication module","timestamp":1736920801000}}
+{"type":"message","id":"m-002","parentId":"m-001","timestamp":"2025-01-15T09:00:02.000Z","message":{"role":"assistant","content":[{"type":"text","text":"I'll help you refactor the authentication module."},{"type":"toolCall","id":"call-001","name":"bash","arguments":{"command":"find src -name '*auth*' -type f"}}],"model":"claude-sonnet-4-5","provider":"anthropic","timestamp":1736920802000}}
+{"type":"model_change","id":"mc-001","timestamp":"2025-01-15T09:00:03.000Z","message":{"model":"claude-opus-4-8","provider":"anthropic","reason":"upgrade"}}
+{"type":"message","id":"m-003","parentId":"m-002","timestamp":"2025-01-15T09:00:04.000Z","message":{"role":"toolResult","toolCallId":"call-001","toolName":"bash","content":[{"type":"text","text":"src/auth/mod.rs\nsrc/auth/jwt.rs\nsrc/auth/middleware.rs"}],"isError":false,"timestamp":1736920804000}}
+{"type":"message","id":"m-004","parentId":"m-003","timestamp":"2025-01-15T09:00:05.000Z","message":{"role":"assistant","content":"Found 3 authentication files. I'll refactor them to use JWT tokens.","model":"claude-opus-4-8","provider":"anthropic","timestamp":1736920805000}}
+{"type":"compaction","id":"cmp-001","timestamp":"2025-01-15T09:00:06.000Z","message":{"summary":"Earlier conversation compacted to save context tokens."}}
+{"type":"message","id":"m-005","parentId":"m-004","timestamp":"2025-01-15T09:00:07.000Z","message":{"role":"user","content":"Add unit tests for the JWT module","timestamp":1736920807000}}
+{"type":"label","id":"lbl-001","timestamp":"2025-01-15T09:00:08.000Z","message":{"label":"refactoring","color":"blue"}}
+{"type":"message","id":"m-006","parentId":"m-005","timestamp":"2025-01-15T09:00:09.000Z","message":{"role":"assistant","content":"I'll add comprehensive unit tests for the JWT module.","model":"claude-opus-4-8","provider":"anthropic","timestamp":1736920809000}}
