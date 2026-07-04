@@ -59,7 +59,8 @@ pub fn compute_behavioral_signals(events: &[Event]) -> BehavioralSignals {
     let mut config_reads: Vec<String> = Vec::new();
     let mut config_modifies: Vec<String> = Vec::new();
     let mut config_read_seen: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let mut config_modify_seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut config_modify_seen: std::collections::HashSet<String> =
+        std::collections::HashSet::new();
     let mut total_turns: u32 = 0;
     let mut assistant_turns: u32 = 0;
     let mut last_cwd: Option<String> = None;
@@ -375,8 +376,12 @@ mod tests {
             make_tool_call("Edit", json!({"file_path": "/project/src/lib.rs"})),
         ];
         let signals = compute_behavioral_signals(&events);
-        assert!(signals.multi_edit_files.contains(&"/project/src/main.rs".to_string()));
-        assert!(!signals.multi_edit_files.contains(&"/project/src/lib.rs".to_string()));
+        assert!(signals
+            .multi_edit_files
+            .contains(&"/project/src/main.rs".to_string()));
+        assert!(!signals
+            .multi_edit_files
+            .contains(&"/project/src/lib.rs".to_string()));
     }
 
     #[test]
@@ -384,15 +389,27 @@ mod tests {
         let events = vec![
             make_tool_call("Read", json!({"file_path": "/project/CLAUDE.md"})),
             make_tool_call("Read", json!({"file_path": "/project/src/main.rs"})),
-            make_tool_call("Read", json!({"file_path": "/project/.claude/settings.json"})),
+            make_tool_call(
+                "Read",
+                json!({"file_path": "/project/.claude/settings.json"}),
+            ),
             make_tool_call("Read", json!({"file_path": "/project/memory/team.md"})),
         ];
         let signals = compute_behavioral_signals(&events);
-        assert!(signals.read_config_files.contains(&"/project/CLAUDE.md".to_string()));
-        assert!(signals.read_config_files.contains(&"/project/.claude/settings.json".to_string()));
-        assert!(signals.read_config_files.contains(&"/project/memory/team.md".to_string()));
+        assert!(signals
+            .read_config_files
+            .contains(&"/project/CLAUDE.md".to_string()));
+        assert!(signals
+            .read_config_files
+            .contains(&"/project/.claude/settings.json".to_string()));
+        assert!(signals
+            .read_config_files
+            .contains(&"/project/memory/team.md".to_string()));
         // src/main.rs is NOT a config file
-        assert!(!signals.read_config_files.iter().any(|f| f.contains("src/main.rs")));
+        assert!(!signals
+            .read_config_files
+            .iter()
+            .any(|f| f.contains("src/main.rs")));
     }
 
     #[test]
@@ -402,8 +419,12 @@ mod tests {
             make_tool_call("Edit", json!({"file_path": "/project/CLAUDE.md"})),
         ];
         let signals = compute_behavioral_signals(&events);
-        assert!(signals.modified_config_files.contains(&"/project/AGENTS.md".to_string()));
-        assert!(signals.modified_config_files.contains(&"/project/CLAUDE.md".to_string()));
+        assert!(signals
+            .modified_config_files
+            .contains(&"/project/AGENTS.md".to_string()));
+        assert!(signals
+            .modified_config_files
+            .contains(&"/project/CLAUDE.md".to_string()));
     }
 
     #[test]

@@ -680,12 +680,19 @@ mod tests {
         let events = JsonlParser::parse_line(line, 1, &context, &plugin).unwrap();
 
         // Should produce 1 event
-        assert_eq!(events.len(), 1, "Event-type routing should produce one event");
+        assert_eq!(
+            events.len(),
+            1,
+            "Event-type routing should produce one event"
+        );
         let event = &events[0];
 
         // Verify correct role and content
         assert_eq!(event.role, Role::User, "Role should be user");
-        assert_eq!(event.content, "Hello world", "Content should match payload content");
+        assert_eq!(
+            event.content, "Hello world",
+            "Content should match payload content"
+        );
 
         // Verify timestamp from wrapper level
         assert_eq!(
@@ -710,7 +717,11 @@ mod tests {
         let events = JsonlParser::parse_line(line, 1, &context, &plugin).unwrap();
 
         // Should return empty Vec
-        assert_eq!(events.len(), 0, "Skip-type routing should produce zero events");
+        assert_eq!(
+            events.len(),
+            0,
+            "Skip-type routing should produce zero events"
+        );
     }
 
     #[test]
@@ -728,7 +739,11 @@ mod tests {
         let events = JsonlParser::parse_line(line, 1, &context, &plugin).unwrap();
 
         // Should return empty Vec
-        assert_eq!(events.len(), 0, "Meta-type routing should produce zero events");
+        assert_eq!(
+            events.len(),
+            0,
+            "Meta-type routing should produce zero events"
+        );
     }
 
     #[test]
@@ -746,12 +761,19 @@ mod tests {
         let events = JsonlParser::parse_line(line, 1, &context, &plugin).unwrap();
 
         // Should produce 1 event
-        assert_eq!(events.len(), 1, "Event-type routing should produce one event");
+        assert_eq!(
+            events.len(),
+            1,
+            "Event-type routing should produce one event"
+        );
         let event = &events[0];
 
         // Verify that role and content are extracted from the payload
         assert_eq!(event.role, Role::Assistant, "Role should come from payload");
-        assert_eq!(event.content, "Response text", "Content should come from payload");
+        assert_eq!(
+            event.content, "Response text",
+            "Content should come from payload"
+        );
 
         // Verify timestamp is extracted correctly (in current implementation, this uses raw_json which includes both levels)
         assert_eq!(
@@ -815,7 +837,10 @@ mod tests {
         let line = r#"{"type": "heartbeat", "timestamp": "2026-07-04T10:00:05Z", "payload": {"status": "ok"}}"#;
         let events = JsonlParser::parse_line(line, 1, &context, &plugin).unwrap();
 
-        assert!(events.is_empty(), "heartbeat (skip) should produce zero events");
+        assert!(
+            events.is_empty(),
+            "heartbeat (skip) should produce zero events"
+        );
     }
 
     #[test]
@@ -827,7 +852,8 @@ mod tests {
             "/tmp/test.jsonl".to_string(),
         );
 
-        let line = r#"{"type": "ping", "timestamp": "2026-07-04T10:00:10Z", "payload": {"seq": 2}}"#;
+        let line =
+            r#"{"type": "ping", "timestamp": "2026-07-04T10:00:10Z", "payload": {"seq": 2}}"#;
         let events = JsonlParser::parse_line(line, 1, &context, &plugin).unwrap();
 
         assert!(events.is_empty(), "ping (skip) should produce zero events");
@@ -845,7 +871,10 @@ mod tests {
         let line = r#"{"type": "session_start", "timestamp": "2026-07-04T10:00:00Z", "payload": {"session_id": "sess-001"}}"#;
         let events = JsonlParser::parse_line(line, 1, &context, &plugin).unwrap();
 
-        assert!(events.is_empty(), "session_start (meta) should produce zero events");
+        assert!(
+            events.is_empty(),
+            "session_start (meta) should produce zero events"
+        );
     }
 
     #[test]
@@ -861,7 +890,10 @@ mod tests {
         let line = r#"{"type": "unknown_event", "timestamp": "2026-07-04T10:00:35Z", "payload": {"data": "something"}}"#;
         let events = JsonlParser::parse_line(line, 1, &context, &plugin).unwrap();
 
-        assert!(events.is_empty(), "unknown type (not in map) should produce zero events");
+        assert!(
+            events.is_empty(),
+            "unknown type (not in map) should produce zero events"
+        );
     }
 
     #[test]

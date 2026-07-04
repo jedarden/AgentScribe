@@ -435,7 +435,8 @@ impl PluginManager {
                     || plugin.parser.content.is_none()
                 {
                     return Err(AgentScribeError::InvalidPlugin(
-                        "JSON array format requires timestamp, role, and content fields".to_string(),
+                        "JSON array format requires timestamp, role, and content fields"
+                            .to_string(),
                     ));
                 }
             }

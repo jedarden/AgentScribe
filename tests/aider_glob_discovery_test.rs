@@ -10,7 +10,11 @@ fn test_recursive_glob_discovers_nested_repos() {
     let base = temp.path();
 
     // Create nested directory structure
-    let nested_deep = base.join("projects").join("nested").join("deep").join("repo");
+    let nested_deep = base
+        .join("projects")
+        .join("nested")
+        .join("deep")
+        .join("repo");
     fs::create_dir_all(&nested_deep).unwrap();
 
     let another_project = base.join("repos").join("another-project");
@@ -25,17 +29,33 @@ fn test_recursive_glob_discovers_nested_repos() {
 
     // Create aider files in non-excluded locations
     let nested_file = nested_deep.join(".aider.chat.history.md");
-    fs::write(&nested_file, "# aider chat started at 2024-03-15\n#### Test\nResponse").unwrap();
+    fs::write(
+        &nested_file,
+        "# aider chat started at 2024-03-15\n#### Test\nResponse",
+    )
+    .unwrap();
 
     let another_file = another_project.join(".aider.chat.history.md");
-    fs::write(&another_file, "# aider chat started at 2024-03-15\n#### Test 2\nResponse").unwrap();
+    fs::write(
+        &another_file,
+        "# aider chat started at 2024-03-15\n#### Test 2\nResponse",
+    )
+    .unwrap();
 
     // Create aider files in excluded locations
     let excluded_file1 = node_modules.join(".aider.chat.history.md");
-    fs::write(&excluded_file1, "# aider chat started at 2024-03-15\n#### Excluded\nResponse").unwrap();
+    fs::write(
+        &excluded_file1,
+        "# aider chat started at 2024-03-15\n#### Excluded\nResponse",
+    )
+    .unwrap();
 
     let excluded_file2 = target_dir.join(".aider.chat.history.md");
-    fs::write(&excluded_file2, "# aider chat started at 2024-03-15\n#### Also Excluded\nResponse").unwrap();
+    fs::write(
+        &excluded_file2,
+        "# aider chat started at 2024-03-15\n#### Also Excluded\nResponse",
+    )
+    .unwrap();
 
     // Test recursive glob pattern: ~/**/.aider.chat.history.md
     let pattern = format!("{}/**/.aider.chat.history.md", base.display());
@@ -52,7 +72,10 @@ fn test_recursive_glob_discovers_nested_repos() {
 
     // Now test exclusion patterns matching the new aider.toml
     let exclude_patterns = vec![
-        format!("{}/**/node_modules/**/.aider.chat.history.md", base.display()),
+        format!(
+            "{}/**/node_modules/**/.aider.chat.history.md",
+            base.display()
+        ),
         format!("{}/**/target/**/.aider.chat.history.md", base.display()),
     ];
 
@@ -77,8 +100,14 @@ fn test_recursive_glob_discovers_nested_repos() {
 
     // Verify the right files are included
     let paths: Vec<String> = filtered.iter().map(|p| p.display().to_string()).collect();
-    assert!(paths.contains(&nested_file.display().to_string()), "Should include nested file");
-    assert!(paths.contains(&another_file.display().to_string()), "Should include another project file");
+    assert!(
+        paths.contains(&nested_file.display().to_string()),
+        "Should include nested file"
+    );
+    assert!(
+        paths.contains(&another_file.display().to_string()),
+        "Should include another project file"
+    );
 
     println!("✓ Recursive glob discovery test passed!");
 }
@@ -99,8 +128,14 @@ fn test_nested_repo_fixture_exists() {
 
     // Read and verify the content
     let content = fs::read_to_string(&fixture_path).unwrap();
-    assert!(content.contains("# aider chat started at"), "Should contain session delimiter");
-    assert!(content.contains("nested React component"), "Should contain the test conversation");
+    assert!(
+        content.contains("# aider chat started at"),
+        "Should contain session delimiter"
+    );
+    assert!(
+        content.contains("nested React component"),
+        "Should contain the test conversation"
+    );
 
     println!("✓ Nested repo fixture exists and is valid!");
 }
