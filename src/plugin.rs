@@ -26,6 +26,51 @@ pub struct PluginMeta {
     pub version: String,
 }
 
+/// Envelope configuration for JSONL sources where lines are wrapped
+/// in a {timestamp, type, payload} structure (e.g., Codex rollouts)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Envelope {
+    /// Field name containing the actual event payload
+    pub payload_field: String,
+    /// Field name containing the event type for routing
+    pub type_field: String,
+    /// Maps type values to routing actions: "event", "meta", or "skip"
+    #[serde(default)]
+    pub type_routing: HashMap<String, String>,
+}
+
+impl Envelope {
+    /// Get the routing action for a given type value
+    /// Returns "skip" for unknown types (with warning logged at parse time)
+    pub fn get_routing(&self, type_value: &str) -> &str {
+        match self.type_routing.get(type_value) {
+            Some(action) => {
+                match action.as_str() {
+                    "event" | "meta" | "skip" => action,
+                    // Invalid routing values are treated as skip
+                    _ => "skip",
+                }
+            }
+            // Unknown types default to skip
+            None => "skip",
+        }
+    }
+
+    /// Validate envelope configuration
+    pub fn validate(&self) -> Result<()> {
+        // Validate routing values
+        for (type_val, action) in &self.type_routing {
+            if !matches!(action.as_str(), "event" | "meta" | "skip") {
+                return Err(AgentScribeError::InvalidPlugin(format!(
+                    "Invalid envelope routing action '{}' for type '{}': must be one of 'event', 'meta', 'skip'",
+                    action, type_val
+                )));
+            }
+        }
+        Ok(())
+    }
+}
+
 /// Source configuration - where to find logs
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Source {
@@ -43,6 +88,9 @@ pub struct Source {
     /// Example: Windsurf keeps at most 20 conversations; set this to 20.
     #[serde(default)]
     pub truncation_limit: Option<u32>,
+    /// Optional envelope unwrapping for wrapped JSONL lines
+    #[serde(default)]
+    pub envelope: Option<Envelope>,
 }
 
 /// Supported log formats
@@ -53,6 +101,7 @@ pub enum LogFormat {
     Markdown,
     JsonTree,
     Sqlite,
+    JsonArray,
 }
 
 impl LogFormat {
@@ -62,6 +111,7 @@ impl LogFormat {
             LogFormat::Markdown => "markdown",
             LogFormat::JsonTree => "json-tree",
             LogFormat::Sqlite => "sqlite",
+            LogFormat::JsonArray => "json-array",
         }
     }
 
@@ -72,6 +122,7 @@ impl LogFormat {
             "markdown" => Some(LogFormat::Markdown),
             "json-tree" => Some(LogFormat::JsonTree),
             "sqlite" => Some(LogFormat::Sqlite),
+            "json-array" => Some(LogFormat::JsonArray),
             _ => None,
         }
     }
@@ -378,6 +429,16 @@ impl PluginManager {
                     ));
                 }
             }
+            LogFormat::JsonArray => {
+                if plugin.parser.timestamp.is_none()
+                    || plugin.parser.role.is_none()
+                    || plugin.parser.content.is_none()
+                {
+                    return Err(AgentScribeError::InvalidPlugin(
+                        "JSON array format requires timestamp, role, and content fields".to_string(),
+                    ));
+                }
+            }
         }
 
         // Validate role_map target values
@@ -391,6 +452,11 @@ impl PluginManager {
                     to
                 )));
             }
+        }
+
+        // Validate envelope configuration if present
+        if let Some(ref envelope) = plugin.source.envelope {
+            envelope.validate()?;
         }
 
         Ok(())
