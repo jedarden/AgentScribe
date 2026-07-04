@@ -19,7 +19,7 @@ pub mod solution;
 pub mod summary;
 
 pub use antipatterns::{detect_antipatterns, AntiPattern};
-pub use behavioral_signals::{BehavioralSignals, compute_behavioral_signals};
+pub use behavioral_signals::{compute_behavioral_signals, BehavioralSignals};
 pub use code_artifacts::{extract_code_artifacts, CodeArtifact};
 pub use errors::enrich_events;
 pub use git::{correlate_commits, GitCommit};

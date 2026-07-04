@@ -113,10 +113,7 @@ impl AiderInputHistory {
     /// Create a key for the input map
     fn make_key(input: &str) -> String {
         // Normalize: collapse whitespace, truncate to 100 chars
-        let normalized = input
-            .split_whitespace()
-            .collect::<Vec<_>>()
-            .join(" ");
+        let normalized = input.split_whitespace().collect::<Vec<_>>().join(" ");
         if normalized.len() > 100 {
             normalized[..100].to_string()
         } else {
