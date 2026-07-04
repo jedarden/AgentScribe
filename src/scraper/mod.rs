@@ -217,7 +217,7 @@ impl Scraper {
     ) -> bool {
         if let Some(ref mut mgr) = self.index_manager {
             let manifest =
-                build_manifest_from_events(events, session_id, source_agent, project, model);
+                build_manifest_from_events(events, session_id, source_agent, project, model, None);
             match mgr.index_session(events, &manifest) {
                 Ok(()) => true,
                 Err(e) => {
@@ -249,14 +249,18 @@ impl Scraper {
                 // Skip if it matches exclude patterns
                 let mut excluded = false;
                 for exclude_pattern in &plugin.source.exclude {
-                    let exclude_expanded = shellexpand::full(exclude_pattern)
-                        .unwrap_or_default()
-                        .into_owned();
-                    if let Ok(exclude_glob) = glob(&exclude_expanded) {
-                        if exclude_glob.filter_map(|e| e.ok()).any(|p| p == path) {
+                    let exclude_expanded = match shellexpand::full(exclude_pattern) {
+                        Ok(expanded) => expanded.into_owned(),
+                        Err(_) => exclude_pattern.clone(),
+                    };
+                    if let Ok(pat) = glob::Pattern::new(&exclude_expanded) {
+                        if pat.matches_path(path) {
                             excluded = true;
+                            debug!(exclude_pattern = %exclude_pattern, path = %path.display(), "file excluded by pattern");
                             break;
                         }
+                    } else {
+                        warn!(exclude_pattern = %exclude_pattern, "invalid exclude glob pattern, skipping");
                     }
                 }
 
@@ -1179,6 +1183,123 @@ mod tests {
         let result = scraper.load_companion_metadata("nonexistent", &plugin);
         assert!(result.is_ok());
         assert!(result.unwrap().is_none());
+    }
+
+    // --- shellexpand glob safety tests ---
+
+    /// Prove that tilde expansion preserves glob wildcards.
+    /// shellexpand only replaces `~/` at the start of the string; `*`, `?`,
+    /// `**`, and `[...]` pass through unmodified.
+    #[test]
+    fn test_tilde_expansion_preserves_glob_wildcards() {
+        let home = std::env::var("HOME").expect("HOME must be set");
+        let cases = vec![
+            ("~/foo/*.log", format!("{}/foo/*.log", home)),
+            ("~/src/**/*.rs", format!("{}/src/**/*.rs", home)),
+            ("~/[ab]*.txt", format!("{}/[ab]*.txt", home)),
+            ("~/foo/bar?.toml", format!("{}/foo/bar?.toml", home)),
+            ("~/*.tmp", format!("{}/*.tmp", home)),
+        ];
+
+        for (pattern, expected) in cases {
+            let expanded = shellexpand::full(pattern)
+                .unwrap_or_else(|e| panic!("tilde expansion failed for {:?}: {}", pattern, e))
+                .into_owned();
+            // Must still compile as a valid glob::Pattern
+            let pat = glob::Pattern::new(&expanded)
+                .unwrap_or_else(|e| panic!("expanded {:?} -> {:?} is not valid glob: {}", pattern, expanded, e));
+            assert_eq!(expanded, expected, "tilde expansion of {:?}", pattern);
+            // Sanity: pattern string round-trips through compilation
+            assert_eq!(pat.as_str(), expanded);
+        }
+    }
+
+    /// Prove that env-var expansion preserves glob wildcards.
+    /// When the variable exists, `$VAR` is substituted but surrounding `*`, `?`
+    /// characters are left untouched.
+    #[test]
+    fn test_env_var_expansion_preserves_glob_wildcards() {
+        // Use HOME as a well-known variable we can rely on.
+        let home = std::env::var("HOME").expect("HOME must be set");
+
+        // Temporarily set a variable with glob-friendly value for precise testing.
+        std::env::set_var("__AGENTSCRIBE_TEST_DIR", "/tmp/agentscribe_test_logs");
+        let test_dir = "/tmp/agentscribe_test_logs";
+
+        let expected_1 = format!("{test_dir}/*.log");
+        let expected_2 = format!("{test_dir}/**/*.rs");
+        let expected_3 = format!("{test_dir}/foo?.txt");
+        let expected_4 = format!("{home}/src/[ab]*.rs");
+
+        let cases: Vec<(&str, &str)> = vec![
+            // Variable embedded in a glob pattern
+            ("$__AGENTSCRIBE_TEST_DIR/*.log", &expected_1),
+            ("$__AGENTSCRIBE_TEST_DIR/**/*.rs", &expected_2),
+            // Braced form
+            ("${__AGENTSCRIBE_TEST_DIR}/foo?.txt", &expected_3),
+            // Variable alongside a wildcard not part of the var name
+            ("$HOME/src/[ab]*.rs", &expected_4),
+        ];
+
+        for (pattern, expected) in &cases {
+            let expanded = shellexpand::full(pattern)
+                .unwrap_or_else(|e| panic!("env expansion failed for {:?}: {}", pattern, e))
+                .into_owned();
+            let _pat = glob::Pattern::new(&expanded)
+                .unwrap_or_else(|e| panic!("expanded {:?} -> {:?} is not valid glob: {}", pattern, expanded, e));
+            assert_eq!(&expanded, *expected, "env-var expansion of {:?}", pattern);
+        }
+
+        std::env::remove_var("__AGENTSCRIBE_TEST_DIR");
+    }
+
+    /// Prove that plain exclude patterns with no expandable tokens pass through
+    /// shellexpand::full() unchanged (Cow::Borrowed) and compile as valid globs.
+    #[test]
+    fn test_plain_patterns_pass_through_unchanged() {
+        let cases = vec![
+            "*.log",
+            "/var/log/**/*.txt",
+            "/tmp/[0-9][0-9][0-9]",
+            "some/dir/foo?.rs",
+            "**/node_modules/**",
+            "*.bak",
+            "/absolute/path/file",
+        ];
+
+        for pattern in &cases {
+            let expanded = shellexpand::full(pattern)
+                .unwrap_or_else(|e| panic!("expansion failed for {:?}: {}", pattern, e));
+            // With no `~` or `$`, shellexpand returns Cow::Borrowed — no allocation, no mutation.
+            assert!(
+                matches!(expanded, std::borrow::Cow::Borrowed(s) if s == *pattern),
+                "plain pattern {:?} should be returned as Cow::Borrowed unchanged, got {:?}",
+                pattern,
+                expanded
+            );
+            // Must still compile as a valid glob.
+            glob::Pattern::new(pattern)
+                .unwrap_or_else(|e| panic!("{:?} should be a valid glob: {}", pattern, e));
+        }
+    }
+
+    /// Prove that failed env-var expansion preserves the original pattern text
+    /// rather than silently producing an empty string (the old .unwrap_or_default()
+    /// bug).
+    #[test]
+    fn test_failed_expansion_falls_back_to_original_pattern() {
+        let pattern = "$THIS_VAR_DEFINITELY_DOES_NOT_EXIST_12345/*.log";
+        // shellexpand::full() returns Err for unknown vars (std::env::var errors).
+        // The code should fall back to the original pattern, not an empty string.
+        let expanded = match shellexpand::full(pattern) {
+            Ok(expanded) => expanded.into_owned(),
+            Err(_) => pattern.to_string(),
+        };
+        // After fallback, the expanded text should still be a valid glob containing the wildcard.
+        assert!(expanded.contains("*.log"), "wildcard should survive fallback, got: {:?}", expanded);
+        assert!(glob::Pattern::new(&expanded).is_ok(), "fallback {:?} should be valid glob", expanded);
+        // Critically, it should NOT be empty (the old bug behavior).
+        assert!(!expanded.is_empty(), "expansion failure must not produce empty pattern");
     }
 
     #[test]
