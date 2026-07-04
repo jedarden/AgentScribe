@@ -87,6 +87,61 @@ paths = ["~/.my-agent/**/session-*.json"]
 paths = ["$MY_AGENT_DATA_DIR/logs/*.jsonl"]
 ```
 
+### `[source.envelope]` — Envelope Unwrapping (Optional)
+
+For JSONL sources where each line is wrapped in an envelope structure (e.g., `{timestamp, type, payload}`), configure envelope unwrapping to extract the actual event payload.
+
+```toml
+[source.envelope]
+payload_field = "data"     # Field containing the event payload object
+type_field = "type"        # Field containing the event type for routing
+
+[source.envelope.type_routing]
+"message" = "event"       # Parse as regular event
+"metadata" = "meta"        # Session metadata (not an event)
+"heartbeat" = "skip"      # Skip this type entirely
+```
+
+**Routing actions:**
+- `event` - Extract the payload and parse it as a regular event using `[parser]` field mappings
+- `meta` - Session-level metadata (for future use; currently skipped)
+- `skip` - Ignore this line entirely
+
+**Envelope-level field access:**
+Use the `^` prefix in field mappings to access fields from the envelope wrapper instead of the payload:
+
+```toml
+[parser]
+timestamp = "^timestamp"  # From envelope: {"timestamp": "...", "type": "...", "data": {...}}
+role = "role"             # From payload: {"role": "user", "content": "..."}
+content = "content"
+```
+
+**Unknown types:** Any type value not in `type_routing` defaults to `skip` with a warning.
+
+**Example (Codex rollouts):**
+```json
+{"timestamp": "2026-03-16T12:00:00Z", "type": "message", "data": {"role": "user", "content": "Fix the bug"}}
+{"timestamp": "2026-03-16T12:00:05Z", "type": "metadata", "data": {"model": "gpt-4"}}
+{"timestamp": "2026-03-16T12:00:10Z", "type": "heartbeat", "data": {"status": "ok"}}
+```
+
+```toml
+[source.envelope]
+payload_field = "data"
+type_field = "type"
+
+[source.envelope.type_routing]
+"message" = "event"
+"metadata" = "meta"
+"heartbeat" = "skip"
+
+[parser]
+timestamp = "^timestamp"
+role = "role"
+content = "content"
+```
+
 ### `[source.session_detection]` — Session Boundaries
 
 Agents store sessions differently. Some create one file per session. Others append to a single continuous file. This section tells AgentScribe how to split logs into discrete sessions.
