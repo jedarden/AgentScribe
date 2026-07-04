@@ -424,6 +424,40 @@ mod tests {
         }
     }
 
+    /// Non-envelope plugin helper for envelope_test.jsonl fixture
+    ///
+    /// Returns a Plugin with `source.envelope = None` and parser field mappings
+    /// pointing to wrapper-level fields (timestamp, role, content) as they appear
+    /// at the top level of each JSONL line in envelope_test.jsonl.
+    /// Used to test parsing behavior without envelope extraction configured.
+    fn create_non_envelope_test_plugin() -> Plugin {
+        Plugin {
+            plugin: PluginMeta {
+                name: "envelope-test".to_string(),
+                version: "1.0".to_string(),
+            },
+            source: Source {
+                paths: vec!["tests/fixtures/envelope_test.jsonl".to_string()],
+                exclude: vec![],
+                format: LogFormat::Jsonl,
+                session_detection: SessionDetection::OneFilePerSession {
+                    session_id_from: SessionIdSource::Filename,
+                },
+                tree: None,
+                truncation_limit: None,
+                envelope: None,
+            },
+            parser: Parser {
+                timestamp: Some("timestamp".to_string()),
+                role: Some("role".to_string()),
+                content: Some("content".to_string()),
+                tool_name: Some("tool_name".to_string()),
+                ..Default::default()
+            },
+            metadata: None,
+        }
+    }
+
     #[test]
     fn test_parse_line_simple() {
         let plugin = create_test_plugin();
@@ -557,6 +591,50 @@ mod tests {
         let events = JsonlParser::parse_line(line, 1, &context, &plugin).unwrap();
 
         assert_eq!(events.len(), 0, "Unknown type should default to skip");
+    }
+
+    #[test]
+    fn test_skip_type_routing_heartbeat_and_ping_produce_zero_events() {
+        // Plugin matching envelope_test.toml: heartbeat and ping both route to skip
+        let mut plugin = create_test_plugin();
+        let mut type_routing = std::collections::HashMap::new();
+        type_routing.insert("message".to_string(), "event".to_string());
+        type_routing.insert("session".to_string(), "meta".to_string());
+        type_routing.insert("heartbeat".to_string(), "skip".to_string());
+        type_routing.insert("ping".to_string(), "skip".to_string());
+        plugin.source.envelope = Some(crate::plugin::Envelope {
+            payload_field: "payload".to_string(),
+            type_field: "type".to_string(),
+            type_routing,
+        });
+
+        let context = ParseContext::new(
+            "env-test-001".to_string(),
+            "envelope-test".to_string(),
+            "tests/fixtures/envelope_test.jsonl".to_string(),
+        );
+
+        // Actual fixture lines from envelope_test.jsonl
+        let skip_lines = [
+            (
+                "heartbeat",
+                r#"{"type": "heartbeat", "timestamp": "2026-07-04T10:00:05Z", "payload": {"status": "ok"}}"#,
+            ),
+            (
+                "ping",
+                r#"{"type": "ping", "timestamp": "2026-07-04T10:00:10Z", "payload": {"seq": 1}}"#,
+            ),
+        ];
+
+        for (label, line) in &skip_lines {
+            let events = JsonlParser::parse_line(line, 1, &context, &plugin).unwrap();
+            assert_eq!(
+                events,
+                Vec::new(),
+                "skip-type '{}' should produce zero events",
+                label
+            );
+        }
     }
 
     #[test]
