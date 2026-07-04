@@ -259,6 +259,63 @@ JSON (`--json`):
 }
 ```
 
+### Search --json Output Schema
+
+> **Stability contract.** The `--json` output is a stable, machine-readable
+> contract relied on by NEEDLE Phase 4, MCP tool callers, and shell hooks.
+> Fields **may be added** in any release. Existing fields are **never renamed,
+> removed, or retyped** without a major version bump. Callers should ignore
+> unknown keys so additive changes do not break them.
+
+Output is a single pretty-printed JSON object (`serde_json::to_string_pretty`,
+2-space indent) printed to stdout. The same shape is returned by the MCP
+`search` tool, which wraps the same `execute_search` call via
+`serde_json::to_value`, so CLI and MCP callers can share one parser.
+
+The shape is locked by `tests/search_contract.rs`, which fails the build if a
+field is renamed, removed, or retyped without updating both the code and the
+test.
+
+**Envelope** (`SearchOutput`):
+
+| Field | JSON type | Presence |
+|-------|-----------|----------|
+| `query` | string | Always present. May be empty `""` when only a filter (`--agent`, `--tag`, …) was supplied. |
+| `total_matches` | integer | Always present. Equal to `results.length`. |
+| `search_time_ms` | integer | Always present. Wall-clock duration of the search, in milliseconds. |
+| `sessions_searched` | integer | Always present. Number of documents in the index when the search ran. |
+| `results` | array of result objects | Always present. May be empty `[]` — zero matches is a valid result, not an error. |
+| `fuzzy_fallback` | boolean | **Conditional.** Omitted when `false`; present and `true` only when a plain query returned zero hits and an automatic fuzzy retry produced results. |
+
+**Result object** (`SearchResult` — each entry of `results`):
+
+| Field | JSON type | Nullability |
+|-------|-----------|-------------|
+| `session_id` | string | Always present. May be `""` if the indexed document carried no id. |
+| `source_agent` | string | Always present. E.g. `claude-code`, `aider`, `codex`. |
+| `project` | string | Nullable — `null` when the session had no project. |
+| `timestamp` | string (RFC 3339) | Nullable — `null` when no timestamp was recorded. Format e.g. `"2026-03-14T10:30:00+00:00"`. |
+| `turns` | integer | Nullable — `null` when turn count was not recorded. |
+| `outcome` | string | Nullable — `null` when unset; otherwise e.g. `success`, `failure`, `abandoned`. |
+| `score` | number (float) | Always present. BM25 relevance, RRF fusion score, or cosine similarity depending on mode (`--semantic` / `--hybrid`). Range is not contractually bounded. |
+| `summary` | string | Nullable — `null` when the session had no summary. |
+| `snippet` | string | Nullable — `null` when no snippet was extracted (e.g. `--snippet-length 0` or empty content). May be truncated and end with `...`. |
+| `tags` | array of strings | Always present. May be empty `[]`; never omitted. |
+| `doc_type` | string | Nullable — `null` when unset; otherwise e.g. `session` or `code_artifact`. |
+| `model` | string | Nullable — `null` when the model was not recorded. |
+| `token_count` | integer | Always present (≥ 0). Estimated as `ceil((snippet_chars + summary_chars) / 4)`. |
+
+Notes for callers:
+
+- Apart from `fuzzy_fallback` (omitted when `false`), every field above is
+  **always present** in its object — optional fields appear as `null`, never
+  disappear. This means a parser can read them by name unconditionally.
+- Object key order matches the struct definition order shown above, but key
+  order is **not** part of the contract — look fields up by name, never by
+  position.
+- Numbers serialize as JSON numbers; integers have no fractional part. `score`
+  is the only field that may carry a fractional component.
+
 ### Full Session Retrieval
 
 When `--session <id>` is used, returns the complete normalized conversation:
