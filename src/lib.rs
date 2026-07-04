@@ -3,6 +3,7 @@
 #![allow(clippy::too_many_arguments)]
 
 pub mod analytics;
+pub mod annotations;
 pub mod capacity;
 pub mod cli;
 pub mod config;
@@ -21,6 +22,7 @@ pub mod plugin;
 pub mod projects;
 pub mod pulse_report;
 pub mod recurring;
+pub mod reflect;
 pub mod redaction;
 pub mod render;
 pub mod rules;
