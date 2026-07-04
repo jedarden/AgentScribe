@@ -4,15 +4,12 @@
 
 use crate::error::{AgentScribeError, Result};
 use crate::event::{Event, Role, TokenCounts};
-use crate::parser::{
-    extract_string, extract_string_with_envelope, parse_timestamp, parse_timestamp_with_envelope,
-    ParseContext, SessionInfo,
-};
+use crate::parser::{extract_string, parse_timestamp, ParseContext, SessionInfo};
 use crate::plugin::{Plugin, SessionDetection, SessionIdSource};
 use chrono::Utc;
 use serde_json::Value;
 use std::io::{BufRead, BufReader};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 /// JSONL parser implementation
 pub struct JsonlParser;
@@ -361,6 +358,7 @@ mod tests {
     use crate::plugin::{
         LogFormat, Parser, Plugin, PluginMeta, SessionDetection, SessionIdSource, Source,
     };
+    use std::path::PathBuf;
 
     fn create_test_plugin() -> Plugin {
         Plugin {
