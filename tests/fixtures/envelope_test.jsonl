@@ -1,0 +1,8 @@
+{"type": "session_start", "timestamp": "2026-07-04T10:00:00Z", "payload": {"session_id": "env-test-001", "model": "claude-sonnet-5", "cwd": "/home/user/project"}}
+{"type": "heartbeat", "timestamp": "2026-07-04T10:00:05Z", "payload": {"status": "ok"}}
+{"type": "ping", "timestamp": "2026-07-04T10:00:10Z", "payload": {"seq": 1}}
+{"type": "message", "timestamp": "2026-07-04T10:00:15Z", "payload": {"role": "user", "content": "Refactor the authentication module to use JWT tokens"}}
+{"type": "message", "timestamp": "2026-07-04T10:00:20Z", "payload": {"role": "assistant", "content": "I'll refactor the authentication module. Let me start by reading the current implementation."}}
+{"type": "message", "timestamp": "2026-07-04T10:00:25Z", "payload": {"role": "tool", "content": "Reading src/auth/mod.rs", "tool_name": "Read"}}
+{"type": "message", "timestamp": "2026-07-04T10:00:30Z", "payload": {"role": "assistant", "content": "Here's the refactored authentication module using JWT."}}
+{"type": "unknown_event", "timestamp": "2026-07-04T10:00:35Z", "payload": {"data": "something unexpected"}}
