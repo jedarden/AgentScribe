@@ -518,4 +518,112 @@ mod tests {
             }
         ));
     }
+
+    // -- Envelope tests --
+
+    fn make_envelope(routing: Vec<(&str, &str)>) -> Envelope {
+        let mut type_routing = HashMap::new();
+        for (k, v) in routing {
+            type_routing.insert(k.to_string(), v.to_string());
+        }
+        Envelope {
+            payload_field: "payload".to_string(),
+            type_field: "type".to_string(),
+            type_routing,
+        }
+    }
+
+    #[test]
+    fn test_envelope_get_routing_known_types() {
+        let env = make_envelope(vec![
+            ("message", "event"),
+            ("meta_update", "meta"),
+            ("heartbeat", "skip"),
+        ]);
+        assert_eq!(env.get_routing("message"), "event");
+        assert_eq!(env.get_routing("meta_update"), "meta");
+        assert_eq!(env.get_routing("heartbeat"), "skip");
+    }
+
+    #[test]
+    fn test_envelope_get_routing_unknown_type_defaults_to_skip() {
+        let env = make_envelope(vec![("message", "event")]);
+        assert_eq!(env.get_routing("unknown_type"), "skip");
+        assert_eq!(env.get_routing(""), "skip");
+    }
+
+    #[test]
+    fn test_envelope_get_routing_invalid_value_treated_as_skip() {
+        let env = make_envelope(vec![("bad", "unknown")]);
+        // Invalid routing values are treated as skip at runtime
+        assert_eq!(env.get_routing("bad"), "skip");
+    }
+
+    #[test]
+    fn test_envelope_validate_accepts_valid_routing() {
+        let env = make_envelope(vec![
+            ("message", "event"),
+            ("meta_update", "meta"),
+            ("heartbeat", "skip"),
+        ]);
+        assert!(env.validate().is_ok());
+    }
+
+    #[test]
+    fn test_envelope_validate_rejects_invalid_routing() {
+        let env = make_envelope(vec![("message", "event"), ("bad_type", "unknown")]);
+        let err = env.validate().unwrap_err();
+        let msg = format!("{}", err);
+        assert!(msg.contains("Invalid envelope routing action"));
+        assert!(msg.contains("'unknown'"));
+        assert!(msg.contains("bad_type"));
+    }
+
+    #[test]
+    fn test_envelope_validate_rejects_other_invalid_values() {
+        let env = make_envelope(vec![("message", "delete")]);
+        let err = env.validate().unwrap_err();
+        let msg = format!("{}", err);
+        assert!(msg.contains("'delete'"));
+    }
+
+    #[test]
+    fn test_validate_plugin_rejects_invalid_envelope() {
+        let plugin = Plugin {
+            plugin: PluginMeta {
+                name: "test-plugin".to_string(),
+                version: "0.1.0".to_string(),
+            },
+            source: Source {
+                paths: vec!["~/logs".to_string()],
+                exclude: vec![],
+                format: LogFormat::Jsonl,
+                session_detection: SessionDetection::default(),
+                tree: None,
+                truncation_limit: None,
+                envelope: Some(Envelope {
+                    payload_field: "payload".to_string(),
+                    type_field: "type".to_string(),
+                    type_routing: {
+                        let mut m = HashMap::new();
+                        m.insert("msg".to_string(), "event".to_string());
+                        m.insert("bad".to_string(), "garbage".to_string());
+                        m
+                    },
+                }),
+            },
+            parser: Parser {
+                timestamp: Some("ts".to_string()),
+                role: Some("role".to_string()),
+                content: Some("content".to_string()),
+                ..Parser::default()
+            },
+            metadata: None,
+        };
+        let manager = PluginManager::new(PathBuf::from("/dummy"));
+        let result = manager.validate_plugin(&plugin);
+        assert!(result.is_err());
+        let msg = format!("{}", result.unwrap_err());
+        assert!(msg.contains("garbage"));
+    }
 }
