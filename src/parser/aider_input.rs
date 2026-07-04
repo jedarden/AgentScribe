@@ -84,7 +84,7 @@ impl AiderInputHistory {
                 input_lines.clear();
             } else if line.starts_with('+') {
                 // Content line (strip the '+' prefix)
-                let content = line[1..].trim().to_string();
+                let content = line.strip_prefix('+').unwrap_or(&line).trim().to_string();
                 if !content.is_empty() {
                     input_lines.push(content);
                 }
