@@ -1,0 +1,9 @@
+{"type":"session","version":3,"id":"sess-env-001","timestamp":"2025-01-15T09:00:00.000Z","cwd":"/home/user/env-test"}
+{"type":"session_info","id":"si-001","timestamp":"2025-01-15T09:00:00.100Z","message":{"info":"git_branch","value":"main"}}
+{"type":"message","id":"m-001","parentId":null,"timestamp":"2025-01-15T09:00:01.000Z","message":{"role":"user","content":"What files are in this directory?","timestamp":1736920801000}}
+{"type":"model_change","id":"mc-001","timestamp":"2025-01-15T09:00:02.000Z","message":{"model":"claude-sonnet-4-5","provider":"anthropic"}}
+{"type":"message","id":"m-002","parentId":"m-001","timestamp":"2025-01-15T09:00:03.000Z","message":{"role":"assistant","content":[{"type":"text","text":"I'll list the files for you."},{"type":"toolCall","id":"call-001","name":"bash","arguments":{"command":"ls -la"}}],"model":"claude-sonnet-4-5","provider":"anthropic","timestamp":1736920803000}}
+{"type":"message","id":"m-003","parentId":"m-002","timestamp":"2025-01-15T09:00:04.000Z","message":{"role":"toolResult","toolCallId":"call-001","toolName":"bash","content":[{"type":"text","text":"README.md\nsrc/\ntests/"}],"isError":false,"timestamp":1736920804000}}
+{"type":"message","id":"m-004","parentId":"m-003","timestamp":"2025-01-15T09:00:05.000Z","message":{"role":"assistant","content":"The directory contains a README, a src folder, and a tests folder.","model":"claude-sonnet-4-5","provider":"anthropic","timestamp":1736920805000}}
+{"type":"compaction","id":"cmp-001","timestamp":"2025-01-15T09:00:06.000Z","message":{"summary":"Earlier conversation compacted to save context tokens."}}
+{"type":"custom","id":"cust-001","timestamp":"2025-01-15T09:00:07.000Z","message":{"extension":"metrics","data":{"event":"copy"}}}
