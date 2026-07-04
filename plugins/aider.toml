@@ -7,11 +7,19 @@ version = "1.0"
 
 [source]
 paths = [
-    "~/projects/*/.aider.chat.history.md",
-    "~/repos/*/.aider.chat.history.md",
-    "~/*/.aider.chat.history.md"
+    "~/**/.aider.chat.history.md"
 ]
-exclude = []
+exclude = [
+    "~/**/node_modules/**/.aider.chat.history.md",
+    "~/**/target/**/.aider.chat.history.md",
+    "~/**/.git/**/.aider.chat.history.md",
+    "~/**/.cache/**/.aider.chat.history.md",
+    "~/**/venv/**/.aider.chat.history.md",
+    "~/**/.venv/**/.aider.chat.history.md",
+    "~/**/__pycache__/**/.aider.chat.history.md",
+    "~/**/build/**/.aider.chat.history.md",
+    "~/**/dist/**/.aider.chat.history.md"
+]
 format = "markdown"
 
 [source.session_detection]
