@@ -4,12 +4,15 @@
 
 use crate::error::{AgentScribeError, Result};
 use crate::event::{Event, Role, TokenCounts};
-use crate::parser::{extract_string, parse_timestamp, ParseContext, SessionInfo};
+use crate::parser::{
+    extract_string, extract_string_with_envelope, parse_timestamp, parse_timestamp_with_envelope,
+    ParseContext, SessionInfo,
+};
 use crate::plugin::{Plugin, SessionDetection, SessionIdSource};
 use chrono::Utc;
 use serde_json::Value;
 use std::io::{BufRead, BufReader};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// JSONL parser implementation
 pub struct JsonlParser;
@@ -354,6 +357,7 @@ impl super::FormatParser for JsonlParser {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::parser::FormatParser;
     use crate::plugin::{
         LogFormat, Parser, Plugin, PluginMeta, SessionDetection, SessionIdSource, Source,
     };
@@ -678,6 +682,153 @@ mod tests {
             event.ts.to_rfc3339(),
             "2026-03-16T12:00:00+00:00",
             "Timestamp should be extracted"
+        );
+    }
+
+    // -- Skip/meta/unknown routing: fixture-based tests --
+
+    fn create_skip_meta_unknown_plugin() -> Plugin {
+        let mut type_routing = std::collections::HashMap::new();
+        type_routing.insert("message".to_string(), "event".to_string());
+        type_routing.insert("heartbeat".to_string(), "skip".to_string());
+        type_routing.insert("ping".to_string(), "skip".to_string());
+        type_routing.insert("session_start".to_string(), "meta".to_string());
+        type_routing.insert("session_end".to_string(), "meta".to_string());
+        type_routing.insert("metrics".to_string(), "meta".to_string());
+        // "unknown_event" is NOT in the routing map → defaults to skip
+
+        Plugin {
+            plugin: PluginMeta {
+                name: "test".to_string(),
+                version: "1.0".to_string(),
+            },
+            source: Source {
+                paths: vec!["/tmp/test.jsonl".to_string()],
+                exclude: vec![],
+                format: LogFormat::Jsonl,
+                session_detection: SessionDetection::OneFilePerSession {
+                    session_id_from: SessionIdSource::Filename,
+                },
+                tree: None,
+                truncation_limit: None,
+                envelope: Some(crate::plugin::Envelope {
+                    payload_field: "payload".to_string(),
+                    type_field: "type".to_string(),
+                    type_routing,
+                }),
+            },
+            parser: Parser {
+                timestamp: Some("timestamp".to_string()),
+                role: Some("role".to_string()),
+                content: Some("content".to_string()),
+                ..Default::default()
+            },
+            metadata: None,
+        }
+    }
+
+    #[test]
+    fn test_skip_type_heartbeat_produces_zero_events() {
+        let plugin = create_skip_meta_unknown_plugin();
+        let context = ParseContext::new(
+            "test-session".to_string(),
+            "test".to_string(),
+            "/tmp/test.jsonl".to_string(),
+        );
+
+        let line = r#"{"type": "heartbeat", "timestamp": "2026-07-04T10:00:05Z", "payload": {"status": "ok"}}"#;
+        let events = JsonlParser::parse_line(line, 1, &context, &plugin).unwrap();
+
+        assert!(events.is_empty(), "heartbeat (skip) should produce zero events");
+    }
+
+    #[test]
+    fn test_skip_type_ping_produces_zero_events() {
+        let plugin = create_skip_meta_unknown_plugin();
+        let context = ParseContext::new(
+            "test-session".to_string(),
+            "test".to_string(),
+            "/tmp/test.jsonl".to_string(),
+        );
+
+        let line = r#"{"type": "ping", "timestamp": "2026-07-04T10:00:10Z", "payload": {"seq": 2}}"#;
+        let events = JsonlParser::parse_line(line, 1, &context, &plugin).unwrap();
+
+        assert!(events.is_empty(), "ping (skip) should produce zero events");
+    }
+
+    #[test]
+    fn test_meta_type_session_header_produces_zero_events() {
+        let plugin = create_skip_meta_unknown_plugin();
+        let context = ParseContext::new(
+            "test-session".to_string(),
+            "test".to_string(),
+            "/tmp/test.jsonl".to_string(),
+        );
+
+        let line = r#"{"type": "session_start", "timestamp": "2026-07-04T10:00:00Z", "payload": {"session_id": "sess-001"}}"#;
+        let events = JsonlParser::parse_line(line, 1, &context, &plugin).unwrap();
+
+        assert!(events.is_empty(), "session_start (meta) should produce zero events");
+    }
+
+    #[test]
+    fn test_unknown_type_not_in_routing_map_produces_zero_events() {
+        let plugin = create_skip_meta_unknown_plugin();
+        let context = ParseContext::new(
+            "test-session".to_string(),
+            "test".to_string(),
+            "/tmp/test.jsonl".to_string(),
+        );
+
+        // "unknown_event" is not in the type_routing map → defaults to skip
+        let line = r#"{"type": "unknown_event", "timestamp": "2026-07-04T10:00:35Z", "payload": {"data": "something"}}"#;
+        let events = JsonlParser::parse_line(line, 1, &context, &plugin).unwrap();
+
+        assert!(events.is_empty(), "unknown type (not in map) should produce zero events");
+    }
+
+    #[test]
+    fn test_fixture_with_only_non_event_types_produces_zero_events() {
+        // Parse the fixture file that contains ONLY skip/meta/unknown lines
+        let fixture_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/envelope/non-event-types.jsonl");
+
+        let plugin = create_skip_meta_unknown_plugin();
+        let all_events = JsonlParser.parse(&fixture_path, &plugin).unwrap();
+
+        assert!(
+            all_events.is_empty(),
+            "fixture with only skip/meta/unknown lines should produce zero events, got {}",
+            all_events.len()
+        );
+    }
+
+    #[test]
+    fn test_mixed_fixture_event_lines_still_parse() {
+        // Verify that event-type lines in a mixed fixture still produce events,
+        // while skip/meta/unknown lines are filtered out.
+        let fixture_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/envelope/envelope-routing.jsonl");
+
+        let plugin = create_envelope_test_plugin();
+        let all_events = JsonlParser.parse(&fixture_path, &plugin).unwrap();
+
+        // envelope-routing.jsonl has:
+        //   session   → skip   (0)
+        //   session_info → not in routing → skip (0)
+        //   message   → event  (1)
+        //   model_change → skip (0)
+        //   message   → event  (1)
+        //   message   → event  (1)
+        //   message   → event  (1)
+        //   compaction → meta  (0)
+        //   custom    → not in routing → skip (0)
+        // Expected: 4 events from the 4 "message" lines
+        assert_eq!(
+            all_events.len(),
+            4,
+            "mixed fixture should produce 4 events from message lines only"
         );
     }
 }
