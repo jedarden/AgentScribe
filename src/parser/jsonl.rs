@@ -40,7 +40,7 @@ impl JsonlParser {
         context: &ParseContext,
         plugin: &Plugin,
     ) -> Result<Vec<Event>> {
-        let json: Value = serde_json::from_str(line).map_err(|e| {
+        let raw_json: Value = serde_json::from_str(line).map_err(|e| {
             AgentScribeError::parse_error_with_line(
                 &context.source_file,
                 line_number,
@@ -48,10 +48,56 @@ impl JsonlParser {
             )
         })?;
 
-        // Check type filter
+        // --- Envelope context setup ---
+        // When the plugin defines [source.envelope], the JSONL line is a wrapper:
+        //   { type_field: "...", payload_field: { ... actual event ... } }
+        // Type routing determines whether to produce events, skip, or capture metadata.
+        //
+        // Set up envelope_json and payload_json references:
+        // - envelope_json: reference to the full parsed line (or None if no envelope)
+        // - payload_json: reference to the event data (from payload_field if envelope, else full line)
+        //
+        // IMPORTANT: In this bead, we ONLY:
+        // 1. Set up these references
+        // 2. Apply type-based early-skip routing
+        //
+        // Field extraction below still uses &raw_json exactly as before this bead.
+        // Converting to envelope-aware field extraction (using payload_json) is a separate bead.
+
+        let (_envelope_json, _payload_json): (Option<&Value>, &Value) =
+            if let Some(ref envelope_cfg) = plugin.source.envelope {
+                // Envelope mode: extract type and apply routing
+                let type_value =
+                    extract_string(&raw_json, &envelope_cfg.type_field).unwrap_or_default();
+                let routing = envelope_cfg.get_routing(&type_value);
+
+                match routing {
+                    "skip" | "meta" => return Ok(Vec::new()), // Early skip for these types
+                    "event" => {
+                        // Extract payload from payload_field, falling back to raw_json if missing/not an object
+                        let extracted = raw_json
+                            .get(&envelope_cfg.payload_field)
+                            .and_then(|v| {
+                                // Only use if it's an object (not a string/null/etc)
+                                match v {
+                                    Value::Object(_) => Some(v),
+                                    _ => None,
+                                }
+                            })
+                            .unwrap_or(&raw_json);
+                        (Some(&raw_json), extracted)
+                    }
+                    _ => return Ok(Vec::new()), // Unknown routing treated as skip
+                }
+            } else {
+                // No envelope: both envelope_json and payload_json point to the full line
+                (None, &raw_json)
+            };
+
+        // Check type filter (operate on raw_json - payload_json unused until next bead)
         if let Some(ref filter) = plugin.parser.include_types {
             let type_field = &filter.field;
-            if let Some(type_val) = extract_string(&json, type_field) {
+            if let Some(type_val) = extract_string(&raw_json, type_field) {
                 if !filter.values.contains(&type_val) {
                     return Ok(Vec::new()); // Skip this event
                 }
@@ -60,16 +106,16 @@ impl JsonlParser {
 
         if let Some(ref filter) = plugin.parser.exclude_types {
             let type_field = &filter.field;
-            if let Some(type_val) = extract_string(&json, type_field) {
+            if let Some(type_val) = extract_string(&raw_json, type_field) {
                 if filter.values.contains(&type_val) {
                     return Ok(Vec::new()); // Skip this event
                 }
             }
         }
 
-        // Parse timestamp
+        // Parse timestamp (operates on raw_json - envelope-aware extraction is next bead)
         let ts = if let Some(ref ts_field) = plugin.parser.timestamp {
-            parse_timestamp(&json, ts_field).map_err(|e| {
+            parse_timestamp(&raw_json, ts_field).map_err(|e| {
                 AgentScribeError::parse_error_with_line(
                     &context.source_file,
                     line_number,
@@ -80,9 +126,9 @@ impl JsonlParser {
             Utc::now() // Fallback - shouldn't happen with validation
         };
 
-        // Parse role
+        // Parse role (operates on raw_json - envelope-aware extraction is next bead)
         let role_str = if let Some(ref role_field) = plugin.parser.role {
-            extract_string(&json, role_field).ok_or_else(|| {
+            extract_string(&raw_json, role_field).ok_or_else(|| {
                 AgentScribeError::parse_error_with_line(
                     &context.source_file,
                     line_number,
@@ -116,9 +162,9 @@ impl JsonlParser {
             })?
         };
 
-        // Parse content
+        // Parse content (operates on raw_json - envelope-aware extraction is next bead)
         let content = if let Some(ref content_field) = plugin.parser.content {
-            extract_string(&json, content_field).unwrap_or_default()
+            extract_string(&raw_json, content_field).unwrap_or_default()
         } else {
             return Err(AgentScribeError::parse_error_with_line(
                 &context.source_file,
@@ -136,26 +182,26 @@ impl JsonlParser {
             content,
         );
 
-        // Extract tool name if applicable
+        // Extract tool name if applicable (operates on raw_json - envelope-aware extraction is next bead)
         if role == Role::ToolCall || role == Role::ToolResult {
             if let Some(ref tool_field) = plugin.parser.tool_name {
-                if let Some(tool_name) = extract_string(&json, tool_field) {
+                if let Some(tool_name) = extract_string(&raw_json, tool_field) {
                     event.tool = Some(tool_name);
                 }
             }
         }
 
-        // Extract tokens
+        // Extract tokens (operates on raw_json - envelope-aware extraction is next bead)
         let tokens_in = plugin
             .parser
             .tokens_in
             .as_ref()
-            .and_then(|f| extract_string(&json, f).and_then(|s| s.parse::<u32>().ok()));
+            .and_then(|f| extract_string(&raw_json, f).and_then(|s| s.parse::<u32>().ok()));
         let tokens_out = plugin
             .parser
             .tokens_out
             .as_ref()
-            .and_then(|f| extract_string(&json, f).and_then(|s| s.parse::<u32>().ok()));
+            .and_then(|f| extract_string(&raw_json, f).and_then(|s| s.parse::<u32>().ok()));
 
         if tokens_in.is_some() || tokens_out.is_some() {
             event.tokens = Some(TokenCounts {
@@ -327,9 +373,47 @@ mod tests {
                 },
                 tree: None,
                 truncation_limit: None,
+                envelope: None,
             },
             parser: Parser {
                 timestamp: Some("ts".to_string()),
+                role: Some("role".to_string()),
+                content: Some("content".to_string()),
+                ..Default::default()
+            },
+            metadata: None,
+        }
+    }
+
+    fn create_envelope_test_plugin() -> Plugin {
+        let mut type_routing = std::collections::HashMap::new();
+        type_routing.insert("message".to_string(), "event".to_string());
+        type_routing.insert("session".to_string(), "skip".to_string());
+        type_routing.insert("compaction".to_string(), "meta".to_string());
+        type_routing.insert("model_change".to_string(), "skip".to_string());
+
+        Plugin {
+            plugin: PluginMeta {
+                name: "test".to_string(),
+                version: "1.0".to_string(),
+            },
+            source: Source {
+                paths: vec!["/tmp/test.jsonl".to_string()],
+                exclude: vec![],
+                format: LogFormat::Jsonl,
+                session_detection: SessionDetection::OneFilePerSession {
+                    session_id_from: SessionIdSource::Filename,
+                },
+                tree: None,
+                truncation_limit: None,
+                envelope: Some(crate::plugin::Envelope {
+                    payload_field: "message".to_string(),
+                    type_field: "type".to_string(),
+                    type_routing,
+                }),
+            },
+            parser: Parser {
+                timestamp: Some("timestamp".to_string()),
                 role: Some("role".to_string()),
                 content: Some("content".to_string()),
                 ..Default::default()
@@ -391,6 +475,209 @@ mod tests {
         assert!(
             line.contains("Hello"),
             "Decompressed content should contain original data"
+        );
+    }
+
+    // -- Envelope tests --
+
+    #[test]
+    fn test_parse_line_envelope_skip_routing() {
+        // Plugin with envelope config where type "heartbeat" routes to skip
+        let mut plugin = create_test_plugin();
+        let mut type_routing = std::collections::HashMap::new();
+        type_routing.insert("message".to_string(), "event".to_string());
+        type_routing.insert("heartbeat".to_string(), "skip".to_string());
+        plugin.source.envelope = Some(crate::plugin::Envelope {
+            payload_field: "payload".to_string(),
+            type_field: "type".to_string(),
+            type_routing,
+        });
+
+        let context = ParseContext::new(
+            "test-session".to_string(),
+            "test".to_string(),
+            "/tmp/test.jsonl".to_string(),
+        );
+
+        // Line with type=heartbeat should be skipped
+        let line = r#"{"type": "heartbeat", "payload": {"ts": "2026-03-16T12:00:00Z", "role": "user", "content": "ping"}}"#;
+        let events = JsonlParser::parse_line(line, 1, &context, &plugin).unwrap();
+
+        assert_eq!(events.len(), 0, "Skip routing should produce zero events");
+    }
+
+    #[test]
+    fn test_parse_line_envelope_meta_routing() {
+        // Plugin with envelope config where type "meta_update" routes to meta
+        let mut plugin = create_test_plugin();
+        let mut type_routing = std::collections::HashMap::new();
+        type_routing.insert("message".to_string(), "event".to_string());
+        type_routing.insert("meta_update".to_string(), "meta".to_string());
+        plugin.source.envelope = Some(crate::plugin::Envelope {
+            payload_field: "payload".to_string(),
+            type_field: "type".to_string(),
+            type_routing,
+        });
+
+        let context = ParseContext::new(
+            "test-session".to_string(),
+            "test".to_string(),
+            "/tmp/test.jsonl".to_string(),
+        );
+
+        // Line with type=meta_update should be skipped (meta is out of scope for now)
+        let line = r#"{"type": "meta_update", "payload": {"ts": "2026-03-16T12:00:00Z", "role": "system", "content": "session info"}}"#;
+        let events = JsonlParser::parse_line(line, 1, &context, &plugin).unwrap();
+
+        assert_eq!(events.len(), 0, "Meta routing should produce zero events");
+    }
+
+    #[test]
+    fn test_parse_line_envelope_unknown_type_defaults_to_skip() {
+        // Plugin with envelope config - unknown types should skip
+        let mut plugin = create_test_plugin();
+        let mut type_routing = std::collections::HashMap::new();
+        type_routing.insert("message".to_string(), "event".to_string());
+        plugin.source.envelope = Some(crate::plugin::Envelope {
+            payload_field: "payload".to_string(),
+            type_field: "type".to_string(),
+            type_routing,
+        });
+
+        let context = ParseContext::new(
+            "test-session".to_string(),
+            "test".to_string(),
+            "/tmp/test.jsonl".to_string(),
+        );
+
+        // Line with unknown type should be skipped
+        let line = r#"{"type": "unknown_type", "payload": {"ts": "2026-03-16T12:00:00Z", "role": "user", "content": "test"}}"#;
+        let events = JsonlParser::parse_line(line, 1, &context, &plugin).unwrap();
+
+        assert_eq!(events.len(), 0, "Unknown type should default to skip");
+    }
+
+    #[test]
+    fn test_parse_line_no_envelope_parity() {
+        // Verify that a plugin without envelope config parses identically to before
+        let plugin = create_test_plugin();
+        let context = ParseContext::new(
+            "test-session".to_string(),
+            "test".to_string(),
+            "/tmp/test.jsonl".to_string(),
+        );
+
+        let line = r#"{"ts": "2026-03-16T12:00:00Z", "role": "user", "content": "Hello"}"#;
+        let events = JsonlParser::parse_line(line, 1, &context, &plugin).unwrap();
+
+        assert_eq!(events.len(), 1);
+        let event = &events[0];
+
+        // Verify all fields match expected values (byte-for-byte unchanged behavior)
+        assert_eq!(event.role, Role::User);
+        assert_eq!(event.content, "Hello");
+        assert_eq!(event.session_id, "test-session");
+        assert_eq!(event.source_agent, "test");
+        // Timestamp parsing should be consistent
+        assert_eq!(event.ts.to_rfc3339(), "2026-03-16T12:00:00+00:00");
+    }
+
+    // -- Envelope type routing and field extraction tests --
+
+    #[test]
+    fn test_parse_line_event_type() {
+        // Create a plugin with envelope config matching pi.toml
+        let plugin = create_envelope_test_plugin();
+        let context = ParseContext::new(
+            "test-session".to_string(),
+            "test".to_string(),
+            "/tmp/test.jsonl".to_string(),
+        );
+
+        // Line with type=message should produce an event
+        // The envelope has timestamp at wrapper level, role/content at payload level
+        let line = r#"{"type": "message", "timestamp": "2026-03-16T12:00:00Z", "message": {"role": "user", "content": "Hello world"}}"#;
+        let events = JsonlParser::parse_line(line, 1, &context, &plugin).unwrap();
+
+        // Should produce 1 event
+        assert_eq!(events.len(), 1, "Event-type routing should produce one event");
+        let event = &events[0];
+
+        // Verify correct role and content
+        assert_eq!(event.role, Role::User, "Role should be user");
+        assert_eq!(event.content, "Hello world", "Content should match payload content");
+
+        // Verify timestamp from wrapper level
+        assert_eq!(
+            event.ts.to_rfc3339(),
+            "2026-03-16T12:00:00+00:00",
+            "Timestamp should be from wrapper level"
+        );
+    }
+
+    #[test]
+    fn test_parse_line_skip_type() {
+        // Create a plugin with envelope config
+        let plugin = create_envelope_test_plugin();
+        let context = ParseContext::new(
+            "test-session".to_string(),
+            "test".to_string(),
+            "/tmp/test.jsonl".to_string(),
+        );
+
+        // Line with type=session should be skipped (routes to skip)
+        let line = r#"{"type": "session", "timestamp": "2026-03-16T12:00:00Z", "message": {"role": "system", "content": "session start"}}"#;
+        let events = JsonlParser::parse_line(line, 1, &context, &plugin).unwrap();
+
+        // Should return empty Vec
+        assert_eq!(events.len(), 0, "Skip-type routing should produce zero events");
+    }
+
+    #[test]
+    fn test_parse_line_meta_type() {
+        // Create a plugin with envelope config
+        let plugin = create_envelope_test_plugin();
+        let context = ParseContext::new(
+            "test-session".to_string(),
+            "test".to_string(),
+            "/tmp/test.jsonl".to_string(),
+        );
+
+        // Line with type=compaction should be skipped (routes to meta)
+        let line = r#"{"type": "compaction", "timestamp": "2026-03-16T12:00:00Z", "message": {"role": "system", "content": "compaction info"}}"#;
+        let events = JsonlParser::parse_line(line, 1, &context, &plugin).unwrap();
+
+        // Should return empty Vec
+        assert_eq!(events.len(), 0, "Meta-type routing should produce zero events");
+    }
+
+    #[test]
+    fn test_parse_line_envelope_field_extraction() {
+        // Create a plugin with envelope config
+        let plugin = create_envelope_test_plugin();
+        let context = ParseContext::new(
+            "test-session".to_string(),
+            "test".to_string(),
+            "/tmp/test.jsonl".to_string(),
+        );
+
+        // Line with both wrapper-level and payload-level fields
+        let line = r#"{"type": "message", "timestamp": "2026-03-16T12:00:00Z", "message": {"role": "assistant", "content": "Response text"}}"#;
+        let events = JsonlParser::parse_line(line, 1, &context, &plugin).unwrap();
+
+        // Should produce 1 event
+        assert_eq!(events.len(), 1, "Event-type routing should produce one event");
+        let event = &events[0];
+
+        // Verify that role and content are extracted from the payload
+        assert_eq!(event.role, Role::Assistant, "Role should come from payload");
+        assert_eq!(event.content, "Response text", "Content should come from payload");
+
+        // Verify timestamp is extracted correctly (in current implementation, this uses raw_json which includes both levels)
+        assert_eq!(
+            event.ts.to_rfc3339(),
+            "2026-03-16T12:00:00+00:00",
+            "Timestamp should be extracted"
         );
     }
 }
