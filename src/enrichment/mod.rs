@@ -10,6 +10,7 @@
 //! - Git commit correlation
 
 pub mod antipatterns;
+pub mod behavioral_signals;
 pub mod code_artifacts;
 pub mod errors;
 pub mod git;
@@ -18,6 +19,7 @@ pub mod solution;
 pub mod summary;
 
 pub use antipatterns::{detect_antipatterns, AntiPattern};
+pub use behavioral_signals::{BehavioralSignals, compute_behavioral_signals};
 pub use code_artifacts::{extract_code_artifacts, CodeArtifact};
 pub use errors::enrich_events;
 pub use git::{correlate_commits, GitCommit};
@@ -44,6 +46,8 @@ pub struct EnrichmentResult {
     pub anti_patterns: Vec<AntiPattern>,
     /// Git commits correlated with this session
     pub git_commits: Vec<GitCommit>,
+    /// Behavioral signals extracted from session events
+    pub behavioral_signals: Option<BehavioralSignals>,
 }
 
 /// Run the full enrichment pipeline on a session.
@@ -88,5 +92,6 @@ pub fn enrich_session(
         code_artifacts,
         anti_patterns,
         git_commits,
+        behavioral_signals: Some(compute_behavioral_signals(events)),
     }
 }
