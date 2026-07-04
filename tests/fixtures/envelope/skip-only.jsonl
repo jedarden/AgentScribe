@@ -1,0 +1,4 @@
+{"type": "heartbeat", "timestamp": "2026-07-04T10:00:05Z", "payload": {"status": "ok", "seq": 1}}
+{"type": "ping", "timestamp": "2026-07-04T10:00:10Z", "payload": {"seq": 2}}
+{"type": "heartbeat", "timestamp": "2026-07-04T10:00:15Z", "payload": {"status": "ok", "seq": 3}}
+{"type": "unlisted_type", "timestamp": "2026-07-04T10:00:20Z", "payload": {"foo": "bar"}}
