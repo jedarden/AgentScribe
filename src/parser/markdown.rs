@@ -11,6 +11,7 @@ use crate::plugin::{Plugin, SessionDetection};
 use chrono::Utc;
 use regex::Regex;
 use std::path::Path;
+use tracing::debug;
 
 /// Markdown parser implementation
 pub struct MarkdownParser;
@@ -49,7 +50,7 @@ impl MarkdownParser {
     /// This matches user events to timestamps from .aider.input.history
     /// to provide finer granularity for event timestamps.
     fn enrich_with_input_history(
-        events: &mut [Event],
+        events: &mut Vec<Event>,
         input_history: &AiderInputHistory,
     ) -> Result<()> {
         let mut user_event_index = 0;
@@ -72,7 +73,38 @@ impl MarkdownParser {
         Ok(())
     }
 
-    #[allow(dead_code)]
+    /// Auto-discover a sibling `.aider.input.history` companion file and attempt to load it.
+    ///
+    /// Best-effort: returns `None` for missing or unreadable files without error.
+    fn load_companion_input_history(source_path: &Path) -> Option<AiderInputHistory> {
+        let companion = source_path
+            .parent()
+            .map(|dir| dir.join(".aider.input.history"))?;
+
+        match AiderInputHistory::load_from_file(&companion) {
+            Ok(history) if !history.is_empty() => {
+                debug!(
+                    path = %companion.display(),
+                    entries = history.len(),
+                    "loaded .aider.input.history companion"
+                );
+                Some(history)
+            }
+            Ok(_) => {
+                debug!(path = %companion.display(), "companion input history is empty, skipping");
+                None
+            }
+            Err(e) => {
+                debug!(
+                    path = %companion.display(),
+                    error = %e,
+                    "companion .aider.input.history not available, skipping"
+                );
+                None
+            }
+        }
+    }
+
     fn parse_markdown(
         &self,
         content: &str,
@@ -234,17 +266,27 @@ impl super::FormatParser for MarkdownParser {
     fn parse(&self, source_path: &Path, plugin: &Plugin) -> Result<Vec<Event>> {
         let content = std::fs::read_to_string(source_path)?;
 
-        // For delimiter-based detection, we need to parse sessions
-        // For Phase 1, we'll treat the whole file as one session for simplicity
-        // Full implementation would split on delimiters
-
         let session_id = source_path
             .file_stem()
             .and_then(|s| s.to_str())
             .unwrap_or("unknown")
             .to_string();
 
-        Self::parse_content(&content, source_path, session_id, plugin)
+        // Auto-discover sibling .aider.input.history companion file (best-effort).
+        // Missing or unreadable files degrade gracefully — no error, no enrichment.
+        let input_history = Self::load_companion_input_history(source_path);
+
+        if let Some(ref history) = input_history {
+            Self::parse_content_with_input_history(
+                &content,
+                source_path,
+                session_id,
+                plugin,
+                Some(history),
+            )
+        } else {
+            Self::parse_content(&content, source_path, session_id, plugin)
+        }
     }
 
     fn detect_sessions(&self, source_path: &Path, plugin: &Plugin) -> Result<Vec<SessionInfo>> {
