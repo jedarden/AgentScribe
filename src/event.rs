@@ -75,6 +75,9 @@ pub struct Event {
     /// Tool name for tool_call/tool_result roles
     pub tool: Option<String>,
 
+    /// Structured tool call parameters
+    pub tool_params: Option<serde_json::Value>,
+
     /// Token counts
     pub tokens: Option<TokenCounts>,
 
@@ -108,6 +111,7 @@ impl Event {
             role,
             content,
             tool: None,
+            tool_params: None,
             tokens: None,
             model: None,
             file_paths: Vec::new(),
@@ -133,6 +137,13 @@ impl Event {
     #[allow(dead_code)]
     pub fn with_tool(mut self, tool: Option<String>) -> Self {
         self.tool = tool;
+        self
+    }
+
+    /// Set tool parameters
+    #[allow(dead_code)]
+    pub fn with_tool_params(mut self, params: Option<serde_json::Value>) -> Self {
+        self.tool_params = params;
         self
     }
 
@@ -189,6 +200,8 @@ pub struct SessionManifest {
     pub tags: Vec<String>,
     pub files_touched: Vec<String>,
     pub model: Option<String>,
+    /// Parent session ID for subagent sessions (format: <agent>/<id>)
+    pub parent_session_id: Option<String>,
 }
 
 impl SessionManifest {
@@ -206,6 +219,7 @@ impl SessionManifest {
             tags: Vec::new(),
             files_touched: Vec::new(),
             model: None,
+            parent_session_id: None,
         }
     }
 }
