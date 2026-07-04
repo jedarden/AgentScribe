@@ -3,12 +3,14 @@
 //! Each format has a dedicated parser that normalizes events to the canonical schema.
 
 mod aider_input;
+mod json_array;
 mod json_tree;
 mod jsonl;
 mod markdown;
 mod sqlite;
 
 pub use aider_input::{AiderInputEntry, AiderInputHistory};
+pub use json_array::JsonArrayParser;
 pub use json_tree::JsonTreeParser;
 pub use jsonl::JsonlParser;
 pub use markdown::MarkdownParser;
@@ -130,6 +132,29 @@ pub fn parse_timestamp(value: &Value, path: &str) -> Result<DateTime<Utc>> {
     )))
 }
 
+/// Extract a field from either envelope or payload based on path prefix
+///
+/// - If path starts with `^`, extract from envelope (remove `^` prefix)
+/// - Otherwise, extract from payload
+/// - Supports dot notation for nested fields (e.g., `^outer.ts` or `user.role`)
+/// - If envelope is None but path starts with `^`, returns None
+/// - If envelope is None, falls back to payload extraction
+pub fn extract_with_envelope(path: &str, payload: &Value, envelope: Option<&Value>) -> Option<Value> {
+    if path.starts_with('^') {
+        // Extract from envelope
+        let envelope_path = &path[1..]; // Remove the ^ prefix
+        if let Some(env) = envelope {
+            extract_field(env, envelope_path)
+        } else {
+            // No envelope available, return None
+            None
+        }
+    } else {
+        // Extract from payload
+        extract_field(payload, path)
+    }
+}
+
 /// Base trait for all format parsers
 pub trait FormatParser {
     /// Parse events from the source
@@ -197,5 +222,125 @@ mod tests {
         let value = json!({"ts": 1710590400});
         let result = parse_timestamp(&value, "ts");
         assert!(result.is_ok());
+    }
+
+    // extract_with_envelope tests
+
+    #[test]
+    fn test_extract_with_envelope_from_envelope() {
+        let payload = json!({"role": "user", "content": "hello"});
+        let envelope = json!({"timestamp": "2026-03-16T12:00:00Z", "session_id": "abc123"});
+
+        // Extract from envelope using ^ prefix
+        let result = extract_with_envelope("^timestamp", &payload, Some(&envelope));
+        assert_eq!(result, Some(json!("2026-03-16T12:00:00Z")));
+    }
+
+    #[test]
+    fn test_extract_with_envelope_from_payload() {
+        let payload = json!({"role": "user", "content": "hello"});
+        let envelope = json!({"timestamp": "2026-03-16T12:00:00Z"});
+
+        // Extract from payload (no ^ prefix)
+        let result = extract_with_envelope("role", &payload, Some(&envelope));
+        assert_eq!(result, Some(json!("user")));
+    }
+
+    #[test]
+    fn test_extract_with_envelope_dot_notation_from_envelope() {
+        let payload = json!({"role": "user"});
+        let envelope = json!({"outer": {"ts": "2026-03-16T12:00:00Z", "id": "xyz"}});
+
+        // Extract nested field from envelope using ^ prefix with dot notation
+        let result = extract_with_envelope("^outer.ts", &payload, Some(&envelope));
+        assert_eq!(result, Some(json!("2026-03-16T12:00:00Z")));
+    }
+
+    #[test]
+    fn test_extract_with_envelope_dot_notation_from_payload() {
+        let payload = json!({"user": {"role": "admin", "name": "alice"}});
+        let envelope = json!({"outer": {"ts": "2026-03-16T12:00:00Z"}});
+
+        // Extract nested field from payload using dot notation
+        let result = extract_with_envelope("user.role", &payload, Some(&envelope));
+        assert_eq!(result, Some(json!("admin")));
+    }
+
+    #[test]
+    fn test_extract_with_envelope_no_envelope_fallback_to_payload() {
+        let payload = json!({"role": "user", "content": "hello"});
+
+        // No envelope provided, should extract from payload
+        let result = extract_with_envelope("role", &payload, None);
+        assert_eq!(result, Some(json!("user")));
+    }
+
+    #[test]
+    fn test_extract_with_envelope_caret_prefix_no_envelope_returns_empty() {
+        let payload = json!({"role": "user", "content": "hello"});
+
+        // ^ prefix with no envelope should return None
+        let result = extract_with_envelope("^timestamp", &payload, None);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_extract_with_envelope_missing_field_from_envelope() {
+        let payload = json!({"role": "user"});
+        let envelope = json!({"timestamp": "2026-03-16T12:00:00Z"});
+
+        // Missing field in envelope should return None
+        let result = extract_with_envelope("^missing_field", &payload, Some(&envelope));
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_extract_with_envelope_missing_field_from_payload() {
+        let payload = json!({"role": "user"});
+        let envelope = json!({"timestamp": "2026-03-16T12:00:00Z"});
+
+        // Missing field in payload should return None
+        let result = extract_with_envelope("missing_field", &payload, Some(&envelope));
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_extract_with_envelope_array_from_envelope() {
+        let payload = json!({"role": "user"});
+        let envelope = json!({"items": [{"name": "first"}, {"name": "second"}]});
+
+        // Extract array element from envelope using ^ prefix
+        let result = extract_with_envelope("^items[0].name", &payload, Some(&envelope));
+        assert_eq!(result, Some(json!("first")));
+    }
+
+    #[test]
+    fn test_extract_with_envelope_array_from_payload() {
+        let payload = json!({"items": [{"name": "first"}, {"name": "second"}]});
+        let envelope = json!({"timestamp": "2026-03-16T12:00:00Z"});
+
+        // Extract array element from payload
+        let result = extract_with_envelope("items[1].name", &payload, Some(&envelope));
+        assert_eq!(result, Some(json!("second")));
+    }
+
+    #[test]
+    fn test_extract_with_envelope_empty_path() {
+        let payload = json!({"role": "user"});
+        let envelope = json!({"timestamp": "2026-03-16T12:00:00Z"});
+
+        // Empty path should return None
+        let result = extract_with_envelope("", &payload, Some(&envelope));
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_extract_with_envelope_only_caret_prefix() {
+        let payload = json!({"role": "user"});
+        let envelope = json!({"timestamp": "2026-03-16T12:00:00Z"});
+
+        // Only ^ with no field name should return None (empty path after removing ^)
+        let result = extract_with_envelope("^", &payload, Some(&envelope));
+        assert_eq!(result, None);
     }
 }
