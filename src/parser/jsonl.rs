@@ -64,7 +64,7 @@ impl JsonlParser {
         // Field extraction below still uses &raw_json exactly as before this bead.
         // Converting to envelope-aware field extraction (using payload_json) is a separate bead.
 
-        let (_envelope_json, _payload_json): (Option<&Value>, &Value) =
+        let (_envelope_json, working_json): (Option<&Value>, &Value) =
             if let Some(ref envelope_cfg) = plugin.source.envelope {
                 // Envelope mode: extract type and apply routing
                 let type_value =
@@ -93,6 +93,12 @@ impl JsonlParser {
                 // No envelope: both envelope_json and payload_json point to the full line
                 (None, &raw_json)
             };
+
+        // If unwrap produced a null payload (skip/meta routing), bail out early
+        // before falling through to field extraction which would hard-error.
+        if working_json.is_null() {
+            return Ok(Vec::new());
+        }
 
         // Check type filter (operate on raw_json - payload_json unused until next bead)
         if let Some(ref filter) = plugin.parser.include_types {
