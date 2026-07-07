@@ -7,6 +7,7 @@ use crate::error::{AgentScribeError, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use tracing::warn;
 
 /// Plugin definition from TOML
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -24,6 +25,23 @@ pub struct Plugin {
 pub struct PluginMeta {
     pub name: String,
     pub version: String,
+}
+
+/// Configuration for JSON array sources
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JsonArraySourceConfig {
+    /// Dot-path to the array within the JSON document (e.g., "data.items")
+    /// Empty string means the document root is the array
+    #[serde(default)]
+    pub items_path: String,
+}
+
+impl Default for JsonArraySourceConfig {
+    fn default() -> Self {
+        JsonArraySourceConfig {
+            items_path: String::new(),
+        }
+    }
 }
 
 /// Envelope configuration for JSONL sources where lines are wrapped
@@ -51,8 +69,14 @@ impl Envelope {
                     _ => "skip",
                 }
             }
-            // Unknown types default to skip
-            None => "skip",
+            // Unknown types default to skip with a warning
+            None => {
+                warn!(
+                    type_value = type_value,
+                    "Unknown envelope type value, routing to 'skip'"
+                );
+                "skip"
+            }
         }
     }
 
@@ -91,6 +115,9 @@ pub struct Source {
     /// Optional envelope unwrapping for wrapped JSONL lines
     #[serde(default)]
     pub envelope: Option<Envelope>,
+    /// Optional array configuration for JSON array sources
+    #[serde(default)]
+    pub array: Option<JsonArraySourceConfig>,
 }
 
 /// Supported log formats
