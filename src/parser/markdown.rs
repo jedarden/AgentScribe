@@ -49,10 +49,7 @@ impl MarkdownParser {
     ///
     /// This matches user events to timestamps from .aider.input.history
     /// to provide finer granularity for event timestamps.
-    fn enrich_with_input_history(
-        events: &mut Vec<Event>,
-        input_history: &AiderInputHistory,
-    ) -> Result<()> {
+    fn enrich_with_input_history(events: &mut [Event], input_history: &AiderInputHistory) -> Result<()> {
         let mut user_event_index = 0;
 
         for event in events.iter_mut() {
@@ -105,6 +102,7 @@ impl MarkdownParser {
         }
     }
 
+    #[allow(dead_code)]
     fn parse_markdown(
         &self,
         content: &str,
@@ -316,6 +314,7 @@ impl super::FormatParser for MarkdownParser {
                             start_offset: current_offset,
                             end_offset: current_offset + line_bytes,
                             metadata: None,
+                            parent_session_id: None,
                         });
                         session_num += 1;
                     }
@@ -334,6 +333,7 @@ impl super::FormatParser for MarkdownParser {
                         start_offset: 0,
                         end_offset: file_size,
                         metadata: None,
+                        parent_session_id: None,
                     });
                 }
 
@@ -351,6 +351,7 @@ impl super::FormatParser for MarkdownParser {
                     start_offset: 0,
                     end_offset: file_size,
                     metadata: None,
+                    parent_session_id: None,
                 }])
             }
         }
@@ -378,6 +379,7 @@ mod tests {
                 },
                 tree: None,
                 truncation_limit: None,
+                array: None,
                 envelope: None,
             },
             parser: Parser {
@@ -461,5 +463,71 @@ I'll add JWT validation to the auth middleware.
         // Second user event
         assert!(user_events[1].content.starts_with("Add JWT validation"));
         assert_eq!(user_events[1].ts.timestamp(), 1773662745); // 2026-03-16 12:05:45
+    }
+
+    /// Scrape-path test: MarkdownParser::parse() auto-discovers and enriches with .aider.input.history
+    ///
+    /// This tests the full FormatParser::parse() path which includes:
+    /// - Auto-discovery of sibling .aider.input.history file
+    /// - Loading the input history
+    /// - Enriching user events with input-history timestamps
+    #[test]
+    fn test_parse_aider_scrape_path_with_input_history() {
+        use std::fs;
+        use tempfile::TempDir;
+
+        let plugin = create_aider_plugin();
+
+        // Create a temp directory with both the markdown file and the companion input history
+        let temp_dir = TempDir::new().unwrap();
+        let md_path = temp_dir.path().join(".aider.chat.history.md");
+        let input_path = temp_dir.path().join(".aider.input.history");
+
+        // Write the markdown file
+        let content = r#"# aider chat started at 2026-07-06 10:00:00
+
+#### Fix the authentication middleware
+
+I'll help you fix the authentication middleware. Let me check the current implementation.
+
+> git status
+On branch main
+Your branch is up to date with 'origin/main'.
+
+#### Add error handling for expired tokens
+
+I'll add proper error handling for expired JWT tokens.
+
+> cat src/auth/middleware.rs
+..."#;
+        fs::write(&md_path, content).unwrap();
+
+        // Write the companion input history file
+        let input_content = r#"# 2026-07-06 10:00:30
++ Fix the authentication middleware
+# 2026-07-06 10:05:45
++ Add error handling for expired tokens
+"#;
+        fs::write(&input_path, input_content).unwrap();
+
+        // Parse through the FormatParser::parse() path (scrape path with auto-discovery)
+        let parser = MarkdownParser;
+        let events = parser.parse(&md_path, &plugin).unwrap();
+
+        // Should have user events with enriched timestamps
+        let user_events: Vec<_> = events.iter().filter(|e| e.role == Role::User).collect();
+        assert_eq!(user_events.len(), 2);
+
+        // First user event - timestamp from input history, not Utc::now()
+        assert!(user_events[0]
+            .content
+            .contains("Fix the authentication middleware"));
+        assert_eq!(user_events[0].ts.timestamp(), 1720267230); // 2026-07-06 10:00:30
+
+        // Second user event - timestamp from input history
+        assert!(user_events[1]
+            .content
+            .contains("Add error handling for expired tokens"));
+        assert_eq!(user_events[1].ts.timestamp(), 1720270345); // 2026-07-06 10:05:45
     }
 }

@@ -499,6 +499,7 @@ impl super::FormatParser for SqliteParser {
                     start_offset: 0,
                     end_offset: file_size,
                     metadata: None,
+                    parent_session_id: None,
                 }]);
             }
 
@@ -509,6 +510,7 @@ impl super::FormatParser for SqliteParser {
                     start_offset: 0,
                     end_offset: file_size,
                     metadata: None,
+                    parent_session_id: None,
                 })
                 .collect());
         }
@@ -520,6 +522,7 @@ impl super::FormatParser for SqliteParser {
             start_offset: 0,
             end_offset: file_size,
             metadata: None,
+            parent_session_id: None,
         }])
     }
 }

@@ -399,11 +399,33 @@ impl super::FormatParser for JsonlParser {
 
                 let file_size = std::fs::metadata(source_path)?.len();
 
+                // Detect subagent sessions and extract parent_session_id from directory structure
+                // Subagent files are at: ~/.claude/projects/<path>/<parent-session-uuid>/subagents/agent-<id>.jsonl
+                let parent_session_id = source_path
+                    .components()
+                    .collect::<Vec<_>>()
+                    .iter()
+                    .position(|c| c.as_os_str() == "subagents")
+                    .and_then(|subagents_idx| {
+                        // Parent session UUID is the component before "subagents"
+                        if subagents_idx > 0 {
+                            source_path
+                                .components()
+                                .collect::<Vec<_>>()
+                                .get(subagents_idx - 1)
+                                .and_then(|c| c.as_os_str().to_str())
+                                .map(|s| s.to_string())
+                        } else {
+                            None
+                        }
+                    });
+
                 Ok(vec![SessionInfo {
                     session_id,
                     start_offset: 0,
                     end_offset: file_size,
                     metadata: None,
+                    parent_session_id,
                 }])
             }
             _ => {
@@ -1045,12 +1067,20 @@ mod tests {
 
         // Wrapper should be the full original line
         assert_eq!(
-            wrapper.as_ref().unwrap().get("type").and_then(|v| v.as_str()),
+            wrapper
+                .as_ref()
+                .unwrap()
+                .get("type")
+                .and_then(|v| v.as_str()),
             Some("message"),
             "Wrapper should preserve the type field"
         );
         assert_eq!(
-            wrapper.as_ref().unwrap().get("timestamp").and_then(|v| v.as_str()),
+            wrapper
+                .as_ref()
+                .unwrap()
+                .get("timestamp")
+                .and_then(|v| v.as_str()),
             Some("2026-03-16T12:00:00Z"),
             "Wrapper should preserve wrapper-level fields"
         );
@@ -1097,7 +1127,11 @@ mod tests {
             "Meta type should return Some wrapper for metadata extraction"
         );
         assert_eq!(
-            wrapper.as_ref().unwrap().get("type").and_then(|v| v.as_str()),
+            wrapper
+                .as_ref()
+                .unwrap()
+                .get("type")
+                .and_then(|v| v.as_str()),
             Some("session_meta"),
             "Wrapper should preserve the type field"
         );
@@ -1197,7 +1231,8 @@ mod tests {
     fn test_unwrap_envelope_empty_type_field_defaults_to_skip() {
         let envelope = create_test_envelope();
         // Empty type field - should default to skip
-        let line = r#"{"type": "", "timestamp": "2026-03-16T12:00:00Z", "payload": {"role": "user"}}"#;
+        let line =
+            r#"{"type": "", "timestamp": "2026-03-16T12:00:00Z", "payload": {"role": "user"}}"#;
         let json: Value = serde_json::from_str(line).unwrap();
 
         let (payload, wrapper) = unwrap_envelope(&json, &envelope);
@@ -1227,17 +1262,28 @@ mod tests {
             payload.get("role").and_then(|v| v.as_str()),
             Some("assistant")
         );
-        assert_eq!(payload.get("content").and_then(|v| v.as_str()), Some("Response"));
+        assert_eq!(
+            payload.get("content").and_then(|v| v.as_str()),
+            Some("Response")
+        );
         assert!(payload.get("tool_calls").is_some());
 
         // Verify wrapper contains all original fields including wrapper-level ones
         assert_eq!(
-            wrapper.as_ref().unwrap().get("request_id").and_then(|v| v.as_str()),
+            wrapper
+                .as_ref()
+                .unwrap()
+                .get("request_id")
+                .and_then(|v| v.as_str()),
             Some("req-123"),
             "Wrapper should contain wrapper-level fields"
         );
         assert_eq!(
-            wrapper.as_ref().unwrap().get("timestamp").and_then(|v| v.as_str()),
+            wrapper
+                .as_ref()
+                .unwrap()
+                .get("timestamp")
+                .and_then(|v| v.as_str()),
             Some("2026-03-16T12:00:00Z"),
             "Wrapper should contain timestamp"
         );

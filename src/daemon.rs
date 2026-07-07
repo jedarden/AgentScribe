@@ -1155,6 +1155,8 @@ mod tests {
                 session_detection: SessionDetection::default(),
                 tree: None,
                 truncation_limit: None,
+                array: None,
+                envelope: None,
             },
             parser: Parser::default(),
             metadata: None,

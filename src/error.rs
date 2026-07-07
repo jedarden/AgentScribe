@@ -80,6 +80,10 @@ pub enum AgentScribeError {
     /// Vector index errors
     #[error("Vector index error: {0}")]
     VectorIndex(String),
+
+    /// Reflection export errors
+    #[error("Reflection error: {0}")]
+    Reflection(String),
 }
 
 impl AgentScribeError {

@@ -357,6 +357,7 @@ impl super::FormatParser for JsonTreeParser {
                 start_offset: 0,
                 end_offset: 0, // N/A for tree structure
                 metadata: Some(session.metadata),
+                parent_session_id: None,
             });
         }
 

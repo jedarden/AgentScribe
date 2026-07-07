@@ -236,6 +236,9 @@ pub struct SessionInfo {
     pub start_offset: u64,
     pub end_offset: u64,
     pub metadata: Option<Value>,
+    /// Parent session ID (populated for subagent sessions where this session
+    /// is a child of another session)
+    pub parent_session_id: Option<String>,
 }
 
 #[cfg(test)]

@@ -2694,7 +2694,7 @@ fn run_summarize(
                 agent,
                 events.first().and_then(|e| e.project.as_deref()),
                 events.first().and_then(|e| e.model.as_deref()),
-                None,
+                None, // parent_session_id
             );
 
             // Apply filters
@@ -3361,6 +3361,7 @@ fn run_render(session_id: String, output: Option<PathBuf>, format: String) -> Re
         parts[0],
         events.first().and_then(|e| e.project.as_deref()),
         events.first().and_then(|e| e.model.as_deref()),
+        None,
     );
 
     // Render based on format
@@ -3445,7 +3446,28 @@ fn run_reflect_sessions(
         .map_err(|e| crate::error::AgentScribeError::Reflection(format!("{}", e)))?;
 
     // Load all sessions
-    let sessions = crate::scraper::load_all_sessions(&sessions_dir)?;
+    let mut scraper = crate::scraper::Scraper::new(data_dir.to_path_buf())?;
+    scraper.load_plugins()?;
+
+    let mut sessions = Vec::new();
+    for session_id in scraper.all_sessions()? {
+        let events = scraper.read_session(&session_id)?;
+        if events.is_empty() {
+            continue;
+        }
+
+        let agent = session_id.split('/').next().unwrap_or("unknown");
+        let manifest = crate::index::build_manifest_from_events(
+            &events,
+            &session_id,
+            agent,
+            events.first().and_then(|e| e.project.as_deref()),
+            events.first().and_then(|e| e.model.as_deref()),
+            None,
+        );
+
+        sessions.push((session_id, events, manifest));
+    }
 
     // Build filter
     let filter = ReflectFilter {
