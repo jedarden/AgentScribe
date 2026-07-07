@@ -14,6 +14,64 @@ use std::path::Path;
 /// JSONL parser implementation
 pub struct JsonlParser;
 
+/// Unwrap an envelope wrapper and extract the payload based on type routing
+///
+/// Given a parsed JSON line and envelope configuration, this function:
+/// 1. Reads the type_field from the JSON
+/// 2. Looks up the routing action via get_routing()
+/// 3. Returns (payload_json, envelope_json):
+///    - For 'skip' types: (empty object, None) to drop the line
+///    - For 'meta' types: (empty object, Some(wrapper)) for future session metadata
+///    - For 'event' types: (payload extracted from payload_field, Some(wrapper))
+///
+/// Gracefully handles missing payload_field and non-object payloads by returning
+/// (empty object, None) to skip the line with a warning.
+fn unwrap_envelope(raw_json: &Value, envelope: &crate::plugin::Envelope) -> (Value, Option<Value>) {
+    // Extract the type field value
+    let type_value = extract_string(raw_json, &envelope.type_field).unwrap_or_default();
+    let routing = envelope.get_routing(&type_value);
+
+    match routing {
+        "skip" => {
+            // Return empty payload with None envelope to signal "drop this line"
+            (serde_json::json!({}), None)
+        }
+        "meta" => {
+            // Return empty payload but preserve the envelope wrapper for metadata extraction
+            (serde_json::json!({}), Some(raw_json.clone()))
+        }
+        "event" => {
+            // Extract payload from payload_field
+            let extracted = raw_json.get(&envelope.payload_field).and_then(|v| {
+                // Only use if it's an object (not a string/null/etc)
+                match v {
+                    Value::Object(_) => Some(v),
+                    _ => None,
+                }
+            });
+
+            match extracted {
+                Some(payload) => {
+                    // Return the extracted payload along with the envelope wrapper
+                    (payload.clone(), Some(raw_json.clone()))
+                }
+                None => {
+                    // Missing or non-object payload_field - skip with warning
+                    eprintln!(
+                        "Warning: Envelope payload_field '{}' missing or not an object for type '{}', skipping line",
+                        envelope.payload_field, type_value
+                    );
+                    (serde_json::json!({}), None)
+                }
+            }
+        }
+        _ => {
+            // Unknown routing (shouldn't happen due to get_routing defaults, but handle defensively)
+            (serde_json::json!({}), None)
+        }
+    }
+}
+
 /// Opens a file, optionally decompressing if it has a .zst extension
 fn open_file_maybe_zst(path: &Path) -> Result<Box<dyn BufRead>> {
     let file = std::fs::File::open(path)?;
@@ -382,6 +440,7 @@ mod tests {
                 tree: None,
                 truncation_limit: None,
                 envelope: None,
+                array: None,
             },
             parser: Parser {
                 timestamp: Some("ts".to_string()),
@@ -419,6 +478,7 @@ mod tests {
                     type_field: "type".to_string(),
                     type_routing,
                 }),
+                array: None,
             },
             parser: Parser {
                 timestamp: Some("timestamp".to_string()),
@@ -452,6 +512,7 @@ mod tests {
                 tree: None,
                 truncation_limit: None,
                 envelope: None,
+                array: None,
             },
             parser: Parser {
                 timestamp: Some("timestamp".to_string()),
@@ -634,11 +695,11 @@ mod tests {
 
         for (label, line) in &skip_lines {
             let events = JsonlParser::parse_line(line, 1, &context, &plugin).unwrap();
-            assert_eq!(
-                events,
-                Vec::new(),
-                "skip-type '{}' should produce zero events",
-                label
+            assert!(
+                events.is_empty(),
+                "skip-type '{}' should produce zero events, got {} events",
+                label,
+                events.len()
             );
         }
     }
@@ -820,6 +881,7 @@ mod tests {
                     type_field: "type".to_string(),
                     type_routing,
                 }),
+                array: None,
             },
             parser: Parser {
                 timestamp: Some("timestamp".to_string()),
@@ -944,5 +1006,267 @@ mod tests {
             4,
             "mixed fixture should produce 4 events from message lines only"
         );
+    }
+
+    // -- unwrap_envelope unit tests --
+
+    fn create_test_envelope() -> crate::plugin::Envelope {
+        let mut type_routing = std::collections::HashMap::new();
+        type_routing.insert("message".to_string(), "event".to_string());
+        type_routing.insert("heartbeat".to_string(), "skip".to_string());
+        type_routing.insert("session_meta".to_string(), "meta".to_string());
+        type_routing.insert("ping".to_string(), "skip".to_string());
+        crate::plugin::Envelope {
+            payload_field: "payload".to_string(),
+            type_field: "type".to_string(),
+            type_routing,
+        }
+    }
+
+    #[test]
+    fn test_unwrap_envelope_event_type_returns_payload_and_wrapper() {
+        let envelope = create_test_envelope();
+        let line = r#"{"type": "message", "timestamp": "2026-03-16T12:00:00Z", "payload": {"role": "user", "content": "Hello"}}"#;
+        let json: Value = serde_json::from_str(line).unwrap();
+
+        let (payload, wrapper) = unwrap_envelope(&json, &envelope);
+
+        // Payload should be the extracted payload object
+        assert_eq!(
+            payload.get("role").and_then(|v| v.as_str()),
+            Some("user"),
+            "Payload should contain role from payload_field"
+        );
+        assert_eq!(
+            payload.get("content").and_then(|v| v.as_str()),
+            Some("Hello"),
+            "Payload should contain content from payload_field"
+        );
+
+        // Wrapper should be the full original line
+        assert_eq!(
+            wrapper.as_ref().unwrap().get("type").and_then(|v| v.as_str()),
+            Some("message"),
+            "Wrapper should preserve the type field"
+        );
+        assert_eq!(
+            wrapper.as_ref().unwrap().get("timestamp").and_then(|v| v.as_str()),
+            Some("2026-03-16T12:00:00Z"),
+            "Wrapper should preserve wrapper-level fields"
+        );
+    }
+
+    #[test]
+    fn test_unwrap_envelope_skip_type_returns_empty_and_none() {
+        let envelope = create_test_envelope();
+        let line = r#"{"type": "heartbeat", "timestamp": "2026-03-16T12:00:00Z", "payload": {"status": "ok"}}"#;
+        let json: Value = serde_json::from_str(line).unwrap();
+
+        let (payload, wrapper) = unwrap_envelope(&json, &envelope);
+
+        // Payload should be empty object
+        assert!(
+            payload.as_object().map_or(false, |obj| obj.is_empty()),
+            "Skip type should return empty payload object"
+        );
+
+        // Wrapper should be None (signal to drop the line)
+        assert!(
+            wrapper.is_none(),
+            "Skip type should return None for wrapper to signal drop"
+        );
+    }
+
+    #[test]
+    fn test_unwrap_envelope_meta_type_returns_empty_and_wrapper() {
+        let envelope = create_test_envelope();
+        let line = r#"{"type": "session_meta", "timestamp": "2026-03-16T12:00:00Z", "payload": {"session_id": "sess-001"}}"#;
+        let json: Value = serde_json::from_str(line).unwrap();
+
+        let (payload, wrapper) = unwrap_envelope(&json, &envelope);
+
+        // Payload should be empty object
+        assert!(
+            payload.as_object().map_or(false, |obj| obj.is_empty()),
+            "Meta type should return empty payload object"
+        );
+
+        // Wrapper should be Some for future metadata extraction
+        assert!(
+            wrapper.is_some(),
+            "Meta type should return Some wrapper for metadata extraction"
+        );
+        assert_eq!(
+            wrapper.as_ref().unwrap().get("type").and_then(|v| v.as_str()),
+            Some("session_meta"),
+            "Wrapper should preserve the type field"
+        );
+        assert_eq!(
+            wrapper
+                .as_ref()
+                .unwrap()
+                .get("payload")
+                .and_then(|v| v.get("session_id"))
+                .and_then(|v| v.as_str()),
+            Some("sess-001"),
+            "Wrapper should preserve the original structure"
+        );
+    }
+
+    #[test]
+    fn test_unwrap_envelope_unknown_type_returns_empty_and_none() {
+        let envelope = create_test_envelope();
+        // "unknown_event" is not in the routing map → defaults to skip
+        let line = r#"{"type": "unknown_event", "timestamp": "2026-03-16T12:00:00Z", "payload": {"data": "test"}}"#;
+        let json: Value = serde_json::from_str(line).unwrap();
+
+        let (payload, wrapper) = unwrap_envelope(&json, &envelope);
+
+        // Should behave like skip type
+        assert!(
+            payload.as_object().map_or(false, |obj| obj.is_empty()),
+            "Unknown type should return empty payload object"
+        );
+        assert!(
+            wrapper.is_none(),
+            "Unknown type should return None for wrapper"
+        );
+    }
+
+    #[test]
+    fn test_unwrap_envelope_missing_payload_field_returns_empty_and_none() {
+        let envelope = create_test_envelope();
+        // Line without the expected payload_field
+        let line = r#"{"type": "message", "timestamp": "2026-03-16T12:00:00Z", "data": {"role": "user", "content": "Hello"}}"#;
+        let json: Value = serde_json::from_str(line).unwrap();
+
+        let (payload, wrapper) = unwrap_envelope(&json, &envelope);
+
+        // Should return empty payload and None wrapper (skip with warning)
+        assert!(
+            payload.as_object().map_or(false, |obj| obj.is_empty()),
+            "Missing payload_field should return empty payload object"
+        );
+        assert!(
+            wrapper.is_none(),
+            "Missing payload_field should return None for wrapper"
+        );
+    }
+
+    #[test]
+    fn test_unwrap_envelope_non_object_payload_returns_empty_and_none() {
+        let envelope = create_test_envelope();
+        // payload_field is a string instead of an object
+        let line = r#"{"type": "message", "timestamp": "2026-03-16T12:00:00Z", "payload": "not an object"}"#;
+        let json: Value = serde_json::from_str(line).unwrap();
+
+        let (payload, wrapper) = unwrap_envelope(&json, &envelope);
+
+        // Should return empty payload and None wrapper (skip with warning)
+        assert!(
+            payload.as_object().map_or(false, |obj| obj.is_empty()),
+            "Non-object payload should return empty payload object"
+        );
+        assert!(
+            wrapper.is_none(),
+            "Non-object payload should return None for wrapper"
+        );
+    }
+
+    #[test]
+    fn test_unwrap_envelope_null_payload_returns_empty_and_none() {
+        let envelope = create_test_envelope();
+        // payload_field is explicitly null
+        let line = r#"{"type": "message", "timestamp": "2026-03-16T12:00:00Z", "payload": null}"#;
+        let json: Value = serde_json::from_str(line).unwrap();
+
+        let (payload, wrapper) = unwrap_envelope(&json, &envelope);
+
+        // Should return empty payload and None wrapper (skip with warning)
+        assert!(
+            payload.as_object().map_or(false, |obj| obj.is_empty()),
+            "Null payload should return empty payload object"
+        );
+        assert!(
+            wrapper.is_none(),
+            "Null payload should return None for wrapper"
+        );
+    }
+
+    #[test]
+    fn test_unwrap_envelope_empty_type_field_defaults_to_skip() {
+        let envelope = create_test_envelope();
+        // Empty type field - should default to skip
+        let line = r#"{"type": "", "timestamp": "2026-03-16T12:00:00Z", "payload": {"role": "user"}}"#;
+        let json: Value = serde_json::from_str(line).unwrap();
+
+        let (payload, wrapper) = unwrap_envelope(&json, &envelope);
+
+        // Should behave like skip type
+        assert!(
+            payload.as_object().map_or(false, |obj| obj.is_empty()),
+            "Empty type field should return empty payload object"
+        );
+        assert!(
+            wrapper.is_none(),
+            "Empty type field should return None for wrapper"
+        );
+    }
+
+    #[test]
+    fn test_unwrap_envelope_complex_event_payload_extraction() {
+        let envelope = create_test_envelope();
+        // Test with a more complex payload structure
+        let line = r#"{"type": "message", "timestamp": "2026-03-16T12:00:00Z", "request_id": "req-123", "payload": {"role": "assistant", "content": "Response", "tool_calls": [{"name": "search", "args": {"query": "test"}}]}}"#;
+        let json: Value = serde_json::from_str(line).unwrap();
+
+        let (payload, wrapper) = unwrap_envelope(&json, &envelope);
+
+        // Verify payload contains all nested fields from payload_field
+        assert_eq!(
+            payload.get("role").and_then(|v| v.as_str()),
+            Some("assistant")
+        );
+        assert_eq!(payload.get("content").and_then(|v| v.as_str()), Some("Response"));
+        assert!(payload.get("tool_calls").is_some());
+
+        // Verify wrapper contains all original fields including wrapper-level ones
+        assert_eq!(
+            wrapper.as_ref().unwrap().get("request_id").and_then(|v| v.as_str()),
+            Some("req-123"),
+            "Wrapper should contain wrapper-level fields"
+        );
+        assert_eq!(
+            wrapper.as_ref().unwrap().get("timestamp").and_then(|v| v.as_str()),
+            Some("2026-03-16T12:00:00Z"),
+            "Wrapper should contain timestamp"
+        );
+    }
+
+    #[test]
+    fn test_unwrap_envelope_different_skip_types_all_return_empty_none() {
+        let envelope = create_test_envelope();
+
+        // Test both "heartbeat" and "ping" route to skip
+        let skip_lines = [
+            r#"{"type": "heartbeat", "timestamp": "2026-03-16T12:00:00Z", "payload": {"status": "ok"}}"#,
+            r#"{"type": "ping", "timestamp": "2026-03-16T12:00:00Z", "payload": {"seq": 1}}"#,
+        ];
+
+        for line in &skip_lines {
+            let json: Value = serde_json::from_str(line).unwrap();
+            let (payload, wrapper) = unwrap_envelope(&json, &envelope);
+
+            assert!(
+                payload.as_object().map_or(false, |obj| obj.is_empty()),
+                "Skip type '{}' should return empty payload",
+                line
+            );
+            assert!(
+                wrapper.is_none(),
+                "Skip type '{}' should return None wrapper",
+                line
+            );
+        }
     }
 }
