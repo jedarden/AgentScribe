@@ -71,6 +71,9 @@ pub struct ReflectSession {
     /// Config file changes observed after this session
     #[serde(skip_serializing_if = "Option::is_none")]
     pub config_changes_after: Option<Vec<ConfigChangeAfter>>,
+    /// Parent session ID (for subagent sessions)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_session_id: Option<String>,
 }
 
 /// Entry for an anti-pattern detected in a session
@@ -126,6 +129,9 @@ pub struct ReflectionSession {
     pub cwd_switch_count: u32,
     /// Ratio: assistant turns / total turns
     pub assistant_turn_ratio: f32,
+    /// Parent session ID (for subagent sessions)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_session_id: Option<String>,
 }
 
 /// Tool call counts breakdown
@@ -319,6 +325,7 @@ pub fn export_reflect_sessions(
             anti_patterns,
             files_touched: manifest.files_touched.clone(),
             config_changes_after: None, // Populated by config_change_tracker if needed
+            parent_session_id: manifest.parent_session_id.clone(),
         };
 
         results.push(reflect_session);
@@ -612,6 +619,7 @@ pub fn list_reflection_sessions(
             multi_edit_files: signals.multi_edit_files,
             cwd_switch_count: signals.cwd_switch_count,
             assistant_turn_ratio: signals.assistant_turn_ratio,
+            parent_session_id: manifest.parent_session_id.clone(),
         };
 
         results.push(reflect_session);
@@ -680,6 +688,7 @@ pub fn parse_sessions_from_index(
             multi_edit_files: signals.multi_edit_files,
             cwd_switch_count: signals.cwd_switch_count,
             assistant_turn_ratio: signals.assistant_turn_ratio,
+            parent_session_id: manifest.parent_session_id.clone(),
         };
 
         results.push(reflect_session);
@@ -802,6 +811,7 @@ mod tests {
             anti_patterns: Vec::new(),
             files_touched: Vec::new(),
             config_changes_after: None,
+            parent_session_id: None,
         };
 
         let json = serde_json::to_string(&session).unwrap();

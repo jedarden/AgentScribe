@@ -13,7 +13,9 @@ pub use state::StateManager;
 use crate::error::{AgentScribeError, Result};
 use crate::event::Event;
 use crate::index::{build_manifest_from_events, IndexManager};
-use crate::parser::{FormatParser, JsonTreeParser, JsonlParser, MarkdownParser, SqliteParser};
+use crate::parser::{
+    FormatParser, JsonArrayParser, JsonTreeParser, JsonlParser, MarkdownParser, SqliteParser,
+};
 use crate::plugin::{LogFormat, ModelDetection, Plugin, PluginManager, ProjectDetection};
 use chrono::Utc;
 use glob::glob;
@@ -212,12 +214,19 @@ impl Scraper {
         events: &[Event],
         session_id: &str,
         source_agent: &str,
+        parent_session_id: Option<&str>,
         project: Option<&str>,
         model: Option<&str>,
     ) -> bool {
         if let Some(ref mut mgr) = self.index_manager {
-            let manifest =
-                build_manifest_from_events(events, session_id, source_agent, project, model, None);
+            let manifest = build_manifest_from_events(
+                events,
+                session_id,
+                source_agent,
+                project,
+                model,
+                parent_session_id,
+            );
             match mgr.index_session(events, &manifest) {
                 Ok(()) => true,
                 Err(e) => {
@@ -419,6 +428,7 @@ impl Scraper {
             LogFormat::Markdown => Box::new(MarkdownParser),
             LogFormat::JsonTree => Box::new(JsonTreeParser),
             LogFormat::Sqlite => Box::new(SqliteParser),
+            LogFormat::JsonArray => Box::new(JsonArrayParser),
         };
 
         // Detect sessions in the file
@@ -464,6 +474,13 @@ impl Scraper {
 
         for session_info in sessions {
             let prefixed_session_id = format!("{}/{}", plugin.plugin.name, session_info.session_id);
+
+            // Detect if this is a subagent session by checking for parent_session_id
+            let source_agent = if session_info.parent_session_id.is_some() {
+                format!("{}-subagent", plugin.plugin.name)
+            } else {
+                plugin.plugin.name.clone()
+            };
 
             // Detect model for this session
             let model = self.detect_model(file_path, &session_info, plugin)?;
@@ -544,7 +561,8 @@ impl Scraper {
                     if self.index_session_events(
                         &events,
                         &prefixed_session_id,
-                        &plugin.plugin.name,
+                        &source_agent,
+                        session_info.parent_session_id.as_deref(),
                         project.as_deref(),
                         model.as_deref(),
                     ) {
@@ -1206,8 +1224,12 @@ mod tests {
                 .unwrap_or_else(|e| panic!("tilde expansion failed for {:?}: {}", pattern, e))
                 .into_owned();
             // Must still compile as a valid glob::Pattern
-            let pat = glob::Pattern::new(&expanded)
-                .unwrap_or_else(|e| panic!("expanded {:?} -> {:?} is not valid glob: {}", pattern, expanded, e));
+            let pat = glob::Pattern::new(&expanded).unwrap_or_else(|e| {
+                panic!(
+                    "expanded {:?} -> {:?} is not valid glob: {}",
+                    pattern, expanded, e
+                )
+            });
             assert_eq!(expanded, expected, "tilde expansion of {:?}", pattern);
             // Sanity: pattern string round-trips through compilation
             assert_eq!(pat.as_str(), expanded);
@@ -1245,8 +1267,12 @@ mod tests {
             let expanded = shellexpand::full(pattern)
                 .unwrap_or_else(|e| panic!("env expansion failed for {:?}: {}", pattern, e))
                 .into_owned();
-            let _pat = glob::Pattern::new(&expanded)
-                .unwrap_or_else(|e| panic!("expanded {:?} -> {:?} is not valid glob: {}", pattern, expanded, e));
+            let _pat = glob::Pattern::new(&expanded).unwrap_or_else(|e| {
+                panic!(
+                    "expanded {:?} -> {:?} is not valid glob: {}",
+                    pattern, expanded, e
+                )
+            });
             assert_eq!(&expanded, *expected, "env-var expansion of {:?}", pattern);
         }
 
@@ -1296,10 +1322,21 @@ mod tests {
             Err(_) => pattern.to_string(),
         };
         // After fallback, the expanded text should still be a valid glob containing the wildcard.
-        assert!(expanded.contains("*.log"), "wildcard should survive fallback, got: {:?}", expanded);
-        assert!(glob::Pattern::new(&expanded).is_ok(), "fallback {:?} should be valid glob", expanded);
+        assert!(
+            expanded.contains("*.log"),
+            "wildcard should survive fallback, got: {:?}",
+            expanded
+        );
+        assert!(
+            glob::Pattern::new(&expanded).is_ok(),
+            "fallback {:?} should be valid glob",
+            expanded
+        );
         // Critically, it should NOT be empty (the old bug behavior).
-        assert!(!expanded.is_empty(), "expansion failure must not produce empty pattern");
+        assert!(
+            !expanded.is_empty(),
+            "expansion failure must not produce empty pattern"
+        );
     }
 
     #[test]

@@ -591,6 +591,7 @@ pub fn build_manifest_from_events(
     source_agent: &str,
     project: Option<&str>,
     model: Option<&str>,
+    parent_session_id: Option<&str>,
 ) -> SessionManifest {
     let started = events.first().map(|e| e.ts).unwrap_or_else(Utc::now);
     let ended = events.last().map(|e| e.ts);
@@ -618,6 +619,7 @@ pub fn build_manifest_from_events(
         tags: Vec::new(),
         files_touched,
         model: model.map(|s| s.to_string()),
+        parent_session_id: parent_session_id.map(|s| s.to_string()),
     }
 }
 
@@ -1026,6 +1028,7 @@ mod tests {
             "claude",
             Some("/project"),
             Some("claude-3"),
+            None, // parent_session_id
         );
         assert_eq!(manifest.session_id, "test/1");
         assert_eq!(manifest.source_agent, "claude");
@@ -1039,7 +1042,8 @@ mod tests {
 
     #[test]
     fn test_build_manifest_from_events_empty() {
-        let manifest = build_manifest_from_events(&[], "test/2", "aider", None, None);
+        let manifest = build_manifest_from_events(&[], "test/2", "aider", None, None, None, None);
+        let manifest = build_manifest_from_events(&[], "test/2", "aider", None, None, None, None);
         assert_eq!(manifest.turns, 0);
         assert!(manifest.project.is_none());
         assert!(manifest.model.is_none());
@@ -1068,7 +1072,7 @@ mod tests {
             )
             .with_file_paths(vec!["src/main.rs".to_string()]), // duplicate
         ];
-        let manifest = build_manifest_from_events(&events, "test/1", "claude", None, None);
+        let manifest = build_manifest_from_events(&events, "test/1", "claude", None, None, None);
         assert_eq!(manifest.files_touched.len(), 2);
         assert!(manifest.files_touched.contains(&"src/main.rs".to_string()));
         assert!(manifest.files_touched.contains(&"src/lib.rs".to_string()));
@@ -1095,7 +1099,7 @@ mod tests {
                 "end".to_string(),
             ),
         ];
-        let manifest = build_manifest_from_events(&events, "test/1", "claude", None, None);
+        let manifest = build_manifest_from_events(&events, "test/1", "claude", None, None, None);
         // started should be the first event's timestamp
         assert_eq!(manifest.started.timestamp(), t1.timestamp());
         // ended should be the last event's timestamp
@@ -1221,7 +1225,7 @@ mod tests {
             Role::User,
             "fix the bug".to_string(),
         )];
-        let manifest = build_manifest_from_events(&events, "test/1", "claude", None, None);
+        let manifest = build_manifest_from_events(&events, "test/1", "claude", None, None, None);
         manager.index_session(&events, &manifest).unwrap();
 
         manager.commit().unwrap();
@@ -1244,7 +1248,7 @@ mod tests {
             Role::User,
             "hello".to_string(),
         )];
-        let manifest = build_manifest_from_events(&events, "test/1", "claude", None, None);
+        let manifest = build_manifest_from_events(&events, "test/1", "claude", None, None, None);
 
         // Should error because begin_write() was never called
         let result = manager.index_session(&events, &manifest);
@@ -1287,7 +1291,8 @@ mod tests {
                 Role::User,
                 "hello world".to_string(),
             )];
-            let manifest = build_manifest_from_events(&events, "test/1", "claude", None, None);
+            let manifest =
+                build_manifest_from_events(&events, "test/1", "claude", None, None, None);
             manager.index_session(&events, &manifest).unwrap();
             manager.finish().unwrap();
         }
@@ -1329,7 +1334,8 @@ mod tests {
                     "original answer".to_string(),
                 ),
             ];
-            let manifest = build_manifest_from_events(&events, "test/abc", "claude", None, None);
+            let manifest =
+                build_manifest_from_events(&events, "test/abc", "claude", None, None, None);
             manager.index_session(&events, &manifest).unwrap();
             manager.finish().unwrap();
         }
@@ -1354,7 +1360,8 @@ mod tests {
                     "updated answer".to_string(),
                 ),
             ];
-            let manifest = build_manifest_from_events(&events, "test/abc", "claude", None, None);
+            let manifest =
+                build_manifest_from_events(&events, "test/abc", "claude", None, None, None);
             manager.index_session(&events, &manifest).unwrap();
             manager.finish().unwrap();
         }
@@ -1399,7 +1406,8 @@ mod tests {
                 Role::User,
                 "old content here".to_string(),
             )];
-            let manifest = build_manifest_from_events(&events, "test/xyz", "claude", None, None);
+            let manifest =
+                build_manifest_from_events(&events, "test/xyz", "claude", None, None, None);
             manager.index_session(&events, &manifest).unwrap();
             manager.finish().unwrap();
         }
@@ -1415,7 +1423,8 @@ mod tests {
                 Role::User,
                 "brand new content".to_string(),
             )];
-            let manifest = build_manifest_from_events(&events, "test/xyz", "claude", None, None);
+            let manifest =
+                build_manifest_from_events(&events, "test/xyz", "claude", None, None, None);
             manager.index_session(&events, &manifest).unwrap();
             manager.finish().unwrap();
         }
@@ -1459,7 +1468,7 @@ mod tests {
             Role::User,
             "test content".to_string(),
         )];
-        let manifest = build_manifest_from_events(&events, "test/1", "claude", None, None);
+        let manifest = build_manifest_from_events(&events, "test/1", "claude", None, None, None);
         manager.index_session(&events, &manifest).unwrap();
         manager.finish().unwrap();
 
@@ -1580,7 +1589,7 @@ mod tests {
                 "end".to_string(),
             ),
         ];
-        let manifest = build_manifest_from_events(&events, "test/1", "claude", None, None);
+        let manifest = build_manifest_from_events(&events, "test/1", "claude", None, None, None);
         assert_eq!(manifest.started.timestamp(), t1.timestamp());
         assert_eq!(manifest.ended.map(|d| d.timestamp()), Some(t3.timestamp()));
         assert_eq!(manifest.turns, 3);
@@ -1627,7 +1636,8 @@ mod tests {
                 Role::User,
                 "delete me later".to_string(),
             )];
-            let manifest = build_manifest_from_events(&events, "test/del", "claude", None, None);
+            let manifest =
+                build_manifest_from_events(&events, "test/del", "claude", None, None, None);
             manager.index_session(&events, &manifest).unwrap();
             manager.finish().unwrap();
         }
