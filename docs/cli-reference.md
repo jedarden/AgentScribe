@@ -1664,6 +1664,411 @@ Markdown output includes:
 
 ---
 
+## `agentscribe reflect`
+
+Export sessions with behavioral metadata for reflection analysis. This is the stable data export API for external reflection tools that analyze agent behavior across sessions.
+
+### Usage
+
+```
+agentscribe reflect <subcommand> [options]
+```
+
+### Subcommands
+
+#### `agentscribe reflect sessions`
+
+Export sessions with behavioral signals, error fingerprints, and config file interactions. When combined with `--json`, outputs a stable, machine-readable schema suitable for programmatic consumption by reflection tools.
+
+```
+agentscribe reflect sessions [options]
+```
+
+##### Options
+
+| Option | Short | Default | Description |
+|--------|-------|---------|-------------|
+| `--since <datetime>` | | all | Only include sessions after this timestamp. ISO 8601 or relative (`7d`, `30d`, `12w`). |
+| `--project <path>` | | all projects | Only include sessions from this project path. |
+| `--outcome <outcome>` | | all | Only include sessions with this outcome (`success`, `failure`, `abandoned`, `unknown`). |
+| `--modified-config-only` | | off | Only include sessions where agent modified config/memory files. |
+| `--read-config-only` | | off | Only include sessions where agent read config/memory files. |
+| `--limit <n>` | `-n` | none | Maximum number of sessions to return. |
+| `--tags <tags>` | `-t` | none | Filter by annotation tags (AND logic: all tags must be present). Can be repeated. |
+| `--json` | | off | Output in stable JSON format (documented below). |
+
+##### Examples
+
+```bash
+# Export last 30 days of sessions as JSON
+agentscribe reflect sessions --since 30d --json
+
+# Only sessions that modified CLAUDE.md or other config files
+agentscribe reflect sessions --modified-config-only --json
+
+# Failed sessions from a specific project
+agentscribe reflect sessions --project ~/myproject --outcome failure --json
+
+# Sessions tagged with "config-change" or "repeated-mistake"
+agentscribe reflect sessions --tags config-change --tags repeated-mistake --json
+```
+
+##### JSON Output Schema (Stable Contract)
+
+The `--json` flag outputs a stable, machine-readable schema. **This schema is versioned**: new fields may be added at any time, but existing fields will never be renamed, removed, or retyped without a major version bump.
+
+Output format: array of `ReflectSession` objects.
+
+```json
+[
+  {
+    "session_id": "string",
+    "agent": "string",
+    "project": "string | null",
+    "started": "string (ISO 8601)",
+    "ended": "string (ISO 8601) | null",
+    "duration_secs": "number (u64)",
+    "outcome": "string",
+    "summary": "string | null",
+    "tags": ["string"],
+    "model": "string | null",
+    "tool_call_counts": {"string": "number (u32)"},
+    "re_read_count": "number (u32)",
+    "bash_failure_count": "number (u32)",
+    "read_config_files": ["string"],
+    "modified_config_files": ["string"],
+    "error_fingerprints": ["string"],
+    "anti_patterns": [{"pattern": "string"}],
+    "files_touched": ["string"],
+    "config_changes_after": [{"file": "string", "minutes_after": "number (u64)"}] | null
+  }
+]
+```
+
+###### Field Descriptions
+
+| Field | Type | Nullable | Description |
+|-------|------|----------|-------------|
+| `session_id` | string | no | Session ID in `<agent>/<session-id>` format |
+| `agent` | string | no | Source agent name (plugin name) |
+| `project` | string | yes | Project path, if available |
+| `started` | string | no | Session start timestamp (ISO 8601) |
+| `ended` | string | yes | Session end timestamp (ISO 8601), if available |
+| `duration_secs` | number | no | Session duration in seconds |
+| `outcome` | string | no | Session outcome: `success`, `failure`, `abandoned`, or `unknown` |
+| `summary` | string | yes | Generated summary of the session |
+| `tags` | array | no | Session tags (may be empty) |
+| `model` | string | yes | Model name (e.g., `claude-sonnet-5`), if available |
+| `tool_call_counts` | object | no | Tool call counts by tool name (e.g., `{"Read": 5, "Bash": 3}`) |
+| `re_read_count` | number | no | Number of times files were re-read in this session |
+| `bash_failure_count` | number | no | Number of bash commands that returned non-zero exit code |
+| `read_config_files` | array | no | Config/memory files read in this session (CLAUDE.md, AGENTS.md, .claude/, memory/, etc.) |
+| `modified_config_files` | array | no | Config/memory files written/edited in this session |
+| `error_fingerprints` | array | no | Error fingerprints found in this session (hashed error signatures) |
+| `anti_patterns` | array | no | Anti-patterns detected in this session (each has `pattern` field) |
+| `files_touched` | array | no | Files touched in this session (any file operation) |
+| `config_changes_after` | array | yes | Config file changes observed after this session (each has `file` and `minutes_after` fields) |
+
+###### Example Output
+
+```json
+[
+  {
+    "session_id": "claude-code/abc123",
+    "agent": "claude-code",
+    "project": "/home/user/myproject",
+    "started": "2026-03-15T10:30:00Z",
+    "ended": "2026-03-15T10:45:00Z",
+    "duration_secs": 900,
+    "outcome": "success",
+    "summary": "Fixed authentication bug in login flow",
+    "tags": ["debug", "auth"],
+    "model": "claude-sonnet-5",
+    "tool_call_counts": {
+      "Read": 5,
+      "Bash": 3,
+      "Edit": 2
+    },
+    "re_read_count": 1,
+    "bash_failure_count": 0,
+    "read_config_files": ["/home/user/myproject/CLAUDE.md"],
+    "modified_config_files": [],
+    "error_fingerprints": [],
+    "anti_patterns": [],
+    "files_touched": ["src/auth.rs", "src/login.rs"],
+    "config_changes_after": null
+  },
+  {
+    "session_id": "aider/def456",
+    "agent": "aider",
+    "project": "/home/user/myproject",
+    "started": "2026-03-15T09:00:00Z",
+    "ended": null,
+    "duration_secs": 1800,
+    "outcome": "failure",
+    "summary": null,
+    "tags": [],
+    "model": null,
+    "tool_call_counts": {
+      "Bash": 2
+    },
+    "re_read_count": 0,
+    "bash_failure_count": 2,
+    "read_config_files": [],
+    "modified_config_files": [],
+    "error_fingerprints": ["relationalreadyexistser"],
+    "anti_patterns": [],
+    "files_touched": ["migrations/001_initial.sql"],
+    "config_changes_after": [
+      {
+        "file": "CLAUDE.md",
+        "minutes_after": 15
+      }
+    ]
+  }
+]
+```
+
+##### Exit Codes
+
+| Code | Meaning |
+|------|---------|
+| 0 | Success |
+| 1 | Data dir not initialized |
+| 2 | No sessions found matching filters |
+
+---
+
+### Behavioral Signals Schema
+
+The `BehavioralSignals` struct is computed from session events and stored as a sidecar file (`sessions/<agent>/<session-id>.behavioral.json`). It provides quantitative metrics for reflection analysis.
+
+**File format**: `~/.agentscribe/sessions/<agent>/<session-id>.behavioral.json`
+
+```json
+{
+  "tool_call_count": "number (u32)",
+  "tool_call_counts_by_name": {"string": "number (u32)"},
+  "re_read_files": ["string"],
+  "re_read_count": "number (u32)",
+  "bash_failure_count": "number (u32)",
+  "multi_edit_files": ["string"],
+  "duration_secs": "number (u64)",
+  "assistant_turn_ratio": "number (f32)",
+  "read_config_files": ["string"],
+  "modified_config_files": ["string"],
+  "cwd_switch_count": "number (u32)"
+}
+```
+
+#### Field Descriptions
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `tool_call_count` | number | Total tool calls in session |
+| `tool_call_counts_by_name` | object | Tool call counts broken down by tool name |
+| `re_read_files` | array | Files read more than once in the same session (re-read pattern) |
+| `re_read_count` | number | Number of re-read events (each duplicate read beyond the first counts as one) |
+| `bash_failure_count` | number | Bash commands that returned non-zero exit code |
+| `multi_edit_files` | array | Files written/edited more than once (possible revert pattern) |
+| `duration_secs` | number | Approximate session duration in seconds (last_ts - first_ts) |
+| `assistant_turn_ratio` | number | Ratio: assistant turns / total turns (0.0 to 1.0) |
+| `read_config_files` | array | Config/memory files read (CLAUDE.md, AGENTS.md, .claude/**, .needle/**, memory/, docs/notes/) |
+| `modified_config_files` | array | Config/memory files written/edited |
+| `cwd_switch_count` | number | Number of times agent switched working directory (cwd changes in events) |
+
+#### Config File Patterns
+
+The following patterns are detected as config/memory files:
+- `CLAUDE.md`, `AGENTS.md`
+- `.claude/**`, `.needle/**`
+- `memory/**`, `docs/notes/**`
+- `MEMORY.md`
+
+#### Example
+
+```json
+{
+  "tool_call_count": 8,
+  "tool_call_counts_by_name": {
+    "Read": 5,
+    "Bash": 2,
+    "Edit": 1
+  },
+  "re_read_files": ["/home/user/project/CLAUDE.md"],
+  "re_read_count": 1,
+  "bash_failure_count": 0,
+  "multi_edit_files": [],
+  "duration_secs": 900,
+  "assistant_turn_ratio": 0.4,
+  "read_config_files": ["/home/user/project/CLAUDE.md"],
+  "modified_config_files": [],
+  "cwd_switch_count": 0
+}
+```
+
+---
+
+### Annotation Schema
+
+Annotations are sidecar files that store metadata tags and notes for sessions, written by reflection tools or humans. They survive re-scraping because they are independent of session data.
+
+**File format**: `~/.agentscribe/sessions/<agent>/<session-id>.annotations.json`
+
+```json
+{
+  "session_id": "string",
+  "annotations": [
+    {
+      "tag": "string",
+      "note": "string | null",
+      "created_at": "string (ISO 8601)",
+      "created_by": "string"
+    }
+  ]
+}
+```
+
+#### Field Descriptions
+
+| Field | Type | Nullable | Description |
+|-------|------|----------|-------------|
+| `session_id` | string | no | Session ID this annotation store belongs to |
+| `annotations` | array | no | All annotations for this session |
+| `annotations[].tag` | string | no | Free-form tag string (e.g., `led-to-config-change`, `repeated-mistake`) |
+| `annotations[].note` | string | yes | Human-readable note explaining the annotation |
+| `annotations[].created_at` | string | no | When this annotation was created (ISO 8601) |
+| `annotations[].created_by` | string | no | Source of the annotation: `human`, `reflection-tool`, or `agentscribe` |
+
+#### Example
+
+```json
+{
+  "session_id": "claude-code/abc123",
+  "annotations": [
+    {
+      "tag": "led-to-config-change",
+      "note": "Agent added a new rule to CLAUDE.md after this session",
+      "created_at": "2026-03-15T11:00:00Z",
+      "created_by": "reflection-tool"
+    },
+    {
+      "tag": "repeated-mistake",
+      "note": "Agent made the same error pattern 3 times before resolving",
+      "created_at": "2026-03-15T11:05:00Z",
+      "created_by": "human"
+    }
+  ]
+}
+```
+
+---
+
+### MCP Tool: `agentscribe_reflect_sessions`
+
+> **Note:** This MCP tool is **not yet implemented**. The schema below is documented as a stable contract for future implementation. When added, it will match the CLI `reflect sessions --json` output.
+
+The `agentscribe_reflect_sessions` MCP tool will provide the same reflection export functionality as the CLI command, accessible via the Model Context Protocol for in-session querying.
+
+#### Tool Definition
+
+```json
+{
+  "name": "agentscribe_reflect_sessions",
+  "description": "Export sessions with behavioral signals, error fingerprints, and config file interactions for reflection analysis.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "since": {
+        "type": "string",
+        "description": "Only include sessions after this timestamp (ISO 8601 or relative, e.g., 7d, 30d)"
+      },
+      "project": {
+        "type": "string",
+        "description": "Only include sessions from this project path"
+      },
+      "outcome": {
+        "type": "string",
+        "enum": ["success", "failure", "abandoned", "unknown"],
+        "description": "Only include sessions with this outcome"
+      },
+      "modified_config_only": {
+        "type": "boolean",
+        "default": false,
+        "description": "Only include sessions where agent modified config/memory files"
+      },
+      "read_config_only": {
+        "type": "boolean",
+        "default": false,
+        "description": "Only include sessions where agent read config/memory files"
+      },
+      "limit": {
+        "type": "integer",
+        "description": "Maximum number of sessions to return"
+      },
+      "tags": {
+        "type": "array",
+        "items": {"type": "string"},
+        "description": "Filter by annotation tags (AND logic: all tags must be present)"
+      }
+    }
+  }
+}
+```
+
+#### Output Schema
+
+The tool returns an array of `ReflectSession` objects, matching the CLI `--json` output schema documented above.
+
+```typescript
+// Output: Array<ReflectSession>
+[
+  {
+    session_id: string,
+    agent: string,
+    project: string | null,
+    started: string,
+    ended: string | null,
+    duration_secs: number,
+    outcome: string,
+    summary: string | null,
+    tags: string[],
+    model: string | null,
+    tool_call_counts: Record<string, number>,
+    re_read_count: number,
+    bash_failure_count: number,
+    read_config_files: string[],
+    modified_config_files: string[],
+    error_fingerprints: string[],
+    anti_patterns: Array<{pattern: string}>,
+    files_touched: string[],
+    config_changes_after: Array<{file: string, minutes_after: number}> | null
+  }
+]
+```
+
+All stability guarantees from the CLI contract apply: **fields are stable** - new fields may be added, but existing fields will never be renamed, removed, or retyped without a major version bump.
+
+#### Example Usage
+
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "tools/call",
+  "params": {
+    "name": "agentscribe_reflect_sessions",
+    "arguments": {
+      "since": "7d",
+      "outcome": "failure",
+      "limit": 50
+    }
+  },
+  "id": 1
+}
+```
+
+---
+
 ## Environment Variables
 
 | Variable | Description |
