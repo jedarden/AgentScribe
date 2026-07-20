@@ -1650,3 +1650,100 @@ NEEDLE Phase 4 learning consumes AgentScribe pre-dispatch: `agentscribe search -
 - [cli-reference.md](cli-reference.md) — Detailed help for every CLI command, flag, output format, and exit code
 - [../plugins/BUILDING_PLUGINS.md](../plugins/BUILDING_PLUGINS.md) — Comprehensive guide for building scraper plugins
 - [new-features-01.md](new-features-01.md) — Extended feature descriptions with implementation details and example outputs
+
+---
+
+## ADR-1: 2026-07-20 — Crash-safe, self-healing persistence for daemon scrape state
+
+### Context
+
+This ADR was written after auditing the actual deployed artifact, not just the code. AgentScribe's
+own long-running daemon has been running against this machine's real Claude Code / Aider / Codex
+logs since 2026-03. Inspecting its live data directory (`~/.agentscribe/`) on 2026-07-20 found:
+
+- `daemon_state.json` reports `last_scrape: 2026-06-24T13:14:19Z` and `sessions_indexed: 21511` —
+  the daemon has not made forward progress in **26 days**, despite `~/.claude/projects/` having
+  received new session data continuously since then.
+- `daemon.log` (grown unbounded to 43MB with no rotation, see below) shows the actual cause: from
+  2026-06-29 onward, every single debounced scrape attempt fails identically:
+  `ERROR agentscribe::daemon: Failed to create scraper: State file error: Failed to parse state:
+  EOF while parsing a string at line 96646 column 17`.
+- The daemon process itself is dead (the PID in `agentscribe.pid` no longer exists) — it appears to
+  have been killed (OOM/host restart/etc.) mid-write to `state/scrape-state.json`, leaving a
+  truncated 4MB JSON file behind.
+- `src/scraper/state.rs::StateManager::new_with_timeout` calls `load_state()` unconditionally in the
+  `Scraper::new` constructor and propagates any parse error with `?`. Because state-manager
+  construction happens *before* `IndexManager::open` in `src/scraper/mod.rs::Scraper::new_with_lock_timeout`,
+  a single corrupted state file blocks scraping **and** indexing for every plugin/source, forever —
+  not just the one file whose write was interrupted.
+- `save()` in `src/scraper/state.rs` takes an exclusive flock, then does
+  `file.set_len(0)` followed by a fresh `serde_json::to_writer_pretty` write to the *same* file
+  handle. This is safe against concurrent readers (the lock covers the whole window) but is **not**
+  crash-safe: a process killed between `set_len(0)` and the write completing leaves a truncated or
+  invalid file with nothing to recover from, and the next process to load it (even after a clean
+  restart) fails permanently until a human deletes or repairs the file by hand.
+- There is no self-healing path anywhere in the load/save cycle: a parse failure is a hard stop,
+  not a "quarantine the bad file and start a fresh state" recoverable event.
+
+This is not a hypothetical edge case — it is the exact failure this machine's own deployed instance
+is sitting in right now, invisibly, because nothing surfaces `last_scrape` staleness either (see
+bead referencing this ADR).
+
+### Decision
+
+Make daemon scrape-state persistence crash-safe and self-healing:
+
+1. **Atomic writes.** `StateManager::save()` writes to a temp file in the same directory
+   (`scrape-state.json.tmp-<pid>`) and renames it over the real path (`fs::rename`, atomic on the
+   same filesystem) instead of truncating and rewriting the live file in place. A crash mid-write
+   now leaves the *old* valid state file untouched — never a truncated one.
+2. **Corruption is recoverable, not fatal.** If `load_state()` fails to parse an existing state
+   file, `StateManager::new_with_timeout` no longer propagates the error and aborts scraper
+   construction. Instead it renames the bad file to `scrape-state.json.corrupt-<timestamp>` (so the
+   evidence is preserved for debugging), logs an ERROR with the parse failure and the backup path,
+   and starts from `ScrapeState::new()` (empty state). Incremental scraping degrades gracefully to a
+   one-time full rescan of already-known files rather than blocking forever.
+3. **Bound the blast radius going forward.** This ADR does not change the on-disk format today
+   (still one JSON document per data dir) but records the direction: the file is small enough today
+   (4MB / ~21.5K sources) that a full-file atomic rewrite is fine, but the plan's own Phase 8 sizing
+   target (~500K sessions) will make full-document rewrite-on-every-update increasingly expensive.
+   The follow-up (tracked separately, not part of this ADR) is to move to a keyed store — SQLite or
+   `sled`/`redb` — where a single corrupt or torn write can only ever affect the one row being
+   written, not the whole corpus.
+
+### Alternatives Considered
+
+- **Do nothing / operator fixes it by hand.** Rejected — this is exactly what happened here: the
+  daemon has been silently stalled for 26 days with zero indication to the user short of manually
+  reading a 43MB log file, which defeats the entire point of a background archival daemon.
+- **Split into per-source-file state files immediately** (one small JSON/line per tracked source)
+  instead of atomic-write-plus-quarantine. This bounds blast radius more tightly than #3 above, but
+  is a bigger change (new file layout, migration of the existing 4MB state file, directory-scan
+  cost on startup) for a repo that is under heavy concurrent NEEDLE-driven development right now.
+  Deferred to the follow-up bead rather than done in the same change as the crash-safety fix.
+- **Retry-with-backoff instead of quarantine-and-reset.** Rejected as the sole fix — retrying a
+  syntactically-corrupt file changes nothing; it would still fail forever without the rename/reset
+  step. Backoff is complementary (avoid busy-looping the debounce cycle) but not a substitute.
+- **fsync() after write, no rename.** Reduces but does not eliminate the truncation window (the
+  `set_len(0)` still creates an observable invalid intermediate state on the same inode); the
+  atomic-rename approach used by nearly every crash-safe local persistence layer (git, SQLite WAL
+  checkpoint, etc.) is strictly stronger for the same implementation cost.
+
+### Consequences
+
+- **Positive:** A killed daemon process, disk-full event, or any other interrupted write can no
+  longer permanently wedge scraping. Worst case after this change is a one-time full rescan
+  (bounded by the number of files each plugin's globs match), not an indefinite silent outage.
+- **Positive:** Corrupted state files are preserved as `*.corrupt-<timestamp>` for post-mortem
+  instead of being silently unparseable forever — directly useful for diagnosing recurrences.
+  Callers that construct many short-lived `Scraper`s (tests, one-shot `agentscribe scrape` CLI
+  invocations) should be aware a quarantine event now produces a `*.corrupt-*` file as a
+  side effect rather than a hard error to catch and handle.
+- **Negative:** A reset-to-empty-state event forces a full rescan of every plugin's source globs.
+  For a corpus this daemon's size (9,663 already-scraped session files today, growing), that rescan
+  is a real but bounded one-time cost, not a repeated one — acceptable versus the current status quo
+  of *zero* forward progress since 2026-06-29.
+- **Follow-up work required** (tracked as beads referencing this ADR, not done here): surfacing
+  `last_scrape` staleness proactively in `agentscribe daemon status`, fixing the unrelated
+  infinite-retry log spam on permission-denied watch directories found during this same audit, and
+  the longer-term move to a keyed state store for O(1) incremental updates at scale.
