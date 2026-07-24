@@ -2,6 +2,9 @@
 //!
 //! Parses JSONL files where each line is a JSON object.
 
+#[cfg(test)]
+mod jsonl_subagent_test;
+
 use crate::error::{AgentScribeError, Result};
 use crate::event::{Event, Role, TokenCounts};
 use crate::parser::{extract_string, parse_timestamp, ParseContext, SessionInfo};
