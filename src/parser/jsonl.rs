@@ -32,7 +32,7 @@ pub struct JsonlParser;
 ///
 /// Gracefully handles missing payload_field and non-object payloads by returning
 /// (empty object, None) to skip the line with a warning.
-fn unwrap_envelope(raw_json: &Value, envelope: &crate::plugin::Envelope) -> (Value, Option<Value>) {
+fn unwrap_envelope(raw_json: &Value, envelope: &crate::plugin::Envelope) -> Result<(Value, Option<Value>)> {
     // Extract the type field value
     let type_value = extract_string(raw_json, &envelope.type_field).unwrap_or_default();
     let routing = envelope.get_routing(&type_value);
@@ -40,11 +40,11 @@ fn unwrap_envelope(raw_json: &Value, envelope: &crate::plugin::Envelope) -> (Val
     match routing {
         "skip" => {
             // Return empty payload with None envelope to signal "drop this line"
-            (serde_json::json!({}), None)
+            Ok((serde_json::json!({}), None))
         }
         "meta" => {
             // Return empty payload but preserve the envelope wrapper for metadata extraction
-            (serde_json::json!({}), Some(raw_json.clone()))
+            Ok((serde_json::json!({}), Some(raw_json.clone())))
         }
         "event" => {
             // Extract payload from payload_field
@@ -59,7 +59,7 @@ fn unwrap_envelope(raw_json: &Value, envelope: &crate::plugin::Envelope) -> (Val
             match extracted {
                 Some(payload) => {
                     // Return the extracted payload along with the envelope wrapper
-                    (payload.clone(), Some(raw_json.clone()))
+                    Ok((payload.clone(), Some(raw_json.clone())))
                 }
                 None => {
                     // Missing or non-object payload_field - skip with warning
@@ -67,13 +67,13 @@ fn unwrap_envelope(raw_json: &Value, envelope: &crate::plugin::Envelope) -> (Val
                         "Warning: Envelope payload_field '{}' missing or not an object for type '{}', skipping line",
                         envelope.payload_field, type_value
                     );
-                    (serde_json::json!({}), None)
+                    Ok((serde_json::json!({}), None))
                 }
             }
         }
         _ => {
             // Unknown routing (shouldn't happen due to get_routing defaults, but handle defensively)
-            (serde_json::json!({}), None)
+            Ok((serde_json::json!({}), None))
         }
     }
 }
@@ -1113,7 +1113,7 @@ mod tests {
         let line = r#"{"type": "message", "timestamp": "2026-03-16T12:00:00Z", "payload": {"role": "user", "content": "Hello"}}"#;
         let json: Value = serde_json::from_str(line).unwrap();
 
-        let (payload, wrapper) = unwrap_envelope(&json, &envelope);
+        let (payload, wrapper) = unwrap_envelope(&json, &envelope).unwrap();
 
         // Payload should be the extracted payload object
         assert_eq!(
@@ -1154,7 +1154,7 @@ mod tests {
         let line = r#"{"type": "heartbeat", "timestamp": "2026-03-16T12:00:00Z", "payload": {"status": "ok"}}"#;
         let json: Value = serde_json::from_str(line).unwrap();
 
-        let (payload, wrapper) = unwrap_envelope(&json, &envelope);
+        let (payload, wrapper) = unwrap_envelope(&json, &envelope).unwrap();
 
         // Payload should be empty object
         assert!(
@@ -1175,7 +1175,7 @@ mod tests {
         let line = r#"{"type": "session_meta", "timestamp": "2026-03-16T12:00:00Z", "payload": {"session_id": "sess-001"}}"#;
         let json: Value = serde_json::from_str(line).unwrap();
 
-        let (payload, wrapper) = unwrap_envelope(&json, &envelope);
+        let (payload, wrapper) = unwrap_envelope(&json, &envelope).unwrap();
 
         // Payload should be empty object
         assert!(
@@ -1216,7 +1216,7 @@ mod tests {
         let line = r#"{"type": "unknown_event", "timestamp": "2026-03-16T12:00:00Z", "payload": {"data": "test"}}"#;
         let json: Value = serde_json::from_str(line).unwrap();
 
-        let (payload, wrapper) = unwrap_envelope(&json, &envelope);
+        let (payload, wrapper) = unwrap_envelope(&json, &envelope).unwrap();
 
         // Should behave like skip type
         assert!(
@@ -1236,7 +1236,7 @@ mod tests {
         let line = r#"{"type": "message", "timestamp": "2026-03-16T12:00:00Z", "data": {"role": "user", "content": "Hello"}}"#;
         let json: Value = serde_json::from_str(line).unwrap();
 
-        let (payload, wrapper) = unwrap_envelope(&json, &envelope);
+        let (payload, wrapper) = unwrap_envelope(&json, &envelope).unwrap();
 
         // Should return empty payload and None wrapper (skip with warning)
         assert!(
@@ -1256,7 +1256,7 @@ mod tests {
         let line = r#"{"type": "message", "timestamp": "2026-03-16T12:00:00Z", "payload": "not an object"}"#;
         let json: Value = serde_json::from_str(line).unwrap();
 
-        let (payload, wrapper) = unwrap_envelope(&json, &envelope);
+        let (payload, wrapper) = unwrap_envelope(&json, &envelope).unwrap();
 
         // Should return empty payload and None wrapper (skip with warning)
         assert!(
@@ -1276,7 +1276,7 @@ mod tests {
         let line = r#"{"type": "message", "timestamp": "2026-03-16T12:00:00Z", "payload": null}"#;
         let json: Value = serde_json::from_str(line).unwrap();
 
-        let (payload, wrapper) = unwrap_envelope(&json, &envelope);
+        let (payload, wrapper) = unwrap_envelope(&json, &envelope).unwrap();
 
         // Should return empty payload and None wrapper (skip with warning)
         assert!(
@@ -1297,7 +1297,7 @@ mod tests {
             r#"{"type": "", "timestamp": "2026-03-16T12:00:00Z", "payload": {"role": "user"}}"#;
         let json: Value = serde_json::from_str(line).unwrap();
 
-        let (payload, wrapper) = unwrap_envelope(&json, &envelope);
+        let (payload, wrapper) = unwrap_envelope(&json, &envelope).unwrap();
 
         // Should behave like skip type
         assert!(
@@ -1317,7 +1317,7 @@ mod tests {
         let line = r#"{"type": "message", "timestamp": "2026-03-16T12:00:00Z", "request_id": "req-123", "payload": {"role": "assistant", "content": "Response", "tool_calls": [{"name": "search", "args": {"query": "test"}}]}}"#;
         let json: Value = serde_json::from_str(line).unwrap();
 
-        let (payload, wrapper) = unwrap_envelope(&json, &envelope);
+        let (payload, wrapper) = unwrap_envelope(&json, &envelope).unwrap();
 
         // Verify payload contains all nested fields from payload_field
         assert_eq!(
@@ -1363,7 +1363,7 @@ mod tests {
 
         for line in &skip_lines {
             let json: Value = serde_json::from_str(line).unwrap();
-            let (payload, wrapper) = unwrap_envelope(&json, &envelope);
+            let (payload, wrapper) = unwrap_envelope(&json, &envelope).unwrap();
 
             assert!(
                 payload.as_object().map_or(false, |obj| obj.is_empty()),
