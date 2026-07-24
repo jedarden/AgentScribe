@@ -1,0 +1,22 @@
+# Test INVALID envelope plugin configuration for bf-zh3h7
+# This should be rejected at validation time
+
+[plugin]
+name = "test-invalid-envelope"
+version = "0.1.0"
+
+[source]
+paths = ["/tmp/test/*.jsonl"]
+format = "jsonl"
+
+# INVALID Envelope configuration - bad routing value
+[source.envelope]
+payload_field = "payload"
+type_field = "type"
+# This should fail validation: "garbage" is not a valid routing action
+type_routing = { "message" = "event", "bad_type" = "garbage" }
+
+[parser]
+timestamp = "ts"
+role = "role"
+content = "content"
