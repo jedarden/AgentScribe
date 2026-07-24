@@ -639,6 +639,7 @@ mod tests {
                         m
                     },
                 }),
+                array: None,
             },
             parser: Parser {
                 timestamp: Some("ts".to_string()),

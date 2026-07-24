@@ -554,6 +554,7 @@ mod tests {
                 tree: None,
                 truncation_limit: None,
                 envelope: None,
+                array: None,
             },
             parser: Parser {
                 query: Some(query.to_string()),

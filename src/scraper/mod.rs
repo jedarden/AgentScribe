@@ -939,6 +939,8 @@ mod tests {
                 },
                 tree: None,
                 truncation_limit: Some(20), // Rolling-window limit
+                envelope: None,
+                array: None,
             },
             parser: Parser {
                 ..Default::default()
@@ -1011,6 +1013,8 @@ mod tests {
                 },
                 tree: None,
                 truncation_limit: None,
+                envelope: None,
+                array: None,
             },
             parser: Parser {
                 ..Default::default()
@@ -1096,6 +1100,8 @@ mod tests {
                 },
                 tree: None,
                 truncation_limit: Some(20),
+                envelope: None,
+                array: None,
             },
             parser: Parser {
                 query: Some("SELECT key, value FROM kv".to_string()),
@@ -1118,6 +1124,8 @@ mod tests {
                 },
                 tree: None,
                 truncation_limit: Some(20),
+                envelope: None,
+                array: None,
             },
             parser: Parser {
                 query: Some("SELECT key, value FROM kv".to_string()),
@@ -1168,6 +1176,8 @@ mod tests {
                 },
                 tree: None,
                 truncation_limit: None,
+                envelope: None,
+                array: None,
             },
             parser: Parser {
                 ..Default::default()
@@ -1362,6 +1372,8 @@ mod tests {
                 },
                 tree: None,
                 truncation_limit: None,
+                envelope: None,
+                array: None,
             },
             parser: Parser {
                 ..Default::default()

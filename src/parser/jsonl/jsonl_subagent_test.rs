@@ -100,7 +100,8 @@ mod tests {
                 path_str
             );
             assert_eq!(
-                session.parent_session_id, expected_parent.map(|s| s.to_string()),
+                session.parent_session_id,
+                expected_parent.map(|s| s.to_string()),
                 "Parent session ID should match for path: {}",
                 path_str
             );
@@ -112,7 +113,8 @@ mod tests {
         use crate::parser::jsonl::JsonlParser;
         use crate::parser::SessionInfo;
 
-        let path = PathBuf::from("/home/coding/.claude/projects/test/parent-uuid/subagents/agent-1.jsonl");
+        let path =
+            PathBuf::from("/home/coding/.claude/projects/test/parent-uuid/subagents/agent-1.jsonl");
         let plugin = create_claude_code_plugin();
 
         let sessions = JsonlParser
@@ -123,10 +125,7 @@ mod tests {
 
         let session = &sessions[0];
         assert_eq!(session.session_id, "agent-1");
-        assert_eq!(
-            session.parent_session_id,
-            Some("parent-uuid".to_string())
-        );
+        assert_eq!(session.parent_session_id, Some("parent-uuid".to_string()));
         assert_eq!(session.start_offset, 0);
         // end_offset should be file size, which we can't test without actual file
         assert!(session.metadata.is_none());
@@ -256,10 +255,7 @@ mod tests {
 
             assert_eq!(sessions.len(), 1);
             assert_eq!(sessions[0].session_id, agent_id);
-            assert_eq!(
-                sessions[0].parent_session_id,
-                Some(parent_id.to_string())
-            );
+            assert_eq!(sessions[0].parent_session_id, Some(parent_id.to_string()));
         }
     }
 

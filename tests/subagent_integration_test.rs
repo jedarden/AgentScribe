@@ -6,8 +6,8 @@
 //! 3. Labeled with source_agent = "{plugin}-subagent"
 //! 4. Included in scrape results (not excluded)
 
-use agentscribe::scraper::Scraper;
 use agentscribe::event::SessionManifest;
+use agentscribe::scraper::Scraper;
 use std::path::PathBuf;
 
 #[test]
@@ -36,8 +36,7 @@ fn test_subagent_session_capture_integration() {
 {"timestamp": "2026-07-23T10:00:03Z", "role": "user", "content": "What about the edge cases?"}
 {"timestamp": "2026-07-23T10:00:04Z", "role": "assistant", "content": "Here are the edge cases to consider"}"#;
 
-    std::fs::write(&subagent_path, subagent_content)
-        .expect("Failed to write subagent content");
+    std::fs::write(&subagent_path, subagent_content).expect("Failed to write subagent content");
 
     // Create a regular (non-subagent) session for comparison
     let regular_path = claude_dir.join("regular-session.jsonl");
@@ -57,10 +56,7 @@ fn test_subagent_session_capture_integration() {
             version: "1.0".to_string(),
         },
         source: agentscribe::plugin::Source {
-            paths: vec![claude_dir.join("**/*.jsonl")
-                .to_str()
-                .unwrap()
-                .to_string()],
+            paths: vec![claude_dir.join("**/*.jsonl").to_str().unwrap().to_string()],
             exclude: vec![], // Empty - subagents are NOT excluded
             format: agentscribe::plugin::LogFormat::Jsonl,
             session_detection: agentscribe::plugin::SessionDetection::OneFilePerSession {
@@ -77,10 +73,7 @@ fn test_subagent_session_capture_integration() {
             content: Some("content".to_string()),
             static_fields: {
                 let mut map = std::collections::HashMap::new();
-                map.insert(
-                    "source_agent".to_string(),
-                    serde_json::json!("claude-code"),
-                );
+                map.insert("source_agent".to_string(), serde_json::json!("claude-code"));
                 map
             },
             ..Default::default()
@@ -89,9 +82,7 @@ fn test_subagent_session_capture_integration() {
     };
 
     // Load the plugin
-    scraper
-        .plugin_manager_mut()
-        .add_plugin(plugin);
+    scraper.plugin_manager_mut().add_plugin(plugin);
 
     // Scrape the plugin
     let result = scraper
@@ -105,20 +96,14 @@ fn test_subagent_session_capture_integration() {
     );
 
     // Verify all sessions are indexed
-    assert_eq!(
-        result.sessions_indexed, 2,
-        "Should index both sessions"
-    );
+    assert_eq!(result.sessions_indexed, 2, "Should index both sessions");
 
     // List all sessions for the plugin
     let sessions = scraper
         .list_sessions("claude-code")
         .expect("Should list sessions");
 
-    assert_eq!(
-        sessions.len(), 2,
-        "Should have two sessions total"
-    );
+    assert_eq!(sessions.len(), 2, "Should have two sessions total");
 
     // Find the subagent session
     let subagent_session = sessions
@@ -135,7 +120,11 @@ fn test_subagent_session_capture_integration() {
         .expect("Should read subagent events");
 
     // Verify events were parsed correctly
-    assert_eq!(events.len(), 5, "Should have 5 events from subagent session");
+    assert_eq!(
+        events.len(),
+        5,
+        "Should have 5 events from subagent session"
+    );
 
     // Verify all events have the correct source_agent (claude-code-subagent)
     for event in &events {

@@ -364,6 +364,7 @@ impl super::FormatParser for MarkdownParser {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::parser::FormatParser;
     use crate::plugin::{LogFormat, Parser, Plugin, PluginMeta, SessionDetection, Source};
     use std::fs::File;
 

@@ -59,7 +59,7 @@ tantivy = "0.22"
 turbovec = "0.1"
 
 # HTTP client for embedding APIs
-reqwest = { version = "0.12", features = ["blocking", "json"] }
+reqwest = { version = "0.12", features = ["blocking", "json", "rustls-tls"], default-features = false }
 
 # SQLite (bundled - no system dependency)
 rusqlite = { version = "0.32", features = ["bundled"] }
