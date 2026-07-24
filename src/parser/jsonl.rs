@@ -109,7 +109,7 @@ impl JsonlParser {
             )
         })?;
 
-        // --- Envelope context setup ---
+        // --- Envelope routing and payload unwrapping ---
         // When the plugin defines [source.envelope], the JSONL line is a wrapper:
         //   { type_field: "...", payload_field: { ... actual event ... } }
         // Type routing determines whether to produce events, skip, or capture metadata.
@@ -125,7 +125,7 @@ impl JsonlParser {
         // Field extraction below still uses &raw_json exactly as before this bead.
         // Converting to envelope-aware field extraction (using payload_json) is a separate bead.
 
-        let (_envelope_json, working_json): (Option<&Value>, &Value) =
+        let (_envelope_json, _working_json): (Option<&Value>, &Value) =
             if let Some(ref envelope_cfg) = plugin.source.envelope {
                 // Envelope mode: extract type and apply routing
                 let type_value =
@@ -133,9 +133,16 @@ impl JsonlParser {
                 let routing = envelope_cfg.get_routing(&type_value);
 
                 match routing {
-                    "skip" | "meta" => return Ok(Vec::new()), // Early skip for these types
+                    "skip" => {
+                        // Skip this line - no event emitted
+                        return Ok(Vec::new());
+                    }
+                    "meta" => {
+                        // Metadata line - no event emitted (future: session metadata accumulation)
+                        return Ok(Vec::new());
+                    }
                     "event" => {
-                        // Extract payload from payload_field, falling back to raw_json if missing/not an object
+                        // Extract payload from payload_field for event body
                         let extracted = raw_json
                             .get(&envelope_cfg.payload_field)
                             .and_then(|v| {
@@ -144,22 +151,32 @@ impl JsonlParser {
                                     Value::Object(_) => Some(v),
                                     _ => None,
                                 }
-                            })
-                            .unwrap_or(&raw_json);
-                        (Some(&raw_json), extracted)
+                            });
+
+                        match extracted {
+                            Some(payload) => {
+                                // Valid payload object extracted
+                                (Some(&raw_json), payload)
+                            }
+                            None => {
+                                // Missing or non-object payload_field - skip with warning
+                                eprintln!(
+                                    "Warning: Envelope payload_field '{}' missing or not an object for type '{}', skipping line",
+                                    envelope_cfg.payload_field, type_value
+                                );
+                                return Ok(Vec::new());
+                            }
+                        }
                     }
-                    _ => return Ok(Vec::new()), // Unknown routing treated as skip
+                    _ => {
+                        // Unknown routing (shouldn't happen due to get_routing defaults, but handle defensively)
+                        return Ok(Vec::new());
+                    }
                 }
             } else {
                 // No envelope: both envelope_json and payload_json point to the full line
                 (None, &raw_json)
             };
-
-        // If unwrap produced a null payload (skip/meta routing), bail out early
-        // before falling through to field extraction which would hard-error.
-        if working_json.is_null() {
-            return Ok(Vec::new());
-        }
 
         // Check type filter (operate on raw_json - payload_json unused until next bead)
         if let Some(ref filter) = plugin.parser.include_types {
