@@ -49,7 +49,10 @@ impl MarkdownParser {
     ///
     /// This matches user events to timestamps from .aider.input.history
     /// to provide finer granularity for event timestamps.
-    fn enrich_with_input_history(events: &mut [Event], input_history: &AiderInputHistory) -> Result<()> {
+    fn enrich_with_input_history(
+        events: &mut [Event],
+        input_history: &AiderInputHistory,
+    ) -> Result<()> {
         let mut user_event_index = 0;
 
         for event in events.iter_mut() {
