@@ -34,6 +34,18 @@ values = ["file-history-snapshot", "progress"]
 [parser.static]
 source_agent = "claude-code"
 
+[[source.secondary]]
+paths = ["~/.claude/projects/**/subagents/*.jsonl"]
+format = "jsonl"
+label = "subagent"
+
+[source.secondary.session_detection]
+method = "one-file-per-session"
+session_id_from = "filename"
+
+[source.secondary.static]
+source_agent = "claude-code-subagent"
+
 [parser.project]
 method = "field"
 field = "cwd"
