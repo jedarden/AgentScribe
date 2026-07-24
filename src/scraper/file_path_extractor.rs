@@ -327,6 +327,8 @@ Use ./scripts/setup.sh to run."#;
                 },
                 tree: None,
                 truncation_limit: None,
+                envelope: None,
+                array: None,
             },
             parser: Parser {
                 file_paths: Some(FilePathExtraction {

@@ -43,6 +43,8 @@ fn jsonl_plugin(name: &str, glob: &str) -> agentscribe::plugin::Plugin {
             },
             tree: None,
             truncation_limit: None,
+            envelope: None,
+            array: None,
         },
         parser: agentscribe::plugin::Parser {
             timestamp: Some("timestamp".to_string()),
