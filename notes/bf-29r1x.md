@@ -1,68 +1,63 @@
-# bf-29r1x: Document [source.envelope] reference entry
+# Documentation Verification for bf-29r1x
 
-## Task Summary
+## Task
+Document [source.envelope] reference entry in BUILDING_PLUGINS.md
 
-Verified that the existing `[source.envelope]` documentation in `plugins/BUILDING_PLUGINS.md` (lines 90-145) accurately matches the implemented schema and parser behavior from children 1-3.
+## Verification Result
 
-## Verification Results
+The existing `[source.envelope]` section in BUILDING_PLUGINS.md (lines 90-145) is **already comprehensive and accurate**. No changes were needed.
 
-### Documentation Coverage (All Required Elements Present)
+## Verification Details
 
-✅ **Three configuration fields documented:**
-- `payload_field` - Field containing the event payload object
-- `type_field` - Field containing the event type for routing
-- `type_routing` - Maps type values to routing actions
+### Implementation Review (plugin.rs & jsonl.rs)
 
-✅ **Three routing values and actions documented:**
-- `"message" = "event"` - Parse as regular event using `[parser]` field mappings
-- `"metadata" = "meta"` - Session metadata (for future use; currently skipped)
-- `"heartbeat" = "skip"` - Ignore this line entirely
+1. **Envelope Struct Fields** ✓
+   - `payload_field`: Field containing event payload object
+   - `type_field`: Field containing event type for routing  
+   - `type_routing`: Maps type values to routing actions
 
-✅ **'^' prefix convention documented:**
-- Use `^` prefix to access fields from envelope wrapper instead of payload
-- Example: `timestamp = "^timestamp"` reads from wrapper, `role = "role"` reads from payload
+2. **Routing Actions** ✓
+   - `event`: Extract payload and parse as regular event (confirmed in unwrap_envelope())
+   - `meta`: Session metadata, currently skipped (returns empty Vec)
+   - `skip`: Ignore line entirely (returns empty Vec)
 
-✅ **Unknown types behavior documented:**
-- Any type value not in `type_routing` defaults to `skip` with a warning
+3. **`^` Prefix Convention** ✓
+   - Implemented in `extract_with_envelope()` and `extract_string_with_envelope()`
+   - Fields starting with `^` read from envelope wrapper
+   - Fields without `^` read from payload
+   - Properly documented with examples
 
-✅ **Example TOML provided:**
-- Shows `payload_field`, `type_field`, and `type_routing` configuration
-- Includes `^`-prefixed timestamp mapping
-- Consistent with Codex-style `{timestamp, type, payload}` envelope structure
+4. **Unknown Type Handling** ✓
+   - `get_routing()` returns "skip" for unknown types
+   - Warning logged via `warn!` macro for unknown types
+   - Matches documentation: "defaults to skip with a warning"
 
-### Implementation Verification
+5. **Validation** ✓
+   - `validate()` ensures routing values are only "event", "meta", "skip"
+   - Invalid values rejected with clear error message
 
-Verified documentation claims against implementation in `src/parser/jsonl.rs` and `src/parser/mod.rs`:
+6. **Edge Cases Handled** ✓
+   - Missing or non-object payload_field: skipped with warning
+   - Null payload_field: skipped with warning  
+   - Empty type field: defaults to skip
 
-1. **Envelope routing (jsonl.rs lines 128-179):** Matches documented behavior
-2. **Routing actions (jsonl.rs unwrap_envelope):** event/meta/skip produce correct outputs
-3. **Field extraction (mod.rs extract_with_envelope):** `^` prefix logic matches docs
-4. **Unknown type handling (plugin.rs get_routing):** Defaults to skip with warning
+### Documentation Accuracy
+
+The existing documentation correctly covers:
+- All three envelope configuration fields
+- All three routing actions with accurate descriptions
+- The `^` prefix convention with clear examples
+- Unknown type behavior
+- Complete example TOML matching Codex-style {timestamp, type, payload} envelopes
+
+### Test Coverage
+
+Comprehensive test suite in jsonl.rs confirms:
+- `test_parse_line_envelope_*` tests verify routing behavior
+- `test_unwrap_envelope_*` tests verify payload extraction
+- `test_parse_line_caret_prefix_*` tests verify `^` prefix behavior
+- `test_fixture_envelope_with_caret_prefix_parses_correctly` verifies end-to-end parsing
 
 ## Conclusion
 
-The existing `[source.envelope]` reference entry (added in commit ecfaf41) is:
-- **Accurate:** All claims match the implementation
-- **Complete:** Covers all required fields, routing values, and conventions
-- **Concise:** Well-structured reference without unnecessary verbosity
-
-**No changes or tightening needed.** The documentation already meets the acceptance criteria.
-
-## Files Reviewed
-
-- `plugins/BUILDING_PLUGINS.md` (lines 90-145)
-- `src/parser/jsonl.rs` (envelope implementation)
-- `src/parser/mod.rs` (field extraction with `^` prefix)
-- `src/plugin.rs` (get_routing method for unknown types)
-
-## Acceptance Criteria Status
-
-✅ BUILDING_PLUGINS.md has a `[source.envelope]` reference entry whose fields, routing values, and `^` prefix semantics match the implemented code.
-
-✅ Example TOML in the entry validates the structure (verified manually against implementation).
-
-✅ No claims in the doc that the code does not support (all verified against source).
-
-## Outcome
-
-**Documentation verification complete.** No modifications to BUILDING_PLUGINS.md required - existing documentation is accurate and complete.
+**No documentation changes required.** The existing `[source.envelope]` section is complete, accurate, and matches the implemented behavior from children 1-3 of bf-27p7.
