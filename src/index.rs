@@ -1042,8 +1042,8 @@ mod tests {
 
     #[test]
     fn test_build_manifest_from_events_empty() {
-        let manifest = build_manifest_from_events(&[], "test/2", "aider", None, None, None, None);
-        let manifest = build_manifest_from_events(&[], "test/2", "aider", None, None, None, None);
+        let manifest = build_manifest_from_events(&[], "test/2", "aider", None, None, None);
+        let manifest = build_manifest_from_events(&[], "test/2", "aider", None, None, None);
         assert_eq!(manifest.turns, 0);
         assert!(manifest.project.is_none());
         assert!(manifest.model.is_none());
