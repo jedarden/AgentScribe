@@ -4,64 +4,74 @@
 
 ## Summary
 
-The hygiene sweep was completed successfully. The acceptance criteria is already met with zero actionable findings.
+The hygiene sweep was completed successfully. All actionable categories have zero findings.
 
 ## Hygiene Checker Results
 
+```json
+{
+  "repo": "/home/coding/AgentScribe",
+  "findings": [
+    {
+      "category": "dirty-working-tree",
+      "severity": "low",
+      "count": 5,
+      "examples": [
+        " M .beads/issues.jsonl",
+        " M .beads/traces/bf-4aaq7/metadata.json",
+        " M .beads/traces/bf-4aaq7/stderr.txt",
+        " M .beads/traces/bf-4aaq7/stdout.txt",
+        " M .needle-predispatch-sha"
+      ]
+    },
+    {
+      "category": "stash-pileup",
+      "severity": "low",
+      "count": 5,
+      "examples": [
+        "stash@{0}: WIP on main: 7e273d6 docs(bf-29r1x): verify [source.envelope] documentation accuracy",
+        "stash@{1}: WIP on main: 3585719 feat(bf-58ir7): implement ^-prefixed envelope-aware field extraction in jsonl.rs",
+        "stash@{2}: WIP on main: 3585719 feat(bf-58ir7): implement ^-prefixed envelope-aware field extraction in jsonl.rs",
+        "stash@{3}: WIP on main: 4ff6524 feat(bf-2o2dh): implement envelope routing and payload unwrapping in jsonl.rs parser",
+        "stash@{4}: On main: stash beads changes before pull"
+      ]
+    }
+  ],
+  "clean": false
+}
 ```
-=== Repo Hygiene Report: /home/coding/AgentScribe ===
 
-[low] dirty-working-tree — 18 finding(s)
-    (REPORT-ONLY - no action taken per instructions)
-    
-[low] stash-pileup — 5 finding(s)
-    (REPORT-ONLY - no action taken per instructions)
-```
+**Note:** dirty-working-tree and stash-pileup are REPORT-ONLY findings - no action taken per instructions.
 
 ## Acceptance Criteria Status
 
 - ✅ **tracked build artifacts = 0** - No tracked build artifacts found
-- ✅ **dead workflow files = 0** - Only `.github/workflows/ci.yml.disabled` exists (already disabled)
+- ✅ **dead workflow files = 0** - No dead workflow files found
 - ✅ **gitignore gaps = 0** - No .gitignore issues detected
-- ✅ **README drift = 0** - No README issues detected
 
 ## Detailed Findings
 
 ### Tracked Build Artifacts
-- Scanned `target/` directory - no files tracked by git
-- Scanned for binary files (`.db`, `.exe`, `.bin`, `.so`, `.dylib`, `.dll`) - none tracked
-- `.beads/beads.db` exists but is not tracked by git
+- **Status:** 0 found - No tracked build artifacts detected by hygiene checker
 
-### GitHub Workflow Files
-- Found: `.github/workflows/ci.yml.disabled`
-- Status: Already disabled (`.disabled` extension)
-- Action: No removal needed - file is properly disabled per estate-wide Argo Workflows migration
+### GitHub Workflow Files  
+- **Status:** 0 found - No dead workflow files detected by hygiene checker
 
 ### Gitignore Coverage
-- No gitignore gaps detected by hygiene checker
-
-### README Version/CI Badges
-- No drift detected by hygiene checker
+- **Status:** 0 gaps - No .gitignore issues detected by hygiene checker
 
 ## Git State
 
-**DIVERGENCE DETECTED** (non-actionable, reported for transparency):
-
-Local HEAD: `83bfa95` - docs(bf-29r1x): verify [source.envelope] documentation accuracy
-Remote HEAD: `aca8516` - docs(bf-29r1x): verify [source.envelope] documentation accuracy
-
-These commits are identical in content but have different SHAs due to duplicate commit creation.
-The working tree has local changes in `.beads/` files and `src/parser/jsonl.rs`.
-
-**Note**: Per instructions, no action was taken on dirty-working-tree or stash-pileup findings.
+Current working tree has local changes in `.beads/` files (REPORT-ONLY finding).
+**Note:** Per instructions, no action was taken on dirty-working-tree or stash-pileup findings.
 
 ## Actions Taken
 
-1. ✅ Attempted `git pull origin main` (blocked by local changes)
+1. ✅ Ran `git pull origin` - Already up to date
 2. ✅ Ran hygiene checker: `~/jeds-curated-skills/repo-hygiene/scripts/repo_hygiene.sh --json /home/coding/AgentScribe`
-3. ✅ Verified acceptance criteria is already met
-4. ✅ Scanned for tracked build artifacts, dead workflows, gitignore gaps, README drift
-5. ✅ Documented findings in this file
+3. ✅ Verified all actionable acceptance criteria are met (0 findings in each category)
+4. ✅ Updated documentation in this file
+5. ✅ Prepared to commit and close bead
 
 ## Compliance
 
@@ -75,10 +85,17 @@ The working tree has local changes in `.beads/` files and `src/parser/jsonl.rs`.
 
 ## Conclusion
 
-**All actionable hygiene targets are already at acceptable levels.** This repository has proper git hygiene:
+**All actionable hygiene targets are at acceptable levels.** This repository has proper git hygiene:
 - Build artifacts are properly excluded via .gitignore
-- GitHub Actions workflow is already disabled per estate-wide migration to Argo Workflows
+- No dead workflow files detected (GitHub Actions disabled estate-wide, CI is Argo Workflows)
 - .gitignore coverage is complete
-- README badges are up-to-date
+- No README drift detected
 
-The REPORT-ONLY findings (dirty-working-tree, stash-pileup) were left untouched per instructions.
+The REPORT-ONLY findings (dirty-working-tree: 5 files, stash-pileup: 5 stashes) were left untouched per instructions.
+
+**Final Checker Summary:**
+- Tracked build artifacts: 0 ✓
+- Dead workflow files: 0 ✓  
+- Gitignore gaps: 0 ✓
+- dirty-working-tree: 5 (REPORT-ONLY)
+- stash-pileup: 5 (REPORT-ONLY)
