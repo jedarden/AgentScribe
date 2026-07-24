@@ -1,0 +1,21 @@
+# Test envelope plugin configuration for bf-zh3h7
+# This tests the envelope unwrapping functionality
+
+[plugin]
+name = "test-envelope"
+version = "0.1.0"
+
+[source]
+paths = ["/tmp/test/*.jsonl"]
+format = "jsonl"
+
+# Envelope configuration for wrapped JSONL lines
+[source.envelope]
+payload_field = "payload"
+type_field = "type"
+type_routing = { "message" = "event", "heartbeat" = "skip", "meta_update" = "meta" }
+
+[parser]
+timestamp = "ts"
+role = "role"
+content = "content"
