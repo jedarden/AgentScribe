@@ -470,13 +470,28 @@ impl super::FormatParser for JsonlParser {
                     .position(|c| c.as_os_str() == "subagents")
                     .and_then(|subagents_idx| {
                         // Parent session UUID is the component before "subagents"
-                        if subagents_idx > 0 {
-                            source_path
-                                .components()
-                                .collect::<Vec<_>>()
-                                .get(subagents_idx - 1)
-                                .and_then(|c| c.as_os_str().to_str())
-                                .map(|s| s.to_string())
+                        // We need at least 2 components before "subagents": .../<something>/<parent-session>/subagents/...
+                        // And "projects" must appear somewhere before the parent session (but not immediately before it)
+                        if subagents_idx >= 2 {
+                            let components: Vec<_> = source_path.components().collect();
+
+                            // The parent session is the component immediately before "subagents"
+                            let parent_idx = subagents_idx - 1;
+
+                            // Check if there's a "projects" component somewhere before the parent session
+                            // This ensures the path structure is .../projects/<path>/<parent>/subagents/...
+                            let has_projects_before_parent = components[..parent_idx]
+                                .iter()
+                                .any(|c| c.as_os_str() == "projects");
+
+                            if has_projects_before_parent {
+                                components
+                                    .get(parent_idx)
+                                    .and_then(|c| c.as_os_str().to_str())
+                                    .map(|s| s.to_string())
+                            } else {
+                                None
+                            }
                         } else {
                             None
                         }

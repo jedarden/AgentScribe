@@ -70,11 +70,23 @@ mod tests {
                 None,
                 "session-main",
             ),
-            // Subagents directory but not deep enough
+            // Subagents directory but not deep enough (missing project path before parent)
             (
                 "/home/coding/.claude/projects/subagents/agent-123.jsonl",
                 None,
                 "agent-123",
+            ),
+            // Edge case: no projects directory at all
+            (
+                "/some/other/path/subagents/agent-123.jsonl",
+                None,
+                "agent-123",
+            ),
+            // Valid subagent path with UUID-like parent
+            (
+                "/home/coding/.claude/projects/myproj/a0b1c2d3-e4f5-6789/subagents/agent-xyz.jsonl",
+                Some("a0b1c2d3-e4f5-6789"),
+                "agent-xyz",
             ),
         ];
 
