@@ -9,7 +9,7 @@ version = "1.0"
 paths = [
     "~/.claude/projects/**/*.jsonl"
 ]
-exclude = ["*/subagents/*"]
+exclude = []
 format = "jsonl"
 
 [source.session_detection]

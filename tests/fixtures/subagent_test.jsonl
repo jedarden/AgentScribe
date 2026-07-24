@@ -1,0 +1,2 @@
+{"timestamp": "2026-07-23T10:00:00Z", "role": "user", "content": "Test subagent message"}
+{"timestamp": "2026-07-23T10:00:01Z", "role": "assistant", "content": "Subagent response"}
