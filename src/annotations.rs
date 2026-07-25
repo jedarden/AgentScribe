@@ -102,14 +102,11 @@ pub fn load_annotations(sessions_dir: &Path, session_id: &str) -> Result<Vec<Ann
     }
 
     let content = fs::read_to_string(&file_path).map_err(|e| {
-        AgentScribeError::Io(std::io::Error::new(
-            std::io::ErrorKind::Other,
-            format!(
-                "Failed to read annotation file {}: {}",
-                file_path.display(),
-                e
-            ),
-        ))
+        AgentScribeError::Io(std::io::Error::other(format!(
+            "Failed to read annotation file {}: {}",
+            file_path.display(),
+            e
+        )))
     })?;
 
     let sidecar: AnnotationSidecar = serde_json::from_str(&content).map_err(|e| {
@@ -142,14 +139,11 @@ pub fn add_annotation(sessions_dir: &Path, session_id: &str, annotation: Annotat
     // Load existing annotations or create a new sidecar
     let mut sidecar = if file_path.exists() {
         let content = fs::read_to_string(&file_path).map_err(|e| {
-            AgentScribeError::Io(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                format!(
-                    "Failed to read annotation file {}: {}",
-                    file_path.display(),
-                    e
-                ),
-            ))
+            AgentScribeError::Io(std::io::Error::other(format!(
+                "Failed to read annotation file {}: {}",
+                file_path.display(),
+                e
+            )))
         })?;
 
         serde_json::from_str::<AnnotationSidecar>(&content).map_err(|e| {
@@ -163,10 +157,11 @@ pub fn add_annotation(sessions_dir: &Path, session_id: &str, annotation: Annotat
         // Ensure the agent directory exists
         if let Some(agent_dir) = file_path.parent() {
             fs::create_dir_all(agent_dir).map_err(|e| {
-                AgentScribeError::Io(std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    format!("Failed to create directory {}: {}", agent_dir.display(), e),
-                ))
+                AgentScribeError::Io(std::io::Error::other(format!(
+                    "Failed to create directory {}: {}",
+                    agent_dir.display(),
+                    e
+                )))
             })?;
         }
         AnnotationSidecar::new(session_id.to_string())
@@ -184,14 +179,11 @@ pub fn add_annotation(sessions_dir: &Path, session_id: &str, annotation: Annotat
     })?;
 
     fs::write(&file_path, content).map_err(|e| {
-        AgentScribeError::Io(std::io::Error::new(
-            std::io::ErrorKind::Other,
-            format!(
-                "Failed to write annotation file {}: {}",
-                file_path.display(),
-                e
-            ),
-        ))
+        AgentScribeError::Io(std::io::Error::other(format!(
+            "Failed to write annotation file {}: {}",
+            file_path.display(),
+            e
+        )))
     })?;
 
     Ok(())
@@ -217,14 +209,11 @@ pub fn remove_annotation(sessions_dir: &Path, session_id: &str, tag: &str) -> Re
     }
 
     let content = fs::read_to_string(&file_path).map_err(|e| {
-        AgentScribeError::Io(std::io::Error::new(
-            std::io::ErrorKind::Other,
-            format!(
-                "Failed to read annotation file {}: {}",
-                file_path.display(),
-                e
-            ),
-        ))
+        AgentScribeError::Io(std::io::Error::other(format!(
+            "Failed to read annotation file {}: {}",
+            file_path.display(),
+            e
+        )))
     })?;
 
     let mut sidecar: AnnotationSidecar = serde_json::from_str(&content).map_err(|e| {
@@ -247,14 +236,11 @@ pub fn remove_annotation(sessions_dir: &Path, session_id: &str, tag: &str) -> Re
     // If this was the last annotation, delete the sidecar file entirely
     if sidecar.annotations.is_empty() {
         fs::remove_file(&file_path).map_err(|e| {
-            AgentScribeError::Io(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                format!(
-                    "Failed to remove annotation file {}: {}",
-                    file_path.display(),
-                    e
-                ),
-            ))
+            AgentScribeError::Io(std::io::Error::other(format!(
+                "Failed to remove annotation file {}: {}",
+                file_path.display(),
+                e
+            )))
         })?;
         return Ok(true);
     }
@@ -268,14 +254,11 @@ pub fn remove_annotation(sessions_dir: &Path, session_id: &str, tag: &str) -> Re
     })?;
 
     fs::write(&file_path, updated_content).map_err(|e| {
-        AgentScribeError::Io(std::io::Error::new(
-            std::io::ErrorKind::Other,
-            format!(
-                "Failed to write annotation file {}: {}",
-                file_path.display(),
-                e
-            ),
-        ))
+        AgentScribeError::Io(std::io::Error::other(format!(
+            "Failed to write annotation file {}: {}",
+            file_path.display(),
+            e
+        )))
     })?;
 
     Ok(true)
