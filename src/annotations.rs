@@ -287,7 +287,7 @@ mod tests {
             Some("Fixed critical parsing error".to_string())
         );
         assert_eq!(annotation.created_by, "human");
-        assert!(annotation.created_at.len() > 0);
+        assert!(!annotation.created_at.is_empty());
     }
 
     #[test]
