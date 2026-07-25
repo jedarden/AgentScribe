@@ -8,7 +8,7 @@ mod jsonl_subagent_test;
 use crate::error::{AgentScribeError, Result};
 use crate::event::{Event, Role, TokenCounts};
 use crate::parser::{
-    extract_string, extract_string_with_envelope, parse_timestamp, parse_timestamp_with_envelope,
+    extract_string, extract_string_with_envelope, parse_timestamp_with_envelope,
     ParseContext, SessionInfo,
 };
 use crate::plugin::{Plugin, SessionDetection, SessionIdSource};
@@ -32,6 +32,7 @@ pub struct JsonlParser;
 ///
 /// Gracefully handles missing type_field and payload_field by returning
 /// (empty object, None) to skip the line.
+#[cfg(test)]
 fn unwrap_envelope(raw_json: &Value, envelope: &crate::plugin::Envelope) -> Result<(Value, Option<Value>)> {
     // Extract the type field value using value.get(&config.type_field)
     let type_field_value = raw_json.get(&envelope.type_field).cloned();

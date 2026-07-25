@@ -146,11 +146,15 @@ pub fn extract_with_envelope(
 ) -> Option<Value> {
     if path.starts_with('^') {
         // Extract from envelope
-        let envelope_path = &path[1..]; // Remove the ^ prefix
-        if let Some(env) = envelope {
-            extract_field(env, envelope_path)
+        if let Some(envelope_path) = path.strip_prefix('^') {
+            if let Some(env) = envelope {
+                extract_field(env, envelope_path)
+            } else {
+                // No envelope available, return None
+                None
+            }
         } else {
-            // No envelope available, return None
+            // Should not happen due to starts_with check, but handle defensively
             None
         }
     } else {
