@@ -1709,4 +1709,68 @@ mod tests {
         assert_eq!(events[2].content, "Follow-up");
         assert_eq!(events[2].ts.to_rfc3339(), "2026-07-24T10:00:03+00:00");
     }
+
+    #[test]
+    fn test_unwrap_envelope_type_extraction() {
+        // Test type field extraction with both present and missing type field cases
+        let envelope = create_test_envelope();
+
+        // Test 1: Type field is present and correctly extracted
+        let line_with_type = r#"{"type": "message", "timestamp": "2026-03-16T12:00:00Z", "payload": {"role": "user", "content": "Hello"}}"#;
+        let json_with_type: Value = serde_json::from_str(line_with_type).unwrap();
+
+        let (payload_with_type, wrapper_with_type) = unwrap_envelope(&json_with_type, &envelope).unwrap();
+
+        // Verify that type field value is correctly extracted in the wrapper
+        assert_eq!(
+            wrapper_with_type
+                .as_ref()
+                .unwrap()
+                .get("type")
+                .and_then(|v| v.as_str()),
+            Some("message"),
+            "Type field 'message' should be correctly extracted and preserved in wrapper"
+        );
+
+        // Verify payload is extracted correctly for event type
+        assert_eq!(
+            payload_with_type.get("role").and_then(|v| v.as_str()),
+            Some("user"),
+            "Payload should contain role from payload_field"
+        );
+
+        // Test 2: Type field is missing - should default to skip behavior
+        let line_without_type = r#"{"timestamp": "2026-03-16T12:00:00Z", "payload": {"role": "user", "content": "Hello"}}"#;
+        let json_without_type: Value = serde_json::from_str(line_without_type).unwrap();
+
+        let (payload_without_type, wrapper_without_type) = unwrap_envelope(&json_without_type, &envelope).unwrap();
+
+        // Missing type field should result in skip behavior (empty payload, None wrapper)
+        assert!(
+            payload_without_type.as_object().map_or(false, |obj| obj.is_empty()),
+            "Missing type field should return empty payload object"
+        );
+
+        assert!(
+            wrapper_without_type.is_none(),
+            "Missing type field should return None for wrapper (skip behavior)"
+        );
+
+        // Test 3: Type field with different value
+        let line_different_type = r#"{"type": "heartbeat", "timestamp": "2026-03-16T12:00:00Z", "payload": {"status": "ok"}}"#;
+        let json_different_type: Value = serde_json::from_str(line_different_type).unwrap();
+
+        let (payload_different_type, wrapper_different_type) = unwrap_envelope(&json_different_type, &envelope).unwrap();
+
+        // Verify heartbeat type is correctly identified and routed to skip
+        assert!(
+            payload_different_type.as_object().map_or(false, |obj| obj.is_empty()),
+            "Type 'heartbeat' should return empty payload (skip routing)"
+        );
+
+        assert!(
+            wrapper_different_type.is_none(),
+            "Type 'heartbeat' should return None for wrapper (skip routing)"
+        );
+    }
 }
