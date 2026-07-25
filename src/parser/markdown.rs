@@ -534,4 +534,99 @@ I'll add proper error handling for expired JWT tokens.
             .contains("Add error handling for expired tokens"));
         assert_eq!(user_events[1].ts.timestamp(), 1720270345); // 2026-07-06 10:05:45
     }
+
+    /// Scrape-path test with persistent fixtures
+    ///
+    /// This test exercises the full scrape path using persistent fixture files
+    /// in tests/fixtures/aider_input/ to ensure end-to-end wiring works.
+    #[test]
+    fn test_parse_aider_scrape_path_with_persistent_fixtures() {
+        use std::path::PathBuf;
+
+        let plugin = create_aider_plugin();
+
+        // Build path to fixture files
+        let mut fixtures_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        fixtures_path.push("tests/fixtures/aider_input");
+
+        let chat_md = fixtures_path.join("chat.md");
+        let input_history = fixtures_path.join(".aider.input.history");
+
+        // Verify fixtures exist
+        assert!(
+            chat_md.exists(),
+            "chat.md fixture should exist at {:?}",
+            chat_md
+        );
+        assert!(
+            input_history.exists(),
+            ".aider.input.history fixture should exist at {:?}",
+            input_history
+        );
+
+        // Parse through the FormatParser::parse() scrape path
+        // This should auto-discover and load the sibling .aider.input.history file
+        let parser = MarkdownParser;
+        let events = parser.parse(&chat_md, &plugin).expect("parsing should succeed");
+
+        // Verify we got events
+        assert!(!events.is_empty(), "should have parsed events from the fixture");
+
+        // Find user events
+        let user_events: Vec<_> = events.iter().filter(|e| e.role == Role::User).collect();
+        assert_eq!(user_events.len(), 3, "should have 3 user events");
+
+        // Verify each user event has the timestamp from .aider.input.history (not Utc::now())
+        // First user event: "Fix the authentication middleware" at 2026-07-06 10:00:30
+        assert!(
+            user_events[0]
+                .content
+                .contains("Fix the authentication middleware"),
+            "first user event should contain the expected content"
+        );
+        assert_eq!(
+            user_events[0].ts.timestamp(),
+            1720267230, // 2026-07-06 10:00:30
+            "first user event should have timestamp from input history, not Utc::now()"
+        );
+
+        // Second user event: "Add error handling for expired tokens" at 2026-07-06 10:05:45
+        assert!(
+            user_events[1]
+                .content
+                .contains("Add error handling for expired tokens"),
+            "second user event should contain the expected content"
+        );
+        assert_eq!(
+            user_events[1].ts.timestamp(),
+            1720270345, // 2026-07-06 10:05:45
+            "second user event should have timestamp from input history, not Utc::now()"
+        );
+
+        // Third user event: "Test the authentication flow" at 2026-07-06 10:12:15
+        assert!(
+            user_events[2]
+                .content
+                .contains("Test the authentication flow"),
+            "third user event should contain the expected content"
+        );
+        assert_eq!(
+            user_events[2].ts.timestamp(),
+            1720272135, // 2026-07-06 10:12:15
+            "third user event should have timestamp from input history, not Utc::now()"
+        );
+
+        // Verify assistant and tool events were also parsed
+        let assistant_events: Vec<_> = events
+            .iter()
+            .filter(|e| e.role == Role::Assistant)
+            .collect();
+        let tool_events: Vec<_> = events
+            .iter()
+            .filter(|e| e.role == Role::ToolResult)
+            .collect();
+
+        assert!(!assistant_events.is_empty(), "should have assistant events");
+        assert!(!tool_events.is_empty(), "should have tool result events");
+    }
 }
