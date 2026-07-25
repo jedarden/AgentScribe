@@ -18,8 +18,7 @@ use agentscribe::plugin::{
 };
 use agentscribe::scraper::Scraper;
 use agentscribe::search;
-use agentscribe::search::{SearchOptions, SortOrder};
-use chrono::Utc;
+use agentscribe::search::SearchOptions;
 use tantivy::{Searcher, TantivyDocument};
 
 // ─── Test helpers ─────────────────────────────────────────────────────────────
@@ -283,6 +282,7 @@ fn test_parent_session_id_database_persistence() {
         .get_field("parent_session_id")
         .expect("parent_session_id field should exist in schema");
 
+    use tantivy::schema::Value;
     let stored_parent_id = subagent_doc
         .get_first(parent_session_id_field)
         .and_then(|v| v.as_str());
@@ -301,8 +301,7 @@ fn test_parent_session_id_database_persistence() {
 
     // This search should find the subagent session
     let search_results = search::execute_search(
-        searcher,
-        &index_manager.schema(),
+        &data_dir.path(),
         &search_options,
     )
     .expect("Search should succeed");
@@ -551,7 +550,7 @@ fn test_deep_nesting_parent_session_id_propagation() {
 
     // Level 4: Parent is level3
     let level4_full = format!(
-        "claude-code/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}",
+        "claude-code/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}",
         level0_id, "subagents", level1_id, "subagents", level2_id, "subagents",
         level3_id, "subagents", level4_id, ""
     ).trim_end_matches('/').to_string();
@@ -569,13 +568,13 @@ fn test_deep_nesting_parent_session_id_propagation() {
 /// Search for a document by session_id in the Tantivy index
 fn search_by_session_id(searcher: &Searcher, session_id: &str) -> Option<TantivyDocument> {
     use tantivy::query::TermQuery;
-    use tantivy::schema::{Field, Term, Value};
+    use tantivy::schema::Term;
 
     let schema = searcher.schema();
     let session_id_field = schema.get_field("session_id").unwrap();
 
     let term = Term::from_field_text(session_id_field, session_id);
-    let query = TermQuery::new(term, tantivy::query::TantivyQueryPrecision::Exact);
+    let query = TermQuery::new(term, tantivy::schema::IndexRecordOption::Basic);
 
     let top_docs = searcher
         .search(&query, &tantivy::collector::TopDocs::with_limit(1))
@@ -583,7 +582,7 @@ fn search_by_session_id(searcher: &Searcher, session_id: &str) -> Option<Tantivy
 
     top_docs
         .first()
-        .map(|(score, doc_address)| searcher.doc(*doc_address))
+        .map(|(_score, doc_address)| searcher.doc(*doc_address))
         .transpose()
         .ok()
         .flatten()
