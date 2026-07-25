@@ -1572,11 +1572,22 @@ fn run_status(json: bool, plugin_filter: Option<String>) -> Result<()> {
     for plugin_name in &plugin_names {
         let sessions = scraper.list_sessions(plugin_name)?;
 
-        // Count events across all sessions for this plugin
+        // Count events and separate subagent sessions for this plugin
         let mut plugin_events: u64 = 0;
+        let mut subagent_session_count: usize = 0;
+        let mut subagent_event_count: u64 = 0;
+
         for session_id in &sessions {
             if let Ok(events) = scraper.read_session(session_id) {
                 plugin_events += events.len() as u64;
+
+                // Detect subagent sessions by checking source_agent in events
+                if let Some(first_event) = events.first() {
+                    if first_event.source_agent == "claude-code-subagent" {
+                        subagent_session_count += 1;
+                        subagent_event_count += events.len() as u64;
+                    }
+                }
             }
         }
         _total_events += plugin_events;
@@ -1613,6 +1624,8 @@ fn run_status(json: bool, plugin_filter: Option<String>) -> Result<()> {
             source_files: plugin_files.len(),
             bytes: plugin_bytes,
             truncation_limit,
+            subagent_sessions: subagent_session_count,
+            subagent_events: subagent_event_count,
         });
     }
 
@@ -1637,6 +1650,8 @@ fn run_status(json: bool, plugin_filter: Option<String>) -> Result<()> {
                 "source_files": ps.source_files,
                 "bytes": ps.bytes,
                 "source_paths": ps.source_paths,
+                "subagent_sessions": ps.subagent_sessions,
+                "subagent_events": ps.subagent_events,
             });
             if let Some(ts) = ps.last_scraped {
                 p["last_scraped"] = json!(ts.to_rfc3339());
@@ -1692,15 +1707,29 @@ fn run_status(json: bool, plugin_filter: Option<String>) -> Result<()> {
                 Some(ts) => format_ago(ts),
                 None => "never scraped".to_string(),
             };
+
+            // Display main sessions
+            let main_sessions = ps.sessions - ps.subagent_sessions;
+            let main_events = ps.events - ps.subagent_events;
+
             println!(
                 "  {:<14} {:>4} sessions  {:>6} events  {}  ({} source files, {})",
                 ps.name,
-                ps.sessions,
-                ps.events,
+                main_sessions,
+                main_events,
                 last,
                 ps.source_files,
                 format_bytes(ps.bytes)
             );
+
+            // Display subagent sessions if any exist
+            if ps.subagent_sessions > 0 {
+                println!(
+                    "    └─ subagent sessions: {:>4} sessions  {:>6} events",
+                    ps.subagent_sessions,
+                    ps.subagent_events
+                );
+            }
         }
 
         // Windsurf truncation warning
@@ -2142,6 +2171,9 @@ struct PluginStatus {
     source_files: usize,
     bytes: u64,
     truncation_limit: Option<u32>,
+    // Subagent session tracking
+    subagent_sessions: usize,
+    subagent_events: u64,
 }
 
 /// Daemon status info
