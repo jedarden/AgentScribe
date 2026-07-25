@@ -55,6 +55,7 @@ pub struct IndexFields {
     // Analytics + classification
     pub model: Field,
     pub session_type: Field,
+    pub parent_session_id: Field,
 
     // Date + numeric
     pub timestamp: Field,
@@ -121,6 +122,9 @@ pub fn fields_from_schema(schema: &Schema) -> IndexFields {
         session_type: schema
             .get_field("session_type")
             .expect("missing 'session_type' field in schema"),
+        parent_session_id: schema
+            .get_field("parent_session_id")
+            .expect("missing 'parent_session_id' field in schema"),
         timestamp: schema
             .get_field("timestamp")
             .expect("missing 'timestamp' field in schema"),
@@ -159,6 +163,7 @@ pub fn build_schema() -> (Schema, IndexFields) {
     // Analytics + classification
     let model = builder.add_text_field("model", STRING | STORED | FAST);
     let session_type = builder.add_text_field("session_type", STRING | STORED | FAST);
+    let parent_session_id = builder.add_text_field("parent_session_id", STRING | STORED | FAST);
 
     // Date + numeric for range queries
     let timestamp = builder.add_date_field("timestamp", INDEXED | STORED | FAST);
@@ -185,6 +190,7 @@ pub fn build_schema() -> (Schema, IndexFields) {
         code_is_final,
         model,
         session_type,
+        parent_session_id,
         timestamp,
         turn_count,
     };
@@ -519,6 +525,11 @@ pub fn build_session_document(
     // Model
     if let Some(ref model) = manifest.model {
         doc.add_text(fields.model, model);
+    }
+
+    // Parent session ID for subagent sessions
+    if let Some(ref parent_session_id) = manifest.parent_session_id {
+        doc.add_text(fields.parent_session_id, parent_session_id);
     }
 
     // Timestamp — use the session start time
