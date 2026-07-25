@@ -788,6 +788,18 @@ impl IndexManager {
     pub fn is_writing(&self) -> bool {
         self.writer.is_some()
     }
+
+    /// Get a reference to the underlying tantivy Index.
+    #[allow(dead_code)]
+    pub fn index(&self) -> &tantivy::Index {
+        &self.index
+    }
+
+    /// Get the schema for this index.
+    #[allow(dead_code)]
+    pub fn schema(&self) -> Schema {
+        self.index.schema()
+    }
 }
 
 #[cfg(test)]
