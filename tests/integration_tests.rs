@@ -56,6 +56,8 @@ fn jsonl_plugin(name: &str, glob: &str) -> Plugin {
             },
             tree: None,
             truncation_limit: None,
+            envelope: None,
+            array: None,
         },
         parser: Parser {
             timestamp: Some("timestamp".to_string()),
@@ -93,6 +95,8 @@ fn aider_plugin(glob: &str) -> Plugin {
             },
             tree: None,
             truncation_limit: None,
+            envelope: None,
+            array: None,
         },
         parser: Parser {
             user_prefix: Some("#### ".to_string()),
@@ -135,6 +139,8 @@ fn opencode_plugin(base_dir: &str) -> Plugin {
                 ordering_field: "createdAt".to_string(),
             }),
             truncation_limit: None,
+            envelope: None,
+            array: None,
         },
         parser: Parser {
             timestamp: Some("createdAt".to_string()),
@@ -164,6 +170,8 @@ fn codex_plugin(glob: &str) -> Plugin {
             },
             tree: None,
             truncation_limit: None,
+            envelope: None,
+            array: None,
         },
         parser: Parser {
             timestamp: Some("time".to_string()),
@@ -199,6 +207,8 @@ fn codex_plugin_with_companion(glob: &str, companion_path: &str) -> Plugin {
             },
             tree: None,
             truncation_limit: None,
+            envelope: None,
+            array: None,
         },
         parser: Parser {
             timestamp: Some("time".to_string()),
@@ -1795,6 +1805,8 @@ fn sqlite_plugin(name: &str, path: &str) -> Plugin {
             },
             tree: None,
             truncation_limit: None,
+            envelope: None,
+            array: None,
         },
         parser: Parser {
             query: Some("SELECT key, value FROM cursorDiskKV ORDER BY rowid ASC".to_string()),
