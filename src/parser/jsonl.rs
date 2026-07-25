@@ -466,7 +466,7 @@ impl super::FormatParser for JsonlParser {
                 let file_size = std::fs::metadata(source_path)?.len();
 
                 // Detect subagent sessions and extract parent_session_id from directory structure
-                // Subagent files are at: ~/.claude/projects/<path>/<parent-session-uuid>/subagents/agent-<id>.jsonl
+                // Subagent files are at: .../<parent-session-uuid>/subagents/agent-<id>.jsonl
                 let parent_session_id = source_path
                     .components()
                     .collect::<Vec<_>>()
@@ -474,28 +474,17 @@ impl super::FormatParser for JsonlParser {
                     .position(|c| c.as_os_str() == "subagents")
                     .and_then(|subagents_idx| {
                         // Parent session UUID is the component before "subagents"
-                        // We need at least 2 components before "subagents": .../<something>/<parent-session>/subagents/...
-                        // And "projects" must appear somewhere before the parent session (but not immediately before it)
-                        if subagents_idx >= 2 {
+                        // We need at least 1 component before "subagents": .../<parent-session>/subagents/...
+                        if subagents_idx >= 1 {
                             let components: Vec<_> = source_path.components().collect();
 
                             // The parent session is the component immediately before "subagents"
                             let parent_idx = subagents_idx - 1;
 
-                            // Check if there's a "projects" component somewhere before the parent session
-                            // This ensures the path structure is .../projects/<path>/<parent>/subagents/...
-                            let has_projects_before_parent = components[..parent_idx]
-                                .iter()
-                                .any(|c| c.as_os_str() == "projects");
-
-                            if has_projects_before_parent {
-                                components
-                                    .get(parent_idx)
-                                    .and_then(|c| c.as_os_str().to_str())
-                                    .map(|s| s.to_string())
-                            } else {
-                                None
-                            }
+                            components
+                                .get(parent_idx)
+                                .and_then(|c| c.as_os_str().to_str())
+                                .map(|s| s.to_string())
                         } else {
                             None
                         }
