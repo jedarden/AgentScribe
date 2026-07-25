@@ -123,7 +123,7 @@ pub fn compute_behavioral_signals(events: &[Event]) -> BehavioralSignals {
             // Track CWD changes (Bash tool with cd commands)
             if event.tool.as_deref() == Some("Bash") {
                 if let Some(cwd) = detect_cwd_change(event) {
-                    if last_cwd.map_or(true, |prev| prev != cwd.as_str()) {
+                    if last_cwd.is_none_or(|prev| prev != cwd.as_str()) {
                         signals.cwd_switch_count += 1;
                     }
                     last_cwd = Some(cwd);
@@ -132,13 +132,12 @@ pub fn compute_behavioral_signals(events: &[Event]) -> BehavioralSignals {
         }
 
         // Tool results — check for bash failures
-        if event.role == Role::ToolResult {
-            if event.tool.as_deref() == Some("Bash") {
-                if let Some(ref params) = event.tool_params {
-                    if let Some(exit_code) = params.get("exit_code").and_then(|v| v.as_i64()) {
-                        if exit_code != 0 {
-                            signals.bash_failure_count += 1;
-                        }
+        if event.role == Role::ToolResult
+            && event.tool.as_deref() == Some("Bash") {
+            if let Some(ref params) = event.tool_params {
+                if let Some(exit_code) = params.get("exit_code").and_then(|v| v.as_i64()) {
+                    if exit_code != 0 {
+                        signals.bash_failure_count += 1;
                     }
                 }
             }
@@ -204,10 +203,9 @@ fn is_config_file(path: &str) -> bool {
             return true;
         }
         // Check for memory/*.md pattern
-        if *pattern == "memory/" || *pattern == "docs/notes/" {
-            if path_normalized.contains(pattern) {
-                return true;
-            }
+        if (*pattern == "memory/" || *pattern == "docs/notes/")
+            && path_normalized.contains(pattern) {
+            return true;
         }
         // Check for MEMORY.md at root level or in a path
         if *pattern == "MEMORY.md" {
@@ -276,8 +274,8 @@ fn detect_cwd_change(event: &Event) -> Option<String> {
         .and_then(|cmd| {
             // Simple cd detection: command starts with "cd " or contains " && cd " etc.
             let trimmed = cmd.trim();
-            if trimmed.starts_with("cd ") {
-                let dir = trimmed[3..].trim();
+            if let Some(dir) = trimmed.strip_prefix("cd ") {
+                let dir = dir.trim();
                 // Skip cd without argument or cd -
                 if !dir.is_empty() && dir != "-" {
                     return Some(dir.to_string());
@@ -429,13 +427,14 @@ mod tests {
 
     #[test]
     fn test_assistant_turn_ratio() {
-        let mut events: Vec<Event> = Vec::new();
-        // 1 user turn
-        events.push(make_event(Role::User, None, "fix the bug"));
-        // 3 assistant turns
-        events.push(make_event(Role::Assistant, None, "I'll fix it"));
-        events.push(make_event(Role::Assistant, None, "Here's the fix"));
-        events.push(make_event(Role::Assistant, None, "Done"));
+        let events = vec![
+            // 1 user turn
+            make_event(Role::User, None, "fix the bug"),
+            // 3 assistant turns
+            make_event(Role::Assistant, None, "I'll fix it"),
+            make_event(Role::Assistant, None, "Here's the fix"),
+            make_event(Role::Assistant, None, "Done"),
+        ];
 
         let signals = compute_behavioral_signals(&events);
         // 3 assistant / 4 total = 0.75
