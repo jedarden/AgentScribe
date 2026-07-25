@@ -267,7 +267,7 @@ pub fn export_reflect_sessions(
 
         // Load behavioral signals from sidecar
         let signals = load_behavioral_signals(data_dir, session_id)
-            .unwrap_or_else(BehavioralSignals::default);
+            .unwrap_or_default();
 
         // Apply config-based filters
         if filter.modified_config_only && signals.modified_config_files.is_empty() {
@@ -438,7 +438,7 @@ pub fn analyze_reflect_patterns(
             percent: (count as f64 / total_sessions as f64) * 100.0,
         })
         .collect();
-    failure_tool_sequences.sort_by(|a, b| b.count.cmp(&a.count));
+    failure_tool_sequences.sort_by_key(|b| std::cmp::Reverse(b.count));
 
     let mut re_read_before_success_vec: Vec<_> = re_read_before_success
         .into_iter()
@@ -448,13 +448,13 @@ pub fn analyze_reflect_patterns(
             percent: (count as f64 / total_sessions as f64) * 100.0,
         })
         .collect();
-    re_read_before_success_vec.sort_by(|a, b| b.count.cmp(&a.count));
+    re_read_before_success_vec.sort_by_key(|b| std::cmp::Reverse(b.count));
 
     let mut config_modifications: Vec<_> = config_mods.into_values().collect();
-    config_modifications.sort_by(|a, b| b.count.cmp(&a.count));
+    config_modifications.sort_by_key(|b| std::cmp::Reverse(b.count));
 
     let mut error_patterns_vec: Vec<_> = error_patterns.into_values().collect();
-    error_patterns_vec.sort_by(|a, b| b.count.cmp(&a.count));
+    error_patterns_vec.sort_by_key(|b| std::cmp::Reverse(b.count));
 
     Ok(ReflectPatterns {
         since,
@@ -503,7 +503,7 @@ pub fn parse_since_duration(duration_str: &str) -> Result<DateTime<Utc>, Reflect
     let duration_str = duration_str.trim().to_lowercase();
     let (num_str, unit) = duration_str.split_at(
         duration_str
-            .find(|c: char| !c.is_digit(10))
+            .find(|c: char| !c.is_ascii_digit())
             .unwrap_or(duration_str.len()),
     );
 
