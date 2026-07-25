@@ -23,28 +23,31 @@ pub struct JsonlParser;
 /// Unwrap an envelope wrapper and extract the payload based on type routing
 ///
 /// Given a parsed JSON line and envelope configuration, this function:
-/// 1. Reads the type_field from the JSON
+/// 1. Reads the type_field from the JSON using value.get(&config.type_field)
 /// 2. Looks up the routing action via get_routing()
-/// 3. Returns (payload_json, envelope_json):
+/// 3. Returns (payload_json, type_field_value):
 ///    - For 'skip' types: (empty object, None) to drop the line
-///    - For 'meta' types: (empty object, Some(wrapper)) for future session metadata
-///    - For 'event' types: (payload extracted from payload_field, Some(wrapper))
+///    - For 'meta' types: (empty object, Some(type_value))
+///    - For 'event' types: (payload extracted from payload_field, Some(type_value))
 ///
-/// Gracefully handles missing payload_field and non-object payloads by returning
-/// (empty object, None) to skip the line with a warning.
+/// Gracefully handles missing type_field and payload_field by returning
+/// (empty object, None) to skip the line.
 fn unwrap_envelope(raw_json: &Value, envelope: &crate::plugin::Envelope) -> Result<(Value, Option<Value>)> {
-    // Extract the type field value
+    // Extract the type field value using value.get(&config.type_field)
+    let type_field_value = raw_json.get(&envelope.type_field).cloned();
+
+    // Get the routing action based on the type field value
     let type_value = extract_string(raw_json, &envelope.type_field).unwrap_or_default();
     let routing = envelope.get_routing(&type_value);
 
     match routing {
         "skip" => {
-            // Return empty payload with None envelope to signal "drop this line"
+            // Return empty payload with None to signal "drop this line"
             Ok((serde_json::json!({}), None))
         }
         "meta" => {
-            // Return empty payload but preserve the envelope wrapper for metadata extraction
-            Ok((serde_json::json!({}), Some(raw_json.clone())))
+            // Return empty payload with the type field value
+            Ok((serde_json::json!({}), type_field_value))
         }
         "event" => {
             // Extract payload from payload_field
@@ -58,8 +61,8 @@ fn unwrap_envelope(raw_json: &Value, envelope: &crate::plugin::Envelope) -> Resu
 
             match extracted {
                 Some(payload) => {
-                    // Return the extracted payload along with the envelope wrapper
-                    Ok((payload.clone(), Some(raw_json.clone())))
+                    // Return the extracted payload along with the type field value
+                    Ok((payload.clone(), type_field_value))
                 }
                 None => {
                     // Missing or non-object payload_field - skip with warning
