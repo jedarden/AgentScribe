@@ -134,8 +134,12 @@ pub fn fields_from_schema(schema: &Schema) -> IndexFields {
 pub fn build_schema() -> (Schema, IndexFields) {
     let mut builder = Schema::builder();
 
-    // Full-text searchable + stored
-    let content = builder.add_text_field("content", TEXT | STORED);
+    // Full-text searchable. NOT stored (ADR-2): the normalized session JSONL
+    // under sessions/ is already the durable copy of this text; storing it a
+    // second time in Tantivy's doc store scaled 1:1 with corpus size and was
+    // the single largest contributor to on-disk index growth. Readers that
+    // need the raw text (snippets, more-like-this) re-read the JSONL file.
+    let content = builder.add_text_field("content", TEXT);
     let summary = builder.add_text_field("summary", TEXT | STORED);
     let solution_summary = builder.add_text_field("solution_summary", TEXT | STORED);
     let code_content = builder.add_text_field("code_content", TEXT | STORED);
@@ -245,7 +249,10 @@ fn trim_middle(content: String) -> String {
 /// - tool_call content: full
 /// - tool_result content: capped at 1000 chars
 /// - Total capped at 500KB with trim-middle strategy
-fn build_content(events: &[Event]) -> String {
+///
+/// `pub(crate)` so `search.rs` can rebuild this same string from a session's
+/// JSONL file at query time, now that the `content` field isn't stored (ADR-2).
+pub(crate) fn build_content(events: &[Event]) -> String {
     let mut parts: Vec<String> = Vec::new();
 
     for event in events {
@@ -1042,8 +1049,8 @@ mod tests {
 
     #[test]
     fn test_build_manifest_from_events_empty() {
-        let manifest = build_manifest_from_events(&[], "test/2", "aider", None, None, None, None);
-        let manifest = build_manifest_from_events(&[], "test/2", "aider", None, None, None, None);
+        let manifest = build_manifest_from_events(&[], "test/2", "aider", None, None, None);
+        let _manifest2 = build_manifest_from_events(&[], "test/2", "aider", None, None, None);
         assert_eq!(manifest.turns, 0);
         assert!(manifest.project.is_none());
         assert!(manifest.model.is_none());
@@ -1435,20 +1442,36 @@ mod tests {
         let reader = index.reader().unwrap();
         let searcher = reader.searcher();
 
+        // Exactly one document for this session must remain — re-indexing
+        // must replace (delete+add), not duplicate.
         let term = Term::from_field_text(fields.session_id, "test/xyz");
         let query = TermQuery::new(term, IndexRecordOption::Basic);
-        let top = searcher.search(&query, &TopDocs::with_limit(1)).unwrap();
+        let top = searcher.search(&query, &TopDocs::with_limit(10)).unwrap();
         assert_eq!(top.len(), 1);
 
-        let doc: tantivy::TantivyDocument = searcher.doc(top[0].1).unwrap();
-        let content = doc.get_first(fields.content).unwrap().as_str().unwrap();
-        assert!(
-            content.contains("brand new content"),
-            "stored content must reflect the updated events"
+        // `content` is indexed but not stored (ADR-2), so verify the update
+        // took effect via search rather than reading a stored field value:
+        // the new terms must be findable and the old ones gone.
+        let new_term = Term::from_field_text(fields.content, "brand");
+        let new_query = TermQuery::new(new_term, IndexRecordOption::Basic);
+        let new_hits = searcher
+            .search(&new_query, &TopDocs::with_limit(1))
+            .unwrap();
+        assert_eq!(
+            new_hits.len(),
+            1,
+            "new content must be searchable after re-index"
         );
-        assert!(
-            !content.contains("old content here"),
-            "old content must not remain after re-index"
+
+        let old_term = Term::from_field_text(fields.content, "old");
+        let old_query = TermQuery::new(old_term, IndexRecordOption::Basic);
+        let old_hits = searcher
+            .search(&old_query, &TopDocs::with_limit(1))
+            .unwrap();
+        assert_eq!(
+            old_hits.len(),
+            0,
+            "old content must not remain searchable after re-index"
         );
     }
 

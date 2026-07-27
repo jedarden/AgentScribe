@@ -51,6 +51,10 @@ fn default_true() -> bool {
     true
 }
 
+fn default_false() -> bool {
+    false
+}
+
 impl Default for ShellHookConfig {
     fn default() -> Self {
         ShellHookConfig {
@@ -208,9 +212,13 @@ pub struct VectorConfig {
     #[serde(default = "default_true")]
     pub index_sessions: bool,
 
-    /// Index chunk-level embeddings (default: true).
-    /// Set to false to save memory at the cost of finer retrieval.
-    #[serde(default = "default_true")]
+    /// Index chunk-level embeddings (default: false; ADR-2).
+    /// Chunk-level embeddings (overlapping token windows within a session)
+    /// enable finding the exact moment within a session, at several times
+    /// the disk cost of session-level embeddings alone. Off by default —
+    /// session-level embeddings already answer "which past session solved a
+    /// similar problem," which is the common case. Set to true to opt in.
+    #[serde(default = "default_false")]
     pub index_chunks: bool,
 }
 
@@ -244,7 +252,7 @@ impl Default for VectorConfig {
             chunk_size_tokens: 512,
             chunk_overlap_tokens: 64,
             index_sessions: true,
-            index_chunks: true,
+            index_chunks: false,
         }
     }
 }
