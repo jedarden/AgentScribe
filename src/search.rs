@@ -5,6 +5,7 @@
 
 use crate::error::{AgentScribeError, Result};
 use crate::index::{build_schema, IndexFields};
+use crate::scraper::load_session_content;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::ops::Bound;
@@ -170,7 +171,7 @@ pub fn execute_search(data_dir: &Path, opts: &SearchOptions) -> Result<SearchOut
 
     // Handle --session lookup
     if let Some(ref sid) = opts.session_id {
-        return lookup_session(&searcher, sid, &start, total_docs);
+        return lookup_session(data_dir, &searcher, sid, &start, total_docs);
     }
 
     // Handle --semantic search
@@ -186,7 +187,7 @@ pub fn execute_search(data_dir: &Path, opts: &SearchOptions) -> Result<SearchOut
     let (schema, fields) = build_schema();
 
     // Build query from options
-    let query = build_query(&searcher, &fields, opts, &schema)?;
+    let query = build_query(data_dir, &searcher, &fields, opts, &schema)?;
 
     // Determine how many results to fetch
     let fetch_limit = if opts.token_budget.is_some() {
@@ -242,7 +243,7 @@ pub fn execute_search(data_dir: &Path, opts: &SearchOptions) -> Result<SearchOut
             semantic: opts.semantic,
             hybrid: opts.hybrid,
         };
-        let fallback_query = build_query(&searcher, &fields, &fuzzy_opts, &schema)?;
+        let fallback_query = build_query(data_dir, &searcher, &fields, &fuzzy_opts, &schema)?;
         top_docs = searcher
             .search(&fallback_query, &TopDocs::with_limit(fetch_limit))
             .map_err(|e| {
@@ -270,7 +271,9 @@ pub fn execute_search(data_dir: &Path, opts: &SearchOptions) -> Result<SearchOut
         if results.len() >= result_limit {
             break;
         }
-        if let Some(result) = doc_to_search_result(&searcher, &fields, *doc_addr, *score, opts) {
+        if let Some(result) =
+            doc_to_search_result(data_dir, &searcher, &fields, *doc_addr, *score, opts)
+        {
             results.push(result);
         }
     }
@@ -305,6 +308,7 @@ pub fn execute_search(data_dir: &Path, opts: &SearchOptions) -> Result<SearchOut
 
 /// Build a Tantivy query from search options.
 fn build_query(
+    data_dir: &Path,
     searcher: &Searcher,
     fields: &IndexFields,
     opts: &SearchOptions,
@@ -404,7 +408,7 @@ fn build_query(
 
     // --like <session-id>: find sessions with similar content (TF-IDF based MLT)
     if let Some(ref like_id) = opts.like_session {
-        let mlt_query = build_more_like_this(searcher, fields, like_id)?;
+        let mlt_query = build_more_like_this(data_dir, searcher, fields, like_id)?;
         clauses.push((Occur::Must, mlt_query));
         // Exclude the source session from results
         let exclude_term = tantivy::schema::Term::from_field_text(fields.session_id, like_id);
@@ -675,6 +679,7 @@ fn is_stop_word(word: &str) -> bool {
 /// from the top-scoring terms. The caller is responsible for excluding
 /// the original session via a MustNot clause at the outer query level.
 fn build_more_like_this(
+    data_dir: &Path,
     searcher: &Searcher,
     fields: &IndexFields,
     session_id: &str,
@@ -699,11 +704,25 @@ fn build_more_like_this(
 
     // Collect text from content, summary, and tags fields
     let mut all_text = String::new();
-    for field in [fields.content, fields.summary] {
-        if let Some(text) = doc.get_first(field).and_then(|v| v.as_str()) {
-            all_text.push_str(text);
-            all_text.push(' ');
-        }
+    if let Some(text) = doc.get_first(fields.summary).and_then(|v| v.as_str()) {
+        all_text.push_str(text);
+        all_text.push(' ');
+    }
+    // `content` is indexed but not stored (ADR-2). Try `code_content` (same
+    // text, for code-artifact docs) before re-reading the session's JSONL.
+    let content_text = doc
+        .get_first(fields.content)
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .or_else(|| {
+            doc.get_first(fields.code_content)
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+        })
+        .or_else(|| load_session_content(data_dir, session_id));
+    if let Some(text) = content_text {
+        all_text.push_str(&text);
+        all_text.push(' ');
     }
     // Tags are highly discriminative — include them
     for tag_val in doc.get_all(fields.tags).filter_map(|v| v.as_str()) {
@@ -794,6 +813,7 @@ fn build_more_like_this(
 
 /// Convert a Tantivy document to a SearchResult.
 fn doc_to_search_result(
+    data_dir: &Path,
     searcher: &Searcher,
     fields: &IndexFields,
     doc_addr: DocAddress,
@@ -860,12 +880,26 @@ fn doc_to_search_result(
             fields.content
         };
 
+        // `content` is indexed but not stored (ADR-2). `code_content` still
+        // is, and holds the same text for code-artifact docs, so try that
+        // before falling back to re-reading the session's JSONL file.
         let content = doc
             .get_first(content_field)
             .and_then(|v| v.as_str())
-            .unwrap_or("");
+            .map(|s| s.to_string())
+            .or_else(|| {
+                if content_field == fields.content {
+                    doc.get_first(fields.code_content)
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string())
+                        .or_else(|| load_session_content(data_dir, &session_id))
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_default();
 
-        extract_snippet(content, opts.snippet_length)
+        extract_snippet(&content, opts.snippet_length)
     } else {
         None
     };
@@ -932,6 +966,7 @@ fn extract_snippet(content: &str, max_length: usize) -> Option<String> {
 
 /// Look up a specific session by ID.
 fn lookup_session(
+    data_dir: &Path,
     searcher: &Searcher,
     session_id: &str,
     start: &std::time::Instant,
@@ -978,7 +1013,9 @@ fn lookup_session(
             semantic: false,
             hybrid: false,
         };
-        if let Some(result) = doc_to_search_result(searcher, &fields, *doc_addr, *score, &opts) {
+        if let Some(result) =
+            doc_to_search_result(data_dir, searcher, &fields, *doc_addr, *score, &opts)
+        {
             results.push(result);
         }
     }
@@ -1184,9 +1221,14 @@ fn execute_semantic_search(
 
         if let Some((_, doc_addr)) = docs.first() {
             // Use the similarity score as the result score
-            if let Some(mut result) =
-                doc_to_search_result(&searcher, &fields, *doc_addr, similarity_score, opts)
-            {
+            if let Some(mut result) = doc_to_search_result(
+                data_dir,
+                &searcher,
+                &fields,
+                *doc_addr,
+                similarity_score,
+                opts,
+            ) {
                 result.score = similarity_score;
                 results.push(result);
             }
@@ -1246,7 +1288,7 @@ fn execute_hybrid_search(
         let searcher = reader.searcher();
 
         let (schema, fields) = build_schema();
-        let query = build_query(&searcher, &fields, opts, &schema)?;
+        let query = build_query(data_dir, &searcher, &fields, opts, &schema)?;
 
         let fetch_limit = if opts.token_budget.is_some() {
             opts.max_results * 5
@@ -1268,7 +1310,8 @@ fn execute_hybrid_search(
             if results.len() >= opts.max_results {
                 break;
             }
-            if let Some(result) = doc_to_search_result(&searcher, &fields, *doc_addr, *score, opts)
+            if let Some(result) =
+                doc_to_search_result(data_dir, &searcher, &fields, *doc_addr, *score, opts)
             {
                 results.push(result);
             }
@@ -1306,7 +1349,7 @@ fn execute_hybrid_search(
     let searcher = reader.searcher();
 
     let (schema, fields) = build_schema();
-    let bm25_query = build_query(&searcher, &fields, opts, &schema)?;
+    let bm25_query = build_query(data_dir, &searcher, &fields, opts, &schema)?;
 
     let bm25_docs: Vec<(f32, DocAddress)> = searcher
         .search(
@@ -1369,7 +1412,7 @@ fn execute_hybrid_search(
     for (session_id, rrf_score) in merged_results {
         if let Some((_, doc_addr)) = session_docs.get(&session_id) {
             if let Some(mut result) =
-                doc_to_search_result(&searcher, &fields, *doc_addr, rrf_score, opts)
+                doc_to_search_result(data_dir, &searcher, &fields, *doc_addr, rrf_score, opts)
             {
                 result.score = rrf_score;
                 results.push(result);
@@ -3127,7 +3170,8 @@ mod tests {
         }
 
         // Debug: test the MLT Should-only BooleanQuery directly
-        let mlt_query = build_more_like_this(&searcher, &fields, "claude/k8s-1").unwrap();
+        let mlt_query =
+            build_more_like_this(temp_dir.path(), &searcher, &fields, "claude/k8s-1").unwrap();
         let mlt_docs: Vec<(f32, _)> = searcher
             .search(&*mlt_query, &TopDocs::with_limit(10))
             .unwrap();

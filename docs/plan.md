@@ -382,8 +382,12 @@ Each session produces a manifest entry used for search results and analytics:
 ```rust
 let mut schema_builder = Schema::builder();
 
-// Full-text searchable + stored
-schema_builder.add_text_field("content", TEXT | STORED);
+// Full-text searchable + stored. `content` is indexed but NOT stored
+// (ADR-2) — sessions/*.jsonl is already the durable copy of this text, so
+// storing it a second time in the doc store scaled 1:1 with corpus size.
+// Readers that need the raw text (snippets, more-like-this, analytics
+// classification) re-read the JSONL file via `load_session_content()`.
+schema_builder.add_text_field("content", TEXT);
 schema_builder.add_text_field("summary", TEXT | STORED);
 schema_builder.add_text_field("solution_summary", TEXT | STORED);
 schema_builder.add_text_field("code_content", TEXT | STORED);
@@ -415,7 +419,7 @@ schema_builder.add_u64_field("turn_count", INDEXED | STORED | FAST);
 
 **Index principles:**
 - One Tantivy index for all sessions and code artifacts. Cross-agent search is the primary use case.
-- **One Tantivy document per session.** The `content` field is the conversation concatenated with role prefixes (`user: ...`, `assistant: ...`, `tool_call: ...`). This gives BM25 correct document-level term frequency and keeps session-level fields on a single document. For turn-level retrieval, fetch the flat JSONL file via `--session <id>`.
+- **One Tantivy document per session.** The `content` field is the conversation concatenated with role prefixes (`user: ...`, `assistant: ...`, `tool_call: ...`). This gives BM25 correct document-level term frequency and keeps session-level fields on a single document. `content` is indexed but not stored (ADR-2); for turn-level retrieval, snippets, or any other need for the raw text, fetch the flat JSONL file via `--session <id>` (CLI) or `load_session_content()` (internal).
 - **Content truncation policy:** `user` and `assistant` content is indexed in full (most searchable). `tool_call` content is indexed in full (contains file paths, arguments). `tool_result` content is truncated to first 1000 chars per event (captures errors and key output; full content is in the flat file). Total document content is capped at 500KB — if exceeded, the middle is trimmed (keep first 250KB + last 250KB) to preserve both the problem statement and the resolution.
 - **Separate Tantivy documents per code artifact** with `doc_type: "code_artifact"`. Code artifacts share `session_id`, `source_agent`, `project`, and `timestamp` fields with their parent session for correlation.
 - **Default search returns sessions only.** The `doc_type` facet filter is always applied: `agentscribe search "auth"` → `doc_type: "session"`. `agentscribe search --code "auth"` → `doc_type: "code_artifact"`. No mixed results, no cross-type score confusion.
@@ -1462,7 +1466,7 @@ BM25 (Tantivy) handles keyword search well. It misses semantic similarity — a 
 
 ### What Changes
 
-**New index tier:** turbovec `IdMapIndex` stores 4-bit quantized embeddings for each indexed session. A session-level index holds one embedding per session (summary + solution_summary concatenated). A chunk-level index holds embeddings for overlapping 512-token windows of the conversation, enabling retrieval of the specific moment in a session that's relevant rather than the whole session.
+**New index tier:** turbovec `IdMapIndex` stores 4-bit quantized embeddings for each indexed session. A session-level index holds one embedding per session (summary + solution_summary concatenated) — enabled by default (`vector.index_sessions = true`). A chunk-level index holds embeddings for overlapping 512-token windows of the conversation, enabling retrieval of the specific moment in a session that's relevant rather than the whole session — **off by default since ADR-2** (`vector.index_chunks = false`): it runs several times the disk cost of session-level embeddings alone (see Memory Budget Impact below) for a capability — "which moment," not "which session" — beyond what the common case (finding a past session that solved a similar problem) needs. Set `vector.index_chunks = true` to opt in.
 
 **Why turbovec:** Zero training step — new sessions embed and upsert immediately after scrape, with no k-means rebuild. Disk persistence built in (`.tvim` files). Pure Rust, MIT license. At 4-bit quantization, 500K sessions × 1536 dims ≈ 384 MB RAM — well within daemon budget. Linear scan latency at that scale is ~5ms/query on modern SIMD hardware. When corpus exceeds ~5M sessions, swap the backend to `usearch` (HNSW, sub-linear) with minimal API surface change.
 
@@ -1554,7 +1558,7 @@ Research note: `turbovec` implements Google Research's TurboQuant algorithm (arX
 
 **Important:** The chunk index grows with corpus size and will eventually dominate memory. Mitigation: load the chunk index only during `context` and `search --semantic` queries; drop it when idle (same mmap-on-demand pattern as Tantivy segments). Session-level index (smaller) stays resident.
 
-An alternative: skip the chunk index and use session-level only. For a 500K-session corpus this recovers 80%+ of the chunk-level recall benefit at 1/6th the memory. Make chunk indexing opt-in via `[vector] index_chunks = false` (default until memory budget is re-evaluated).
+An alternative: skip the chunk index and use session-level only. For a 500K-session corpus this recovers 80%+ of the chunk-level recall benefit at 1/6th the memory. This is now the settled default (`[vector] index_chunks = false`, ADR-2) — the code had drifted from this documented intent (defaulting `true`) until ADR-2 corrected it; set `index_chunks = true` to opt back into chunk-level retrieval.
 
 ---
 
@@ -1655,6 +1659,8 @@ NEEDLE Phase 4 learning consumes AgentScribe pre-dispatch: `agentscribe search -
 
 ## ADR-1: 2026-07-20 — Crash-safe, self-healing persistence for daemon scrape state
 
+**Status: implemented 2026-07-27** (`src/scraper/state.rs` — atomic tmp-file-plus-rename `save()`, quarantine-on-corrupt `load_state()`; see ADR-2 for the disk-growth work done in the same pass).
+
 ### Context
 
 This ADR was written after auditing the actual deployed artifact, not just the code. AgentScribe's
@@ -1747,3 +1753,117 @@ Make daemon scrape-state persistence crash-safe and self-healing:
   `last_scrape` staleness proactively in `agentscribe daemon status`, fixing the unrelated
   infinite-retry log spam on permission-denied watch directories found during this same audit, and
   the longer-term move to a keyed state store for O(1) incremental updates at scale.
+
+---
+
+## ADR-2: 2026-07-27 — Stop storing full session content a second time; chunk-level vectors off by default
+
+**Status: implemented 2026-07-27** (`src/index.rs` schema, `src/scraper/mod.rs::load_session_content`, `src/search.rs`, `src/analytics.rs`, `src/digest.rs`, `src/pulse_report.rs`, `src/file_knowledge.rs`, `src/config.rs::VectorConfig`).
+
+### Context
+
+This ADR followed a disk-usage question about AgentScribe's on-server index, prompted by a real prior
+incident: a Tantivy index on this machine's own deployment had grown to 76G against a ~385MB normalized
+source corpus before being deleted (2026-07-09). That blowup was substantially attributed to the
+crash-loop/torn-write failure mode ADR-1 fixes — but auditing the schema during this pass found a
+second, independent, ongoing contributor that ADR-1 does not touch and that recurs even with ADR-1's
+fix and `gc` running cleanly:
+
+- `src/index.rs`'s Tantivy schema marked `content`, `summary`, `solution_summary`, and `code_content`
+  all `TEXT | STORED`. `content` in particular holds the full conversation (role-prefixed, capped at
+  500KB/session per the existing truncation policy) for every session document — meaning that text is
+  duplicated in full inside the index's doc store, on top of already living durably in
+  `sessions/<plugin>/<id>.jsonl` (this doc's own stated source of truth). Unlike the ADR-1 failure
+  mode, this cost scales 1:1 with corpus size by design, not by bug — it does not require a crash to
+  recur.
+- Live raw log volume across this user's two known hosts (ex44, lab.ardenone.com), measured 2026-07-26:
+  3.4GB (ex44, 14,286 files) + 9.9GB (lab, 30,563 files) = 13.3GB combined and growing, with `lab`
+  never having run AgentScribe at all. Against that real scale, a full index legitimately landing in
+  the tens-of-GB range is plausible on the stored-content duplication alone, independent of any bug.
+- Separately, `src/config.rs::VectorConfig` defaulted `index_chunks: true` — chunk-level embeddings
+  (overlapping 512-token windows per session, Phase 8) were built and stored by default alongside
+  session-level embeddings, even though this doc's own Memory Budget Impact table already documented
+  chunk-level as ~6x the disk cost of session-level (1.15GB vs 192MB at a 500K-session/3M-chunk
+  reference scale) and this doc's own prose (§Memory Budget Impact) already recommended
+  `index_chunks = false` as the default "until memory budget is re-evaluated." The code had drifted
+  from the plan's own stated intent.
+- The stated goal motivating this work is "find a previous session that solved a similar problem" —
+  session-level granularity. Chunk-level retrieval (finding the specific moment within a session)
+  is a real, tested capability (`vector::tests::test_upsert_and_search_chunk`) but is not needed for
+  that goal, and was being paid for by everyone regardless of whether they use it.
+
+### Decision
+
+1. **`content` field: indexed, no longer stored.** Schema change in `src/index.rs::build_schema` —
+   `TEXT` instead of `TEXT | STORED`. `code_content` stays `STORED`: for code-artifact documents it
+   holds the identical text to `content` (the artifact's code), so it remains the single stored copy
+   for those documents at negligible extra cost (code artifacts are individually small, unlike full
+   session content). `summary` and `solution_summary` stay `STORED` — they are short, purpose-built
+   display fields, not the full conversation, and are not the source of the disk-growth problem.
+2. **Shared reconstruction fallback.** `src/scraper/mod.rs::load_session_content(data_dir, session_id)`
+   re-reads and re-normalizes a session's JSONL file (`Scraper::read_session` + `index::build_content`,
+   both pre-existing) to reproduce the same content string that used to be read from the stored field.
+   Every consumer that used to read `fields.content` directly now tries the stored field first (for
+   `code_content`, still stored, on code-artifact docs), then falls back to this reconstruction:
+   `search.rs` (snippet extraction, `--like` more-like-this term extraction), `analytics.rs`
+   (`extract_session_data`'s cost-estimation content length and problem-type classification text),
+   and transitively `digest.rs`, `pulse_report.rs`, and `file_knowledge.rs`, which all call
+   `analytics::extract_session_data`.
+3. **`vector.index_chunks` defaults to `false`.** `src/config.rs::VectorConfig::default()` and the
+   `#[serde(default = ...)]` attribute both flip from `default_true` to a new `default_false`.
+   `index_sessions` stays `true` — session-level embeddings remain on by default. Setting
+   `index_chunks = true` in `config.toml` restores the previous (chunk-level) behavior in full; no
+   code was removed.
+
+### Alternatives Considered
+
+- **Truncate stored `content` to a bounded length instead of dropping `STORED` entirely.** Rejected —
+  still duplicates storage (just a smaller multiple of it), and degrades more-like-this TF-IDF quality
+  and cost-estimation accuracy (both currently use the *full* content) without eliminating the growth
+  driver, which scales with corpus size either way.
+- **Add a dedicated stored `content_length` field for `analytics.rs` instead of re-reading JSONL.**
+  Considered specifically to avoid file I/O across the whole corpus during `analytics`/`digest`/
+  `pulse-report` (which scan every session, unlike search's top-K). Rejected in favor of one shared
+  `load_session_content()` fallback used uniformly by `search.rs` and `analytics.rs`: a second stored
+  field would only be a smaller version of the exact duplication being removed, `analytics.rs` also
+  needs the actual text (not just its length) for problem-type keyword classification, and
+  `gc.rs::run_gc` already establishes the precedent of one JSONL read per session for a full-corpus
+  scan in this codebase — this is a periodic-reporting cost, not a search-latency one.
+- **Delete chunk-level vector indexing entirely rather than defaulting it off.** Rejected — it is
+  real, tested, working capability that remains valuable for "find this exact moment" retrieval.
+  Making it opt-in preserves it for anyone who wants it without charging everyone else its cost by
+  default, and matches what this doc already recommended before the code drifted from it.
+  Deleting tested, working code the user might still want is exactly the kind of premature removal
+  to avoid.
+- **Move the consolidated cross-host index to a sharded Meilisearch fleet (Miroir) instead of trimming
+  it.** Raised and considered during this same discussion. Rejected for this project's actual scale —
+  sharding/HA solves query throughput and availability problems at a much larger scale (hundreds of
+  GB–TB+) than this corpus (~13GB raw across known hosts, growing but nowhere near that range), and
+  would trade a well-understood, now-bounded local disk cost for a second full search engine, a
+  multi-node ops burden (secrets rotation, observability, its own CI), and a network dependency for
+  what is currently a local file read.
+
+### Consequences
+
+- **Positive:** Index growth is now bounded by (inverted index for `content` + stored `code_content`/
+  `summary`/`solution_summary` + session-level vectors), instead of scaling ~1:1 with raw corpus size
+  on top of the already-durable JSONL. Chunk-level vector cost (the larger of the two vector tiers) is
+  no longer paid unless explicitly opted into.
+- **Positive:** Search snippet quality, more-like-this quality, cost estimation, and problem-type
+  classification are unchanged in the common case — same text, fetched from `sessions/*.jsonl` instead
+  of the doc store. They degrade gracefully (empty string, not an error) only if a session's JSONL
+  file is missing by the time of the read (e.g. deleted by a concurrent `gc` run).
+- **Negative:** `analytics`/`digest`/`pulse-report`, which scan the full corpus, now do one JSONL file
+  read per session where they previously did an in-index field read. Bounded and consistent with the
+  existing `gc --dry-run` pattern in this codebase; not expected to matter at current corpus sizes
+  (tens of thousands of sessions) but worth revisiting if corpus size grows by orders of magnitude —
+  at that point, consider caching `content_length` (cheap, small) separately from full `content_text`
+  (expensive, large) rather than re-deriving both from one file read, if profiling shows it matters.
+- **Negative:** Chunk-level ("which exact moment") semantic search is opt-in now rather than automatic.
+  Existing vector indexes built before this change keep whatever chunks they already have; a full
+  `agentscribe embed rebuild` is required to add or remove chunk-level data after changing the config.
+- **Follow-up:** Sessions indexed under the old schema still have `content` duplicated in their
+  on-disk index segments — a schema-only change does not retroactively repack existing Tantivy
+  segments. Reclaiming the disk space for an already-populated index requires a full
+  `agentscribe index rebuild` (already a supported, pure-local, zero-API-cost operation per ADR-1's
+  context). Not run automatically as part of this change.

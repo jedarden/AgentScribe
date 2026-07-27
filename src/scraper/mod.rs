@@ -12,7 +12,7 @@ pub use state::StateManager;
 
 use crate::error::{AgentScribeError, Result};
 use crate::event::Event;
-use crate::index::{build_manifest_from_events, IndexManager};
+use crate::index::{build_content, build_manifest_from_events, IndexManager};
 use crate::parser::{
     FormatParser, JsonArrayParser, JsonTreeParser, JsonlParser, MarkdownParser, SqliteParser,
 };
@@ -803,6 +803,24 @@ impl Scraper {
 
         Ok(all)
     }
+}
+
+/// Reconstruct a session's full text by re-reading and re-normalizing its
+/// JSONL file under `sessions/`.
+///
+/// The Tantivy `content` field is indexed but not stored (ADR-2) — the JSONL
+/// file is already the durable copy, so this is a cache-miss fallback for
+/// consumers that need the raw text (search snippets, more-like-this,
+/// analytics problem-type classification), not a second storage location.
+/// Returns `None` if the session file is missing, unreadable, or empty (e.g.
+/// already garbage-collected).
+pub(crate) fn load_session_content(data_dir: &Path, session_id: &str) -> Option<String> {
+    let scraper = Scraper::new(data_dir.to_path_buf()).ok()?;
+    let events = scraper.read_session(session_id).ok()?;
+    if events.is_empty() {
+        return None;
+    }
+    Some(build_content(&events))
 }
 
 /// Attempt to git-commit newly scraped sessions.

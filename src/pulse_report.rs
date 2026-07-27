@@ -371,7 +371,7 @@ fn compute_monthly_and_model_data(
     let mut model_sessions: HashMap<String, (usize, usize, f64, f64)> = HashMap::new(); // (total, success, tokens, cost)
 
     for (_score, doc_addr) in all_docs {
-        let data = match extract_session_data(&searcher, doc_addr, &fields) {
+        let data = match extract_session_data(data_dir, &searcher, doc_addr, &fields) {
             Some(d) => d,
             None => continue,
         };

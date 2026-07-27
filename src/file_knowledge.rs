@@ -225,7 +225,8 @@ fn find_sessions_for_file(data_dir: &Path, file_path: &str) -> Result<Vec<FileSe
         .map_err(|e| crate::error::AgentScribeError::DataDir(format!("Search failed: {}", e)))?;
 
     for (_score, doc_addr) in all_docs {
-        if let Some(data) = analytics::extract_session_data(&searcher, doc_addr, &fields) {
+        if let Some(data) = analytics::extract_session_data(data_dir, &searcher, doc_addr, &fields)
+        {
             sessions.push(FileSessionData {
                 session_id: data.session_id,
                 source_agent: data.source_agent,

@@ -176,7 +176,7 @@ fn extract_digest_data(
     let mut total_cost = 0.0;
 
     for (_score, doc_addr) in all_docs {
-        let data = crate::analytics::extract_session_data(&searcher, doc_addr, &fields);
+        let data = crate::analytics::extract_session_data(data_dir, &searcher, doc_addr, &fields);
         let data = match data {
             Some(d) => d,
             None => continue,
