@@ -7,7 +7,7 @@ use crate::event::{ScrapeState, SourceFileState};
 use chrono::Utc;
 use fs2::FileExt;
 use std::fs::{File, OpenOptions};
-use std::io::{BufReader, BufWriter};
+use std::io::{BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -84,7 +84,14 @@ impl StateManager {
         })
     }
 
-    /// Load state from file
+    /// Load state from file.
+    ///
+    /// Corruption is recoverable, not fatal (ADR-1): a state file that fails
+    /// to parse is renamed to `<path>.corrupt-<timestamp>` so the evidence is
+    /// preserved for debugging, and loading proceeds from empty state rather
+    /// than propagating the error and aborting scraper construction. This
+    /// degrades incremental scraping to a one-time full rescan of already-known
+    /// files rather than blocking forever.
     fn load_state(path: &Path) -> Result<ScrapeState> {
         let file = File::open(path)?;
 
@@ -95,17 +102,65 @@ impl StateManager {
         }
 
         let reader = BufReader::new(file);
-        let state = serde_json::from_reader(reader).map_err(|e| {
-            crate::error::AgentScribeError::State(format!("Failed to parse state: {}", e))
-        })?;
-        Ok(state)
+        match serde_json::from_reader(reader) {
+            Ok(state) => Ok(state),
+            Err(e) => {
+                let quarantine_path = Self::quarantine_path(path);
+                tracing::error!(
+                    path = %path.display(),
+                    quarantine = %quarantine_path.display(),
+                    error = %e,
+                    "scrape state file is corrupt; quarantining and starting from empty state"
+                );
+                if let Err(rename_err) = std::fs::rename(path, &quarantine_path) {
+                    tracing::error!(
+                        path = %path.display(),
+                        error = %rename_err,
+                        "failed to quarantine corrupt scrape state file"
+                    );
+                }
+                Ok(ScrapeState::new())
+            }
+        }
     }
 
-    /// Save state to file (with file locking).
+    /// Path of the sibling lock file used to serialize `save()` calls.
+    fn lock_path(state_file: &Path) -> PathBuf {
+        let mut s = state_file.as_os_str().to_owned();
+        s.push(".lock");
+        PathBuf::from(s)
+    }
+
+    /// Path of the pid-scoped temp file `save()` writes before renaming it
+    /// into place.
+    fn tmp_path(state_file: &Path) -> PathBuf {
+        let mut s = state_file.as_os_str().to_owned();
+        s.push(format!(".tmp-{}", std::process::id()));
+        PathBuf::from(s)
+    }
+
+    /// Path a corrupt state file is renamed to before `load_state` resets to
+    /// empty state.
+    fn quarantine_path(state_file: &Path) -> PathBuf {
+        let mut s = state_file.as_os_str().to_owned();
+        s.push(format!(".corrupt-{}", Utc::now().format("%Y%m%dT%H%M%SZ")));
+        PathBuf::from(s)
+    }
+
+    /// Save state to file: atomic write via temp-file-plus-rename, guarded by
+    /// an exclusive lock on a sibling lock file (ADR-1).
     ///
-    /// The exclusive lock is acquired **before** truncating the file.  This
-    /// prevents a concurrent reader from observing an empty file between the
-    /// truncation and the subsequent write.
+    /// We lock a separate `<state_file>.lock` file rather than `state_file`
+    /// itself because `rename()` swaps in a brand-new inode — a lock held on
+    /// an open handle to the old data file would not follow the path across
+    /// the rename, so a second writer opening `state_file` fresh right after
+    /// the swap would silently see no lock at all. Locking a stable sibling
+    /// path that is never replaced keeps the mutual exclusion real across the
+    /// whole write-then-rename critical section.
+    ///
+    /// The rename itself is atomic on the same filesystem: a crash at any
+    /// point before it completes leaves the previous, valid state file
+    /// untouched — never a truncated or torn one.
     pub fn save(&self) -> Result<()> {
         let state = self.state.lock().unwrap();
         let state_ref = &*state;
@@ -115,29 +170,36 @@ impl StateManager {
             std::fs::create_dir_all(parent)?;
         }
 
-        // Open WITHOUT O_TRUNC — we must acquire the exclusive lock first so
-        // that no reader can see the file in a truncated-but-not-yet-written
-        // state.
-        let file = OpenOptions::new()
+        // Serialize up front so a failure here never touches disk at all.
+        let json = serde_json::to_vec_pretty(state_ref).map_err(|e| {
+            crate::error::AgentScribeError::State(format!("Failed to serialize state: {}", e))
+        })?;
+
+        let lock_path = Self::lock_path(&self.state_file);
+        let lock_file = OpenOptions::new()
             .write(true)
             .create(true)
             .truncate(false)
-            .open(&self.state_file)?;
+            .open(&lock_path)?;
+        lock_exclusive_with_timeout(&lock_file, self.lock_timeout)?;
 
-        // Acquire the exclusive lock before modifying the file.
-        lock_exclusive_with_timeout(&file, self.lock_timeout)?;
+        let tmp_path = Self::tmp_path(&self.state_file);
+        {
+            let tmp_file = OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .open(&tmp_path)?;
+            let mut writer = BufWriter::new(&tmp_file);
+            writer.write_all(&json).map_err(|e| {
+                crate::error::AgentScribeError::State(format!("Failed to write state: {}", e))
+            })?;
+            writer.flush()?;
+            tmp_file.sync_all()?;
+        }
+        std::fs::rename(&tmp_path, &self.state_file)?;
 
-        // Safe to truncate now that we hold the exclusive lock.
-        file.set_len(0)?;
-
-        // File position for a freshly-opened (non-append) file is always 0,
-        // so writing immediately after set_len(0) is correct.
-        let writer = BufWriter::new(file);
-        serde_json::to_writer_pretty(writer, state_ref).map_err(|e| {
-            crate::error::AgentScribeError::State(format!("Failed to write state: {}", e))
-        })?;
-
-        // Lock is released when the file handle inside BufWriter is dropped.
+        // Lock is released when `lock_file` is dropped here.
         Ok(())
     }
 
@@ -387,8 +449,14 @@ mod tests {
             seed.save().unwrap();
         }
 
-        // Hold an exclusive lock on the state file via a separate fd.
-        let lock_fd = OpenOptions::new().write(true).open(&state_path).unwrap();
+        // save() locks a sibling `.lock` file, not the data file itself (see
+        // save()'s doc comment for why) — hold that lock via a separate fd.
+        let lock_path = StateManager::lock_path(&state_path);
+        let lock_fd = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .open(&lock_path)
+            .unwrap();
         lock_fd.lock_exclusive().unwrap();
 
         // A manager with a very short timeout should fail quickly.
@@ -409,5 +477,36 @@ mod tests {
             "error message should mention timeout, got: {}",
             err_str
         );
+    }
+
+    /// A state file that fails to parse must not abort construction — it
+    /// should be quarantined and loading should proceed from empty state.
+    #[test]
+    fn test_load_corrupt_state_is_quarantined_not_fatal() {
+        let temp_file = NamedTempFile::new().unwrap();
+        let state_path = temp_file.path().to_path_buf();
+
+        std::fs::write(&state_path, b"{ this is not valid json").unwrap();
+
+        let manager = StateManager::new(state_path.clone()).unwrap();
+        assert!(manager.get_all().sources.is_empty());
+
+        // The corrupt content must no longer live at the original path...
+        let still_corrupt = state_path.exists()
+            && std::fs::read(&state_path).unwrap() == b"{ this is not valid json";
+        assert!(!still_corrupt);
+
+        // ...and must have been preserved in a `*.corrupt-<timestamp>` sibling.
+        let parent = state_path.parent().unwrap();
+        let stem = state_path.file_name().unwrap().to_str().unwrap().to_owned();
+        let quarantined = std::fs::read_dir(parent)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .any(|e| {
+                let name = e.file_name();
+                let name = name.to_str().unwrap_or("");
+                name.starts_with(&stem) && name.contains(".corrupt-")
+            });
+        assert!(quarantined, "expected a quarantined *.corrupt-* file");
     }
 }
