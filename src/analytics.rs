@@ -7,6 +7,7 @@
 use crate::config::Config;
 use crate::error::{AgentScribeError, Result};
 use crate::index::build_schema;
+use crate::scraper::load_session_content;
 use crate::search::open_index;
 use chrono::{DateTime, Duration, Utc};
 use regex::Regex;
@@ -266,6 +267,7 @@ fn is_doc_file(path: &str) -> bool {
 
 /// Extract session data from a Tantivy document
 pub(crate) fn extract_session_data(
+    data_dir: &Path,
     searcher: &Searcher,
     doc_addr: DocAddress,
     fields: &crate::index::IndexFields,
@@ -330,19 +332,19 @@ pub(crate) fn extract_session_data(
         .map(|s| s.to_string())
         .collect();
 
-    let content_length = doc
-        .get_first(fields.content)
-        .and_then(|v| v.as_str())
-        .map(|s| s.len())
-        .unwrap_or(0);
-
+    // `content` is indexed but not stored (ADR-2) — fall back to re-reading
+    // the session's JSONL file, the durable source of truth for this text.
     let content_text = doc
         .get_first(fields.content)
         .and_then(|v| v.as_str())
-        .unwrap_or("");
+        .map(|s| s.to_string())
+        .or_else(|| load_session_content(data_dir, &session_id))
+        .unwrap_or_default();
+
+    let content_length = content_text.len();
 
     let (primary_type, secondary_type) =
-        classify_problem_type(content_text, &error_fingerprints, &file_paths);
+        classify_problem_type(&content_text, &error_fingerprints, &file_paths);
 
     Some(SessionData {
         session_id,
@@ -437,7 +439,7 @@ pub fn compute_analytics(
     // Extract session data with filtering
     let mut sessions: Vec<SessionData> = Vec::new();
     for (_score, doc_addr) in all_docs {
-        if let Some(data) = extract_session_data(&searcher, doc_addr, &fields) {
+        if let Some(data) = extract_session_data(data_dir, &searcher, doc_addr, &fields) {
             // Apply filters
             if let Some(ref agent_filter) = opts.agent {
                 if &data.source_agent != agent_filter {
@@ -904,6 +906,22 @@ mod tests {
         for (manifest, events) in &sessions {
             let doc = build_session_document(&fields, events, manifest, "");
             writer.add_document(doc).unwrap();
+
+            // `content` is no longer stored in the index (ADR-2) — write the
+            // normalized session file too, so consumers that fall back to
+            // `load_session_content` (e.g. problem-type classification, cost
+            // estimation) find the same real corpus a live scrape would have
+            // written under `sessions/<plugin>/<id>.jsonl`.
+            if let Some((plugin_dir, stem)) = manifest.session_id.split_once('/') {
+                let session_dir = temp_dir.path().join("sessions").join(plugin_dir);
+                std::fs::create_dir_all(&session_dir).unwrap();
+                let jsonl = events
+                    .iter()
+                    .map(|e| e.to_jsonl().unwrap())
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                std::fs::write(session_dir.join(format!("{}.jsonl", stem)), jsonl).unwrap();
+            }
         }
 
         writer.commit().unwrap();
