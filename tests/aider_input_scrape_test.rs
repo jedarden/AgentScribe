@@ -14,10 +14,10 @@
 //! 3. Injects timestamps from input history into user events
 //! 4. Returns fully-typed events
 
-use std::path::PathBuf;
 use agentscribe::event::Role;
 use agentscribe::parser::{FormatParser, MarkdownParser};
 use agentscribe::plugin::{LogFormat, Parser, Plugin, PluginMeta, SessionDetection, Source};
+use std::path::PathBuf;
 
 /// Helper: create a minimal aider plugin config for testing
 fn create_aider_plugin() -> Plugin {
@@ -79,7 +79,10 @@ fn test_aider_input_scrape_path_with_fixtures() {
         .expect("parsing should succeed");
 
     // Verify we got events
-    assert!(!events.is_empty(), "should have parsed events from the fixture");
+    assert!(
+        !events.is_empty(),
+        "should have parsed events from the fixture"
+    );
 
     // Find user events
     let user_events: Vec<_> = events.iter().filter(|e| e.role == Role::User).collect();
@@ -140,7 +143,10 @@ fn test_aider_input_scrape_path_with_fixtures() {
 
     println!("✓ Aider input scrape-path test passed!");
     println!("  - Parsed {} total events", events.len());
-    println!("  - Found {} user events with correct timestamps", user_events.len());
+    println!(
+        "  - Found {} user events with correct timestamps",
+        user_events.len()
+    );
     println!("  - Found {} assistant events", assistant_events.len());
     println!("  - Found {} tool events", tool_events.len());
 }
@@ -166,10 +172,9 @@ fn test_aider_input_fixture_files_exist() {
     );
 
     // Read and verify the content format
-    let chat_content = std::fs::read_to_string(&chat_md)
-        .expect("chat.md should be readable");
-    let history_content = std::fs::read_to_string(&input_history)
-        .expect(".aider.input.history should be readable");
+    let chat_content = std::fs::read_to_string(&chat_md).expect("chat.md should be readable");
+    let history_content =
+        std::fs::read_to_string(&input_history).expect(".aider.input.history should be readable");
 
     assert!(
         chat_content.contains("# aider chat started at"),

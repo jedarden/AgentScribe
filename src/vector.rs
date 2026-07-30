@@ -285,7 +285,8 @@ impl VectorIndex {
     }
 
     /// Create a new TurboQuantIndex with the given dimension and bit width (STUB)
-    fn create_index(dim: usize, bit_width: u8) -> Result<bool> { // STUB: returning bool instead
+    fn create_index(dim: usize, bit_width: u8) -> Result<bool> {
+        // STUB: returning bool instead
         // Validate bit width (turbovec supports 2, 3, or 4 bits)
         if bit_width != 2 && bit_width != 3 && bit_width != 4 {
             return Err(AgentScribeError::VectorIndex(format!(
@@ -324,36 +325,30 @@ impl VectorIndex {
 
         // Save session index and ID map (STUB - skip index save)
         // if let Some(ref sessions_index) = self.sessions_index {
-            // let sessions_path = index_dir.join(SESSIONS_INDEX_FILE);
-            // sessions_index.write(&sessions_path).map_err(|e| {
-            //     AgentScribeError::VectorIndex(format!("Failed to save session index: {}", e))
-            // })?;
+        // let sessions_path = index_dir.join(SESSIONS_INDEX_FILE);
+        // sessions_index.write(&sessions_path).map_err(|e| {
+        //     AgentScribeError::VectorIndex(format!("Failed to save session index: {}", e))
+        // })?;
 
-            let sessions_map_path = index_dir.join("sessions_").join(ID_MAP_FILE);
-            fs::create_dir_all(index_dir.join("sessions_")).map_err(|e| {
-                AgentScribeError::VectorIndex(format!(
-                    "Failed to create sessions map directory: {}",
-                    e
-                ))
-            })?;
-            self.sessions_id_map.save(&sessions_map_path)?;
+        let sessions_map_path = index_dir.join("sessions_").join(ID_MAP_FILE);
+        fs::create_dir_all(index_dir.join("sessions_")).map_err(|e| {
+            AgentScribeError::VectorIndex(format!("Failed to create sessions map directory: {}", e))
+        })?;
+        self.sessions_id_map.save(&sessions_map_path)?;
         // }
 
         // Save chunk index and ID map (STUB - skip index save)
         // if let Some(ref chunks_index) = self.chunks_index {
-            // let chunks_path = index_dir.join(CHUNKS_INDEX_FILE);
-            // chunks_index.write(&chunks_path).map_err(|e| {
-            //     AgentScribeError::VectorIndex(format!("Failed to save chunk index: {}", e))
-            // })?;
+        // let chunks_path = index_dir.join(CHUNKS_INDEX_FILE);
+        // chunks_index.write(&chunks_path).map_err(|e| {
+        //     AgentScribeError::VectorIndex(format!("Failed to save chunk index: {}", e))
+        // })?;
 
-            let chunks_map_path = index_dir.join("chunks_").join(ID_MAP_FILE);
-            fs::create_dir_all(index_dir.join("chunks_")).map_err(|e| {
-                AgentScribeError::VectorIndex(format!(
-                    "Failed to create chunks map directory: {}",
-                    e
-                ))
-            })?;
-            self.chunks_id_map.save(&chunks_map_path)?;
+        let chunks_map_path = index_dir.join("chunks_").join(ID_MAP_FILE);
+        fs::create_dir_all(index_dir.join("chunks_")).map_err(|e| {
+            AgentScribeError::VectorIndex(format!("Failed to create chunks map directory: {}", e))
+        })?;
+        self.chunks_id_map.save(&chunks_map_path)?;
         // }
 
         Ok(())
@@ -377,18 +372,18 @@ impl VectorIndex {
 
         // STUB: Skip actual indexing
         // if let Some(ref mut sessions_index) = self.sessions_index {
-            // Check if already exists
-            if self.sessions_id_map.get(id).is_some() {
-                // Update: we can't update in place, so we need to rebuild
-                // For now, just skip (real implementation would need more complex handling)
-                return Ok(());
-            }
+        // Check if already exists
+        if self.sessions_id_map.get(id).is_some() {
+            // Update: we can't update in place, so we need to rebuild
+            // For now, just skip (real implementation would need more complex handling)
+            return Ok(());
+        }
 
-            // Add new embedding
-            // let index = sessions_index.len();
-            // sessions_index.add(&embedding);
-            self.sessions_id_map.insert(id.to_string(), 0); // STUB: use 0 as dummy index
-        // }
+        // Add new embedding
+        // let index = sessions_index.len();
+        // sessions_index.add(&embedding);
+        self.sessions_id_map.insert(id.to_string(), 0); // STUB: use 0 as dummy index
+                                                        // }
 
         Ok(())
     }
@@ -415,17 +410,17 @@ impl VectorIndex {
 
         // STUB: Skip actual indexing
         // if let Some(ref mut chunks_index) = self.chunks_index {
-            // Check if already exists
-            if self.chunks_id_map.get(id).is_some() {
-                // Update: skip for now
-                return Ok(());
-            }
+        // Check if already exists
+        if self.chunks_id_map.get(id).is_some() {
+            // Update: skip for now
+            return Ok(());
+        }
 
-            // Add new embedding
-            // let index = chunks_index.len();
-            // chunks_index.add(&embedding);
-            self.chunks_id_map.insert(id.to_string(), 0); // STUB: use 0 as dummy index
-        // }
+        // Add new embedding
+        // let index = chunks_index.len();
+        // chunks_index.add(&embedding);
+        self.chunks_id_map.insert(id.to_string(), 0); // STUB: use 0 as dummy index
+                                                      // }
 
         Ok(())
     }

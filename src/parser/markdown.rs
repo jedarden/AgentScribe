@@ -567,10 +567,15 @@ I'll add proper error handling for expired JWT tokens.
         // Parse through the FormatParser::parse() scrape path
         // This should auto-discover and load the sibling .aider.input.history file
         let parser = MarkdownParser;
-        let events = parser.parse(&chat_md, &plugin).expect("parsing should succeed");
+        let events = parser
+            .parse(&chat_md, &plugin)
+            .expect("parsing should succeed");
 
         // Verify we got events
-        assert!(!events.is_empty(), "should have parsed events from the fixture");
+        assert!(
+            !events.is_empty(),
+            "should have parsed events from the fixture"
+        );
 
         // Find user events
         let user_events: Vec<_> = events.iter().filter(|e| e.role == Role::User).collect();

@@ -34,21 +34,25 @@ fn create_test_event() -> Event {
 
 /// Create multiple test events.
 fn create_test_events(count: usize) -> Vec<Event> {
-    (0..count).map(|i| {
-        let mut event = create_test_event();
-        event.session_id = format!("session-{}", i);
-        event
-    }).collect()
+    (0..count)
+        .map(|i| {
+            let mut event = create_test_event();
+            event.session_id = format!("session-{}", i);
+            event
+        })
+        .collect()
 }
 
 /// Create test events with specific source_agent.
 fn create_test_events_with_source(source_agent: &str, count: usize) -> Vec<Event> {
-    (0..count).map(|i| {
-        let mut event = create_test_event();
-        event.session_id = format!("session-{}", i);
-        event.source_agent = source_agent.to_string();
-        event
-    }).collect()
+    (0..count)
+        .map(|i| {
+            let mut event = create_test_event();
+            event.session_id = format!("session-{}", i);
+            event.source_agent = source_agent.to_string();
+            event
+        })
+        .collect()
 }
 
 // ─── Core Unit Tests: Subagent Session parent_session_id ─────────────────────
@@ -65,8 +69,8 @@ fn test_subagent_session_with_parent_id() {
         &events,
         session_id,
         source_agent,
-        None::<&str>,  // project
-        None::<&str>,  // model
+        None::<&str>, // project
+        None::<&str>, // model
         parent_session_id,
     );
 
@@ -167,7 +171,7 @@ fn test_subagent_with_project_and_parent() {
         session_id,
         source_agent,
         project,
-        None::<&str>,  // model
+        None::<&str>, // model
         parent_session_id,
     );
 
@@ -192,7 +196,7 @@ fn test_subagent_with_model_and_parent() {
         &events,
         session_id,
         source_agent,
-        None::<&str>,  // project
+        None::<&str>, // project
         model,
         parent_session_id,
     );
@@ -388,7 +392,7 @@ fn test_subagent_empty_parent_id() {
         "claude-code-subagent",
         None::<&str>,
         None::<&str>,
-        Some(""),  // Empty parent ID
+        Some(""), // Empty parent ID
     );
 
     assert_eq!(
@@ -593,11 +597,7 @@ fn test_subagent_vs_main_session_parent_id() {
 #[test]
 fn test_subagent_source_agent_suffix_implies_parent() {
     // Test that sessions with source_agent ending in "-subagent" typically have parent_session_id
-    let subagent_source_agents = vec![
-        "claude-code-subagent",
-        "aider-subagent",
-        "cursor-subagent",
-    ];
+    let subagent_source_agents = vec!["claude-code-subagent", "aider-subagent", "cursor-subagent"];
 
     for source_agent in subagent_source_agents {
         let events = create_test_events(2);
@@ -631,7 +631,7 @@ fn test_subagent_with_various_project_values_with_parent() {
         Some("nested/project/path"),
         Some("project_with_underscores"),
         Some("project-with.dots"),
-        None,  // No project
+        None, // No project
     ];
 
     for project in projects {
@@ -665,7 +665,7 @@ fn test_subagent_with_various_model_values_with_parent() {
         Some("claude-haiku-4-5"),
         Some("gpt-4"),
         Some("custom-model-name"),
-        None,  // No model
+        None, // No model
     ];
 
     for model in models {
