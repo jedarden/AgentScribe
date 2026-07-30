@@ -1726,8 +1726,7 @@ fn run_status(json: bool, plugin_filter: Option<String>) -> Result<()> {
             if ps.subagent_sessions > 0 {
                 println!(
                     "    └─ subagent sessions: {:>4} sessions  {:>6} events",
-                    ps.subagent_sessions,
-                    ps.subagent_events
+                    ps.subagent_sessions, ps.subagent_events
                 );
             }
         }

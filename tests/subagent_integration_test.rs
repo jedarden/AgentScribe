@@ -85,7 +85,9 @@ fn test_subagent_session_capture_integration() {
     // Scrape the plugin
     let plugin_name = "claude-code";
     let plugin = scraper.plugin_manager().get(plugin_name).unwrap().clone();
-    let result = scraper.scrape_plugin(&plugin).expect("Scrape should succeed");
+    let result = scraper
+        .scrape_plugin(&plugin)
+        .expect("Scrape should succeed");
 
     // Verify that both sessions were scraped
     assert_eq!(

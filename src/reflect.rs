@@ -266,8 +266,7 @@ pub fn export_reflect_sessions(
         }
 
         // Load behavioral signals from sidecar
-        let signals = load_behavioral_signals(data_dir, session_id)
-            .unwrap_or_default();
+        let signals = load_behavioral_signals(data_dir, session_id).unwrap_or_default();
 
         // Apply config-based filters
         if filter.modified_config_only && signals.modified_config_files.is_empty() {

@@ -69,7 +69,8 @@ fn jsonl_plugin(name: &str, glob: &str) -> Plugin {
 /// Create test JSONL content with minimal events.
 fn test_jsonl_content() -> String {
     r#"{"timestamp": "2026-07-23T10:00:00Z", "role": "user", "content": "Test message"}
-{"timestamp": "2026-07-23T10:00:01Z", "role": "assistant", "content": "Test response"}"#.to_string()
+{"timestamp": "2026-07-23T10:00:01Z", "role": "assistant", "content": "Test response"}"#
+        .to_string()
 }
 
 /// Create JSONL content with specific source_agent.
@@ -94,10 +95,8 @@ fn test_full_lifecycle_main_to_grandchild() {
     // 1. Create main session (parent_session_id = None)
     let main_session_id = "main-session-integration-test";
     let main_path = claude_dir.join(format!("{}.jsonl", main_session_id));
-    fs::create_dir_all(main_path.parent().unwrap())
-        .expect("Failed to create main directory");
-    fs::write(&main_path, test_jsonl_content())
-        .expect("Failed to write main session content");
+    fs::create_dir_all(main_path.parent().unwrap()).expect("Failed to create main directory");
+    fs::write(&main_path, test_jsonl_content()).expect("Failed to write main session content");
 
     // 2. Create subagent session (parent_session_id = main_session_id)
     let subagent_session_id = "subagent-session-integration-test";
@@ -108,8 +107,11 @@ fn test_full_lifecycle_main_to_grandchild() {
 
     fs::create_dir_all(subagent_path.parent().unwrap())
         .expect("Failed to create subagent directory");
-    fs::write(&subagent_path, test_jsonl_content_with_source("claude-code-subagent"))
-        .expect("Failed to write subagent content");
+    fs::write(
+        &subagent_path,
+        test_jsonl_content_with_source("claude-code-subagent"),
+    )
+    .expect("Failed to write subagent content");
 
     // 3. Create grandchild session (parent_session_id = subagent_session_id)
     let grandchild_session_id = "grandchild-session-integration-test";
@@ -122,12 +124,15 @@ fn test_full_lifecycle_main_to_grandchild() {
 
     fs::create_dir_all(grandchild_path.parent().unwrap())
         .expect("Failed to create grandchild directory");
-    fs::write(&grandchild_path, test_jsonl_content_with_source("claude-code-subagent"))
-        .expect("Failed to write grandchild content");
+    fs::write(
+        &grandchild_path,
+        test_jsonl_content_with_source("claude-code-subagent"),
+    )
+    .expect("Failed to write grandchild content");
 
     // 4. Create scraper and plugin
-    let mut scraper = Scraper::new(data_dir.path().to_path_buf())
-        .expect("Failed to create scraper");
+    let mut scraper =
+        Scraper::new(data_dir.path().to_path_buf()).expect("Failed to create scraper");
 
     let plugin = jsonl_plugin(
         "claude-code",
@@ -139,7 +144,9 @@ fn test_full_lifecycle_main_to_grandchild() {
     // 5. Scrape the plugin (this will parse and index all sessions)
     let plugin_name = "claude-code";
     let plugin = scraper.plugin_manager().get(plugin_name).unwrap().clone();
-    let result = scraper.scrape_plugin(&plugin).expect("Scrape should succeed");
+    let result = scraper
+        .scrape_plugin(&plugin)
+        .expect("Scrape should succeed");
 
     // Verify all sessions were scraped
     assert_eq!(
@@ -221,10 +228,8 @@ fn test_parent_session_id_database_persistence() {
     // Create parent session
     let parent_session_id = "parent-db-test-123";
     let parent_path = claude_dir.join(format!("{}.jsonl", parent_session_id));
-    fs::create_dir_all(parent_path.parent().unwrap())
-        .expect("Failed to create parent directory");
-    fs::write(&parent_path, test_jsonl_content())
-        .expect("Failed to write parent content");
+    fs::create_dir_all(parent_path.parent().unwrap()).expect("Failed to create parent directory");
+    fs::write(&parent_path, test_jsonl_content()).expect("Failed to write parent content");
 
     // Create subagent session
     let subagent_session_id = "subagent-db-test-456";
@@ -235,12 +240,15 @@ fn test_parent_session_id_database_persistence() {
 
     fs::create_dir_all(subagent_path.parent().unwrap())
         .expect("Failed to create subagent directory");
-    fs::write(&subagent_path, test_jsonl_content_with_source("claude-code-subagent"))
-        .expect("Failed to write subagent content");
+    fs::write(
+        &subagent_path,
+        test_jsonl_content_with_source("claude-code-subagent"),
+    )
+    .expect("Failed to write subagent content");
 
     // Create scraper and plugin
-    let mut scraper = Scraper::new(data_dir.path().to_path_buf())
-        .expect("Failed to create scraper");
+    let mut scraper =
+        Scraper::new(data_dir.path().to_path_buf()).expect("Failed to create scraper");
 
     let plugin = jsonl_plugin(
         "claude-code",
@@ -252,7 +260,9 @@ fn test_parent_session_id_database_persistence() {
     // Scrape the plugin
     let plugin_name = "claude-code";
     let plugin = scraper.plugin_manager().get(plugin_name).unwrap().clone();
-    let result = scraper.scrape_plugin(&plugin).expect("Scrape should succeed");
+    let result = scraper
+        .scrape_plugin(&plugin)
+        .expect("Scrape should succeed");
 
     assert_eq!(result.sessions_indexed, 2, "Should index both sessions");
 
@@ -300,11 +310,8 @@ fn test_parent_session_id_database_persistence() {
     };
 
     // This search should find the subagent session
-    let search_results = search::execute_search(
-        &data_dir.path(),
-        &search_options,
-    )
-    .expect("Search should succeed");
+    let search_results =
+        search::execute_search(&data_dir.path(), &search_options).expect("Search should succeed");
 
     assert_eq!(
         search_results.results.len(),
@@ -313,8 +320,7 @@ fn test_parent_session_id_database_persistence() {
     );
 
     assert_eq!(
-        search_results.results[0].session_id,
-        subagent_session_id_full,
+        search_results.results[0].session_id, subagent_session_id_full,
         "Should find the subagent session"
     );
 }
@@ -334,10 +340,8 @@ fn test_multiple_subagents_same_parent_propagation() {
 
     // Create parent session
     let parent_path = claude_dir.join(format!("{}.jsonl", parent_session_id));
-    fs::create_dir_all(parent_path.parent().unwrap())
-        .expect("Failed to create parent directory");
-    fs::write(&parent_path, test_jsonl_content())
-        .expect("Failed to write parent content");
+    fs::create_dir_all(parent_path.parent().unwrap()).expect("Failed to create parent directory");
+    fs::write(&parent_path, test_jsonl_content()).expect("Failed to write parent content");
 
     // Create multiple subagent sessions
     for i in 0..subagent_count {
@@ -349,13 +353,16 @@ fn test_multiple_subagents_same_parent_propagation() {
 
         fs::create_dir_all(subagent_path.parent().unwrap())
             .expect("Failed to create subagent directory");
-        fs::write(&subagent_path, test_jsonl_content_with_source("claude-code-subagent"))
-            .expect("Failed to write subagent content");
+        fs::write(
+            &subagent_path,
+            test_jsonl_content_with_source("claude-code-subagent"),
+        )
+        .expect("Failed to write subagent content");
     }
 
     // Create scraper and plugin
-    let mut scraper = Scraper::new(data_dir.path().to_path_buf())
-        .expect("Failed to create scraper");
+    let mut scraper =
+        Scraper::new(data_dir.path().to_path_buf()).expect("Failed to create scraper");
 
     let plugin = jsonl_plugin(
         "claude-code",
@@ -367,7 +374,9 @@ fn test_multiple_subagents_same_parent_propagation() {
     // Scrape the plugin
     let plugin_name = "claude-code";
     let plugin = scraper.plugin_manager().get(plugin_name).unwrap().clone();
-    let result = scraper.scrape_plugin(&plugin).expect("Scrape should succeed");
+    let result = scraper
+        .scrape_plugin(&plugin)
+        .expect("Scrape should succeed");
 
     assert_eq!(
         result.sessions_scraped,
@@ -430,7 +439,11 @@ fn test_deep_nesting_parent_session_id_propagation() {
         .join("subagents")
         .join(format!("{}.jsonl", level1_id));
     fs::create_dir_all(level1_path.parent().unwrap()).unwrap();
-    fs::write(&level1_path, test_jsonl_content_with_source("claude-code-subagent")).unwrap();
+    fs::write(
+        &level1_path,
+        test_jsonl_content_with_source("claude-code-subagent"),
+    )
+    .unwrap();
 
     // Level 2: Second subagent (child of level1)
     let level2_id = "level2-subagent";
@@ -441,7 +454,11 @@ fn test_deep_nesting_parent_session_id_propagation() {
         .join("subagents")
         .join(format!("{}.jsonl", level2_id));
     fs::create_dir_all(level2_path.parent().unwrap()).unwrap();
-    fs::write(&level2_path, test_jsonl_content_with_source("claude-code-subagent")).unwrap();
+    fs::write(
+        &level2_path,
+        test_jsonl_content_with_source("claude-code-subagent"),
+    )
+    .unwrap();
 
     // Level 3: Third subagent (child of level2)
     let level3_id = "level3-subagent";
@@ -454,7 +471,11 @@ fn test_deep_nesting_parent_session_id_propagation() {
         .join("subagents")
         .join(format!("{}.jsonl", level3_id));
     fs::create_dir_all(level3_path.parent().unwrap()).unwrap();
-    fs::write(&level3_path, test_jsonl_content_with_source("claude-code-subagent")).unwrap();
+    fs::write(
+        &level3_path,
+        test_jsonl_content_with_source("claude-code-subagent"),
+    )
+    .unwrap();
 
     // Level 4: Fourth subagent (child of level3)
     let level4_id = "level4-subagent";
@@ -469,11 +490,15 @@ fn test_deep_nesting_parent_session_id_propagation() {
         .join("subagents")
         .join(format!("{}.jsonl", level4_id));
     fs::create_dir_all(level4_path.parent().unwrap()).unwrap();
-    fs::write(&level4_path, test_jsonl_content_with_source("claude-code-subagent")).unwrap();
+    fs::write(
+        &level4_path,
+        test_jsonl_content_with_source("claude-code-subagent"),
+    )
+    .unwrap();
 
     // Create scraper and plugin
-    let mut scraper = Scraper::new(data_dir.path().to_path_buf())
-        .expect("Failed to create scraper");
+    let mut scraper =
+        Scraper::new(data_dir.path().to_path_buf()).expect("Failed to create scraper");
 
     let plugin = jsonl_plugin(
         "claude-code",
@@ -485,7 +510,9 @@ fn test_deep_nesting_parent_session_id_propagation() {
     // Scrape the plugin
     let plugin_name = "claude-code";
     let plugin = scraper.plugin_manager().get(plugin_name).unwrap().clone();
-    let result = scraper.scrape_plugin(&plugin).expect("Scrape should succeed");
+    let result = scraper
+        .scrape_plugin(&plugin)
+        .expect("Scrape should succeed");
 
     assert_eq!(result.sessions_scraped, 5, "Should scrape all 5 levels");
 
@@ -502,20 +529,15 @@ fn test_deep_nesting_parent_session_id_propagation() {
 
     // Level 0: No parent
     let level0_full = format!("claude-code/{}", level0_id);
-    let level0_doc = search_by_session_id(searcher, &level0_full)
-        .expect("Should find level0");
+    let level0_doc = search_by_session_id(searcher, &level0_full).expect("Should find level0");
     assert!(
         get_doc_parent_session_id(searcher, &level0_doc).is_none(),
         "Level0 should have no parent"
     );
 
     // Level 1: Parent is level0
-    let level1_full = format!(
-        "claude-code/{}/{}/{}",
-        level0_id, "subagents", level1_id
-    );
-    let level1_doc = search_by_session_id(searcher, &level1_full)
-        .expect("Should find level1");
+    let level1_full = format!("claude-code/{}/{}/{}", level0_id, "subagents", level1_id);
+    let level1_doc = search_by_session_id(searcher, &level1_full).expect("Should find level1");
     assert_eq!(
         get_doc_parent_session_id(searcher, &level1_doc),
         Some(level0_full.clone()),
@@ -527,8 +549,7 @@ fn test_deep_nesting_parent_session_id_propagation() {
         "claude-code/{}/{}/{}/{}/{}",
         level0_id, "subagents", level1_id, "subagents", level2_id
     );
-    let level2_doc = search_by_session_id(searcher, &level2_full)
-        .expect("Should find level2");
+    let level2_doc = search_by_session_id(searcher, &level2_full).expect("Should find level2");
     assert_eq!(
         get_doc_parent_session_id(searcher, &level2_doc),
         Some(level1_full.clone()),
@@ -539,9 +560,10 @@ fn test_deep_nesting_parent_session_id_propagation() {
     let level3_full = format!(
         "claude-code/{}/{}/{}/{}/{}/{}/{}/{}",
         level0_id, "subagents", level1_id, "subagents", level2_id, "subagents", level3_id, ""
-    ).trim_end_matches('/').to_string();
-    let level3_doc = search_by_session_id(searcher, &level3_full)
-        .expect("Should find level3");
+    )
+    .trim_end_matches('/')
+    .to_string();
+    let level3_doc = search_by_session_id(searcher, &level3_full).expect("Should find level3");
     assert_eq!(
         get_doc_parent_session_id(searcher, &level3_doc),
         Some(level2_full.clone()),
@@ -551,11 +573,20 @@ fn test_deep_nesting_parent_session_id_propagation() {
     // Level 4: Parent is level3
     let level4_full = format!(
         "claude-code/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}",
-        level0_id, "subagents", level1_id, "subagents", level2_id, "subagents",
-        level3_id, "subagents", level4_id, ""
-    ).trim_end_matches('/').to_string();
-    let level4_doc = search_by_session_id(searcher, &level4_full)
-        .expect("Should find level4");
+        level0_id,
+        "subagents",
+        level1_id,
+        "subagents",
+        level2_id,
+        "subagents",
+        level3_id,
+        "subagents",
+        level4_id,
+        ""
+    )
+    .trim_end_matches('/')
+    .to_string();
+    let level4_doc = search_by_session_id(searcher, &level4_full).expect("Should find level4");
     assert_eq!(
         get_doc_parent_session_id(searcher, &level4_doc),
         Some(level3_full.clone()),

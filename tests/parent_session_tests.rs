@@ -62,7 +62,8 @@ fn jsonl_plugin(name: &str, glob: &str) -> Plugin {
 /// Create test JSONL content with minimal events.
 fn test_jsonl_content() -> String {
     r#"{"timestamp": "2026-07-23T10:00:00Z", "role": "user", "content": "Test message"}
-{"timestamp": "2026-07-23T10:00:01Z", "role": "assistant", "content": "Test response"}"#.to_string()
+{"timestamp": "2026-07-23T10:00:01Z", "role": "assistant", "content": "Test response"}"#
+        .to_string()
 }
 
 // ─── Unit Tests: Path Parsing Logic ────────────────────────────────────────────
@@ -75,27 +76,23 @@ fn test_parent_id_extraction_various_path_depths() {
         (
             "/home/user/.claude/projects/MyProject/parent-abc/subagents/agent-def.jsonl",
             Some("parent-abc".to_string()),
-            "Standard project structure"
+            "Standard project structure",
         ),
         (
             "/home/user/.claude/projects/nested/deep/path/parent-xyz/subagents/agent-123.jsonl",
             Some("parent-xyz".to_string()),
-            "Nested project path"
+            "Nested project path",
         ),
         (
             "/home/user/.claude/projects/MyProject/main-session.jsonl",
             None,
-            "Main session (no subagents)"
+            "Main session (no subagents)",
         ),
-        (
-            "/tmp/test.jsonl",
-            None,
-            "No projects directory"
-        ),
+        ("/tmp/test.jsonl", None, "No projects directory"),
         (
             "/home/user/.claude/projects/MyProject/subagents/agent-123.jsonl",
             None,
-            "Subagents without parent session"
+            "Subagents without parent session",
         ),
     ];
 
@@ -148,10 +145,8 @@ fn test_full_flow_subagent_session() {
     // Create a parent session
     let parent_uuid = "parent-session-main123";
     let parent_path = claude_dir.join(format!("{}.jsonl", parent_uuid));
-    fs::create_dir_all(parent_path.parent().unwrap())
-        .expect("Failed to create parent directory");
-    fs::write(&parent_path, test_jsonl_content())
-        .expect("Failed to write parent content");
+    fs::create_dir_all(parent_path.parent().unwrap()).expect("Failed to create parent directory");
+    fs::write(&parent_path, test_jsonl_content()).expect("Failed to write parent content");
 
     // Create a subagent session
     let subagent_id = "agent-sub456";
@@ -162,12 +157,11 @@ fn test_full_flow_subagent_session() {
 
     fs::create_dir_all(subagent_path.parent().unwrap())
         .expect("Failed to create subagent directory");
-    fs::write(&subagent_path, test_jsonl_content())
-        .expect("Failed to write subagent content");
+    fs::write(&subagent_path, test_jsonl_content()).expect("Failed to write subagent content");
 
     // Create scraper and plugin
-    let mut scraper = Scraper::new(data_dir.path().to_path_buf())
-        .expect("Failed to create scraper");
+    let mut scraper =
+        Scraper::new(data_dir.path().to_path_buf()).expect("Failed to create scraper");
 
     let plugin = jsonl_plugin(
         "claude-code",
@@ -179,7 +173,9 @@ fn test_full_flow_subagent_session() {
     // Scrape the plugin
     let plugin_name = "claude-code";
     let plugin = scraper.plugin_manager().get(plugin_name).unwrap().clone();
-    let result = scraper.scrape_plugin(&plugin).expect("Scrape should succeed");
+    let result = scraper
+        .scrape_plugin(&plugin)
+        .expect("Scrape should succeed");
 
     // Verify both sessions were scraped
     assert_eq!(
@@ -187,10 +183,7 @@ fn test_full_flow_subagent_session() {
         "Should scrape both parent and subagent sessions"
     );
 
-    assert_eq!(
-        result.sessions_indexed, 2,
-        "Should index both sessions"
-    );
+    assert_eq!(result.sessions_indexed, 2, "Should index both sessions");
 
     // List all sessions
     let sessions = scraper
@@ -211,7 +204,11 @@ fn test_full_flow_subagent_session() {
         .expect("Should read subagent events");
 
     // Verify events were parsed correctly
-    assert_eq!(events.len(), 2, "Should have 2 events from subagent session");
+    assert_eq!(
+        events.len(),
+        2,
+        "Should have 2 events from subagent session"
+    );
 
     // Verify all events have source_agent = claude-code-subagent
     for event in &events {
@@ -301,10 +298,8 @@ fn test_multiple_subagents_same_parent() {
 
     // Create parent session
     let parent_path = claude_dir.join(format!("{}.jsonl", parent_uuid));
-    fs::create_dir_all(parent_path.parent().unwrap())
-        .expect("Failed to create parent directory");
-    fs::write(&parent_path, test_jsonl_content())
-        .expect("Failed to write parent content");
+    fs::create_dir_all(parent_path.parent().unwrap()).expect("Failed to create parent directory");
+    fs::write(&parent_path, test_jsonl_content()).expect("Failed to write parent content");
 
     // Create multiple subagent sessions
     for i in 0..subagent_count {
@@ -313,15 +308,13 @@ fn test_multiple_subagents_same_parent() {
             .join("subagents")
             .join(format!("agent-{:03}.jsonl", i));
 
-        fs::create_dir_all(subagent_path.parent().unwrap())
-            .expect("Failed to create directory");
-        fs::write(&subagent_path, test_jsonl_content())
-            .expect("Failed to write session content");
+        fs::create_dir_all(subagent_path.parent().unwrap()).expect("Failed to create directory");
+        fs::write(&subagent_path, test_jsonl_content()).expect("Failed to write session content");
     }
 
     // Create scraper and plugin
-    let mut scraper = Scraper::new(data_dir.path().to_path_buf())
-        .expect("Failed to create scraper");
+    let mut scraper =
+        Scraper::new(data_dir.path().to_path_buf()).expect("Failed to create scraper");
 
     let plugin = jsonl_plugin(
         "claude-code",
@@ -333,7 +326,9 @@ fn test_multiple_subagents_same_parent() {
     // Scrape the plugin
     let plugin_name = "claude-code";
     let plugin = scraper.plugin_manager().get(plugin_name).unwrap().clone();
-    let result = scraper.scrape_plugin(&plugin).expect("Scrape should succeed");
+    let result = scraper
+        .scrape_plugin(&plugin)
+        .expect("Scrape should succeed");
 
     assert_eq!(
         result.sessions_scraped,
@@ -386,10 +381,8 @@ fn test_search_by_parent_session_id() {
     // Create parent session
     let parent_uuid = "parent-search-123";
     let parent_path = claude_dir.join(format!("{}.jsonl", parent_uuid));
-    fs::create_dir_all(parent_path.parent().unwrap())
-        .expect("Failed to create directory");
-    fs::write(&parent_path, test_jsonl_content())
-        .expect("Failed to write content");
+    fs::create_dir_all(parent_path.parent().unwrap()).expect("Failed to create directory");
+    fs::write(&parent_path, test_jsonl_content()).expect("Failed to write content");
 
     // Create multiple subagent sessions
     let subagent_count = 3;
@@ -399,15 +392,13 @@ fn test_search_by_parent_session_id() {
             .join("subagents")
             .join(format!("agent-{:03}.jsonl", i));
 
-        fs::create_dir_all(subagent_path.parent().unwrap())
-            .expect("Failed to create directory");
-        fs::write(&subagent_path, test_jsonl_content())
-            .expect("Failed to write content");
+        fs::create_dir_all(subagent_path.parent().unwrap()).expect("Failed to create directory");
+        fs::write(&subagent_path, test_jsonl_content()).expect("Failed to write content");
     }
 
     // Create scraper and plugin
-    let mut scraper = Scraper::new(data_dir.path().to_path_buf())
-        .expect("Failed to create scraper");
+    let mut scraper =
+        Scraper::new(data_dir.path().to_path_buf()).expect("Failed to create scraper");
 
     let plugin = jsonl_plugin(
         "claude-code",
@@ -419,7 +410,9 @@ fn test_search_by_parent_session_id() {
     // Scrape
     let plugin_name = "claude-code";
     let plugin = scraper.plugin_manager().get(plugin_name).unwrap().clone();
-    let result = scraper.scrape_plugin(&plugin).expect("Scrape should succeed");
+    let result = scraper
+        .scrape_plugin(&plugin)
+        .expect("Scrape should succeed");
 
     assert_eq!(
         result.sessions_scraped,
@@ -474,14 +467,12 @@ fn test_main_session_jsonl_parser_no_parent() {
     // Create a main session (no subagents directory)
     let main_session_id = "main-session-abc123";
     let main_path = claude_dir.join(format!("{}.jsonl", main_session_id));
-    fs::create_dir_all(main_path.parent().unwrap())
-        .expect("Failed to create directory");
-    fs::write(&main_path, test_jsonl_content())
-        .expect("Failed to write content");
+    fs::create_dir_all(main_path.parent().unwrap()).expect("Failed to create directory");
+    fs::write(&main_path, test_jsonl_content()).expect("Failed to write content");
 
     // Create scraper and plugin
-    let mut scraper = Scraper::new(data_dir.path().to_path_buf())
-        .expect("Failed to create scraper");
+    let mut scraper =
+        Scraper::new(data_dir.path().to_path_buf()).expect("Failed to create scraper");
 
     let plugin = jsonl_plugin(
         "claude-code",
@@ -493,7 +484,9 @@ fn test_main_session_jsonl_parser_no_parent() {
     // Scrape the plugin
     let plugin_name = "claude-code";
     let plugin = scraper.plugin_manager().get(plugin_name).unwrap().clone();
-    let result = scraper.scrape_plugin(&plugin).expect("Scrape should succeed");
+    let result = scraper
+        .scrape_plugin(&plugin)
+        .expect("Scrape should succeed");
 
     assert_eq!(
         result.sessions_scraped, 1,
@@ -532,15 +525,13 @@ fn test_main_session_multiple_main_sessions_no_parent() {
     let main_session_ids = vec!["main-1", "main-2", "main-3"];
     for session_id in &main_session_ids {
         let path = claude_dir.join(format!("{}.jsonl", session_id));
-        fs::create_dir_all(path.parent().unwrap())
-            .expect("Failed to create directory");
-        fs::write(&path, test_jsonl_content())
-            .expect("Failed to write content");
+        fs::create_dir_all(path.parent().unwrap()).expect("Failed to create directory");
+        fs::write(&path, test_jsonl_content()).expect("Failed to write content");
     }
 
     // Create scraper and plugin
-    let mut scraper = Scraper::new(data_dir.path().to_path_buf())
-        .expect("Failed to create scraper");
+    let mut scraper =
+        Scraper::new(data_dir.path().to_path_buf()).expect("Failed to create scraper");
 
     let plugin = jsonl_plugin(
         "claude-code",
@@ -552,7 +543,9 @@ fn test_main_session_multiple_main_sessions_no_parent() {
     // Scrape the plugin
     let plugin_name = "claude-code";
     let plugin = scraper.plugin_manager().get(plugin_name).unwrap().clone();
-    let result = scraper.scrape_plugin(&plugin).expect("Scrape should succeed");
+    let result = scraper
+        .scrape_plugin(&plugin)
+        .expect("Scrape should succeed");
 
     assert_eq!(
         result.sessions_scraped,
@@ -595,22 +588,27 @@ fn test_main_session_nested_directories_no_parent() {
     let data_dir = make_data_dir();
 
     // Create a nested project structure
-    let nested_dir = data_dir.path().join("sessions/claude-code/nested/project/path");
+    let nested_dir = data_dir
+        .path()
+        .join("sessions/claude-code/nested/project/path");
     fs::create_dir_all(&nested_dir).expect("Failed to create nested directory");
 
     // Create a main session in nested directory
     let main_session_id = "nested-main-session";
     let main_path = nested_dir.join(format!("{}.jsonl", main_session_id));
-    fs::write(&main_path, test_jsonl_content())
-        .expect("Failed to write content");
+    fs::write(&main_path, test_jsonl_content()).expect("Failed to write content");
 
     // Create scraper and plugin
-    let mut scraper = Scraper::new(data_dir.path().to_path_buf())
-        .expect("Failed to create scraper");
+    let mut scraper =
+        Scraper::new(data_dir.path().to_path_buf()).expect("Failed to create scraper");
 
     let plugin = jsonl_plugin(
         "claude-code",
-        &data_dir.path().join("sessions/claude-code/**/*.jsonl").to_str().unwrap(),
+        &data_dir
+            .path()
+            .join("sessions/claude-code/**/*.jsonl")
+            .to_str()
+            .unwrap(),
     );
 
     scraper.plugin_manager_mut().add_plugin(plugin);
@@ -618,7 +616,9 @@ fn test_main_session_nested_directories_no_parent() {
     // Scrape the plugin
     let plugin_name = "claude-code";
     let plugin = scraper.plugin_manager().get(plugin_name).unwrap().clone();
-    let result = scraper.scrape_plugin(&plugin).expect("Scrape should succeed");
+    let result = scraper
+        .scrape_plugin(&plugin)
+        .expect("Scrape should succeed");
 
     assert_eq!(
         result.sessions_scraped, 1,
@@ -657,14 +657,12 @@ fn test_main_session_with_similar_path_to_subagent_no_parent() {
     // This should still be treated as a main session since it's not in the correct subagent path structure
     let main_session_id = "session-with-subagents-in-name";
     let main_path = claude_dir.join(format!("{}.jsonl", main_session_id));
-    fs::create_dir_all(main_path.parent().unwrap())
-        .expect("Failed to create directory");
-    fs::write(&main_path, test_jsonl_content())
-        .expect("Failed to write content");
+    fs::create_dir_all(main_path.parent().unwrap()).expect("Failed to create directory");
+    fs::write(&main_path, test_jsonl_content()).expect("Failed to write content");
 
     // Create scraper and plugin
-    let mut scraper = Scraper::new(data_dir.path().to_path_buf())
-        .expect("Failed to create scraper");
+    let mut scraper =
+        Scraper::new(data_dir.path().to_path_buf()).expect("Failed to create scraper");
 
     let plugin = jsonl_plugin(
         "claude-code",
@@ -676,12 +674,11 @@ fn test_main_session_with_similar_path_to_subagent_no_parent() {
     // Scrape the plugin
     let plugin_name = "claude-code";
     let plugin = scraper.plugin_manager().get(plugin_name).unwrap().clone();
-    let result = scraper.scrape_plugin(&plugin).expect("Scrape should succeed");
+    let result = scraper
+        .scrape_plugin(&plugin)
+        .expect("Scrape should succeed");
 
-    assert_eq!(
-        result.sessions_scraped, 1,
-        "Should scrape the main session"
-    );
+    assert_eq!(result.sessions_scraped, 1, "Should scrape the main session");
 
     // Verify it's treated as a main session
     let sessions = scraper

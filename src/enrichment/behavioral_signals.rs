@@ -132,8 +132,7 @@ pub fn compute_behavioral_signals(events: &[Event]) -> BehavioralSignals {
         }
 
         // Tool results — check for bash failures
-        if event.role == Role::ToolResult
-            && event.tool.as_deref() == Some("Bash") {
+        if event.role == Role::ToolResult && event.tool.as_deref() == Some("Bash") {
             if let Some(ref params) = event.tool_params {
                 if let Some(exit_code) = params.get("exit_code").and_then(|v| v.as_i64()) {
                     if exit_code != 0 {
@@ -203,8 +202,8 @@ fn is_config_file(path: &str) -> bool {
             return true;
         }
         // Check for memory/*.md pattern
-        if (*pattern == "memory/" || *pattern == "docs/notes/")
-            && path_normalized.contains(pattern) {
+        if (*pattern == "memory/" || *pattern == "docs/notes/") && path_normalized.contains(pattern)
+        {
             return true;
         }
         // Check for MEMORY.md at root level or in a path

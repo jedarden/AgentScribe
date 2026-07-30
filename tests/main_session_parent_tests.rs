@@ -49,9 +49,9 @@ fn test_main_session_empty_events_no_parent() {
         &events,
         session_id,
         source_agent,
-        None::<&str>,  // project
-        None::<&str>,  // model
-        None::<&str>,  // parent_session_id - None for main sessions
+        None::<&str>, // project
+        None::<&str>, // model
+        None::<&str>, // parent_session_id - None for main sessions
     );
 
     assert!(
@@ -163,13 +163,7 @@ fn test_main_session_with_project_and_model_no_parent() {
 #[test]
 fn test_main_session_different_source_agents_no_parent() {
     // Test that main sessions with different source_agent values all have parent_session_id = None
-    let source_agents = vec![
-        "claude-code",
-        "aider",
-        "codex",
-        "opencode",
-        "cursor",
-    ];
+    let source_agents = vec!["claude-code", "aider", "codex", "opencode", "cursor"];
 
     for source_agent in source_agents {
         let events = create_test_events(2);
@@ -277,7 +271,7 @@ fn test_main_session_explicit_none_vs_no_parameter() {
         "claude-code",
         None::<&str>,
         None::<&str>,
-        None::<&str>,  // Explicit None
+        None::<&str>, // Explicit None
     );
 
     // Test with implicit None (using Option::None directly)
@@ -287,7 +281,7 @@ fn test_main_session_explicit_none_vs_no_parameter() {
         "claude-code",
         None::<&str>,
         None::<&str>,
-        None,  // Implicit None (type inference)
+        None, // Implicit None (type inference)
     );
 
     assert!(
@@ -420,7 +414,7 @@ fn test_main_session_various_project_values_no_parent() {
         Some("nested/project/path"),
         Some("project_with_underscores"),
         Some("project-with.dots"),
-        None,  // No project
+        None, // No project
     ];
 
     for project in projects {
@@ -452,7 +446,7 @@ fn test_main_session_various_model_values_no_parent() {
         Some("claude-haiku-4-5"),
         Some("gpt-4"),
         Some("custom-model-name"),
-        None,  // No model
+        None, // No model
     ];
 
     for model in models {
