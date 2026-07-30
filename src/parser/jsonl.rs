@@ -8,8 +8,8 @@ mod jsonl_subagent_test;
 use crate::error::{AgentScribeError, Result};
 use crate::event::{Event, Role, TokenCounts};
 use crate::parser::{
-    extract_string, extract_string_with_envelope, parse_timestamp_with_envelope,
-    ParseContext, SessionInfo,
+    extract_string, extract_string_with_envelope, parse_timestamp_with_envelope, ParseContext,
+    SessionInfo,
 };
 use crate::plugin::{Plugin, SessionDetection, SessionIdSource};
 use chrono::Utc;
@@ -32,11 +32,10 @@ pub struct JsonlParser;
 ///
 /// Gracefully handles missing type_field and payload_field by returning
 /// (empty object, None) to skip the line.
-#[cfg(test)]
-fn unwrap_envelope(raw_json: &Value, envelope: &crate::plugin::Envelope) -> Result<(Value, Option<Value>)> {
-    // Extract the type field value using value.get(&config.type_field)
-    let type_field_value = raw_json.get(&envelope.type_field).cloned();
-
+pub fn unwrap_envelope(
+    raw_json: &Value,
+    envelope: &crate::plugin::Envelope,
+) -> Result<(Value, Option<Value>)> {
     // Get the routing action based on the type field value
     let type_value = extract_string(raw_json, &envelope.type_field).unwrap_or_default();
     let routing = envelope.get_routing(&type_value);
@@ -47,8 +46,8 @@ fn unwrap_envelope(raw_json: &Value, envelope: &crate::plugin::Envelope) -> Resu
             Ok((serde_json::json!({}), None))
         }
         "meta" => {
-            // Return empty payload with the type field value
-            Ok((serde_json::json!({}), type_field_value))
+            // Return empty payload with the full wrapper JSON
+            Ok((serde_json::json!({}), Some(raw_json.clone())))
         }
         "event" => {
             // Extract payload from payload_field
@@ -62,8 +61,8 @@ fn unwrap_envelope(raw_json: &Value, envelope: &crate::plugin::Envelope) -> Resu
 
             match extracted {
                 Some(payload) => {
-                    // Return the extracted payload along with the type field value
-                    Ok((payload.clone(), type_field_value))
+                    // Return the extracted payload along with the full wrapper JSON
+                    Ok((payload.clone(), Some(raw_json.clone())))
                 }
                 None => {
                     // Missing or non-object payload_field - skip with warning
@@ -551,6 +550,9 @@ mod tests {
         type_routing.insert("compaction".to_string(), "meta".to_string());
         type_routing.insert("model_change".to_string(), "skip".to_string());
 
+        let mut role_map = std::collections::HashMap::new();
+        role_map.insert("toolResult".to_string(), "tool_result".to_string());
+
         Plugin {
             plugin: PluginMeta {
                 name: "test".to_string(),
@@ -573,9 +575,10 @@ mod tests {
                 array: None,
             },
             parser: Parser {
-                timestamp: Some("timestamp".to_string()),
+                timestamp: Some("^timestamp".to_string()),
                 role: Some("role".to_string()),
                 content: Some("content".to_string()),
+                role_map,
                 ..Default::default()
             },
             metadata: None,
@@ -1166,7 +1169,7 @@ mod tests {
 
         // Payload should be empty object
         assert!(
-            payload.as_object().map_or(false, |obj| obj.is_empty()),
+            payload.as_object().is_some_and(|obj| obj.is_empty()),
             "Skip type should return empty payload object"
         );
 
@@ -1422,6 +1425,12 @@ mod tests {
                 tool_name: Some("tool_name".to_string()),
                 tokens_in: Some("tokens_in".to_string()),
                 tokens_out: Some("tokens_out".to_string()),
+                // Add role_map for tool_call support
+                role_map: {
+                    let mut map = std::collections::HashMap::new();
+                    map.insert("tool_call".to_string(), "tool_call".to_string());
+                    map
+                },
                 ..Default::default()
             },
             metadata: None,
@@ -1493,7 +1502,7 @@ mod tests {
         );
 
         // Envelope line with tool_name at wrapper level
-        let line = r#"{"type": "message", "timestamp": "2026-03-16T12:00:00Z", "tool_name": "wrapper_tool", "payload": {"role": "assistant", "content": "Running tool", "tool_name": "payload_tool"}}"#;
+        let line = r#"{"type": "message", "timestamp": "2026-03-16T12:00:00Z", "tool_name": "wrapper_tool", "payload": {"role": "tool_call", "content": "Running tool", "tool_name": "payload_tool"}}"#;
         let events = JsonlParser::parse_line(line, 1, &context, &plugin).unwrap();
 
         assert_eq!(events.len(), 1);
@@ -1594,6 +1603,12 @@ mod tests {
         plugin.parser.role = Some("role".to_string());
         plugin.parser.content = Some("content".to_string());
         plugin.parser.tool_name = Some("^tool".to_string());
+        // Add role_map for tool_call support
+        plugin.parser.role_map = {
+            let mut map = std::collections::HashMap::new();
+            map.insert("tool_call".to_string(), "tool_call".to_string());
+            map
+        };
 
         let context = ParseContext::new(
             "test-session".to_string(),
@@ -1602,7 +1617,7 @@ mod tests {
         );
 
         // Complex envelope with fields at both levels
-        let line = r#"{"type": "message", "ts": "2026-03-16T12:00:00Z", "tool": "search", "payload": {"role": "assistant", "content": "Searching...", "tool": "payload_tool"}}"#;
+        let line = r#"{"type": "message", "ts": "2026-03-16T12:00:00Z", "tool": "search", "payload": {"role": "tool_call", "content": "Searching...", "tool": "payload_tool"}}"#;
         let events = JsonlParser::parse_line(line, 1, &context, &plugin).unwrap();
 
         assert_eq!(events.len(), 1);
@@ -1616,7 +1631,7 @@ mod tests {
         );
 
         // Verify role/content read from payload
-        assert_eq!(event.role, Role::Assistant, "role should read from payload");
+        assert_eq!(event.role, Role::ToolCall, "role should read from payload");
         assert_eq!(
             event.content, "Searching...",
             "content should read from payload"
@@ -1709,7 +1724,8 @@ mod tests {
         let line_with_type = r#"{"type": "message", "timestamp": "2026-03-16T12:00:00Z", "payload": {"role": "user", "content": "Hello"}}"#;
         let json_with_type: Value = serde_json::from_str(line_with_type).unwrap();
 
-        let (payload_with_type, wrapper_with_type) = unwrap_envelope(&json_with_type, &envelope).unwrap();
+        let (payload_with_type, wrapper_with_type) =
+            unwrap_envelope(&json_with_type, &envelope).unwrap();
 
         // Verify that type field value is correctly extracted in the wrapper
         assert_eq!(
@@ -1733,11 +1749,14 @@ mod tests {
         let line_without_type = r#"{"timestamp": "2026-03-16T12:00:00Z", "payload": {"role": "user", "content": "Hello"}}"#;
         let json_without_type: Value = serde_json::from_str(line_without_type).unwrap();
 
-        let (payload_without_type, wrapper_without_type) = unwrap_envelope(&json_without_type, &envelope).unwrap();
+        let (payload_without_type, wrapper_without_type) =
+            unwrap_envelope(&json_without_type, &envelope).unwrap();
 
         // Missing type field should result in skip behavior (empty payload, None wrapper)
         assert!(
-            payload_without_type.as_object().map_or(false, |obj| obj.is_empty()),
+            payload_without_type
+                .as_object()
+                .map_or(false, |obj| obj.is_empty()),
             "Missing type field should return empty payload object"
         );
 
@@ -1750,11 +1769,14 @@ mod tests {
         let line_different_type = r#"{"type": "heartbeat", "timestamp": "2026-03-16T12:00:00Z", "payload": {"status": "ok"}}"#;
         let json_different_type: Value = serde_json::from_str(line_different_type).unwrap();
 
-        let (payload_different_type, wrapper_different_type) = unwrap_envelope(&json_different_type, &envelope).unwrap();
+        let (payload_different_type, wrapper_different_type) =
+            unwrap_envelope(&json_different_type, &envelope).unwrap();
 
         // Verify heartbeat type is correctly identified and routed to skip
         assert!(
-            payload_different_type.as_object().map_or(false, |obj| obj.is_empty()),
+            payload_different_type
+                .as_object()
+                .map_or(false, |obj| obj.is_empty()),
             "Type 'heartbeat' should return empty payload (skip routing)"
         );
 
