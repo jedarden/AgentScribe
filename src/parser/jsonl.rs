@@ -1330,7 +1330,7 @@ mod tests {
 
         // Payload should be empty object
         assert!(
-            payload.as_object().map_or(false, |obj| obj.is_empty()),
+            payload.as_object().is_some_and(|obj| obj.is_empty()),
             "Meta type should return empty payload object"
         );
 
@@ -1371,7 +1371,7 @@ mod tests {
 
         // Should behave like skip type
         assert!(
-            payload.as_object().map_or(false, |obj| obj.is_empty()),
+            payload.as_object().is_some_and(|obj| obj.is_empty()),
             "Unknown type should return empty payload object"
         );
         assert!(
@@ -1391,7 +1391,7 @@ mod tests {
 
         // Should return empty payload and None wrapper (skip with warning)
         assert!(
-            payload.as_object().map_or(false, |obj| obj.is_empty()),
+            payload.as_object().is_some_and(|obj| obj.is_empty()),
             "Missing payload_field should return empty payload object"
         );
         assert!(
@@ -1411,7 +1411,7 @@ mod tests {
 
         // Should return empty payload and None wrapper (skip with warning)
         assert!(
-            payload.as_object().map_or(false, |obj| obj.is_empty()),
+            payload.as_object().is_some_and(|obj| obj.is_empty()),
             "Non-object payload should return empty payload object"
         );
         assert!(
@@ -1431,7 +1431,7 @@ mod tests {
 
         // Should return empty payload and None wrapper (skip with warning)
         assert!(
-            payload.as_object().map_or(false, |obj| obj.is_empty()),
+            payload.as_object().is_some_and(|obj| obj.is_empty()),
             "Null payload should return empty payload object"
         );
         assert!(
@@ -1452,7 +1452,7 @@ mod tests {
 
         // Should behave like skip type
         assert!(
-            payload.as_object().map_or(false, |obj| obj.is_empty()),
+            payload.as_object().is_some_and(|obj| obj.is_empty()),
             "Empty type field should return empty payload object"
         );
         assert!(
@@ -1517,7 +1517,7 @@ mod tests {
             let (payload, wrapper) = unwrap_envelope(&json, &envelope).unwrap();
 
             assert!(
-                payload.as_object().map_or(false, |obj| obj.is_empty()),
+                payload.as_object().is_some_and(|obj| obj.is_empty()),
                 "Skip type '{}' should return empty payload",
                 line
             );
@@ -1896,7 +1896,7 @@ mod tests {
         assert!(
             payload_without_type
                 .as_object()
-                .map_or(false, |obj| obj.is_empty()),
+                .is_some_and(|obj| obj.is_empty()),
             "Missing type field should return empty payload object"
         );
 

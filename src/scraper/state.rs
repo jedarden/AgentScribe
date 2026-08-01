@@ -455,6 +455,7 @@ mod tests {
         let lock_fd = OpenOptions::new()
             .write(true)
             .create(true)
+            .truncate(false)
             .open(&lock_path)
             .unwrap();
         lock_fd.lock_exclusive().unwrap();
