@@ -44,6 +44,7 @@ fn create_test_events(count: usize) -> Vec<Event> {
 }
 
 /// Create test events with specific source_agent.
+#[allow(dead_code)]
 fn create_test_events_with_source(source_agent: &str, count: usize) -> Vec<Event> {
     (0..count)
         .map(|i| {

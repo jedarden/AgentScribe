@@ -28,20 +28,12 @@ pub struct PluginMeta {
 }
 
 /// Configuration for JSON array sources
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct JsonArraySourceConfig {
     /// Dot-path to the array within the JSON document (e.g., "data.items")
     /// Empty string means the document root is the array
     #[serde(default)]
     pub items_path: String,
-}
-
-impl Default for JsonArraySourceConfig {
-    fn default() -> Self {
-        JsonArraySourceConfig {
-            items_path: String::new(),
-        }
-    }
 }
 
 /// Envelope configuration for JSONL sources where lines are wrapped
