@@ -38,7 +38,16 @@ pub fn unwrap_envelope(
     envelope: &crate::plugin::Envelope,
 ) -> Result<(Value, Option<Value>)> {
     // Get the routing action based on the type field value
-    let type_value = extract_string(raw_json, &envelope.type_field).unwrap_or_default();
+    // Read the type_field from the JSON value using envelope.type_field
+    let type_value = raw_json
+        .get(&envelope.type_field)
+        .and_then(|v| match v {
+            Value::String(s) => Some(s.clone()),
+            Value::Number(n) => Some(n.to_string()),
+            Value::Bool(b) => Some(b.to_string()),
+            _ => None,
+        })
+        .unwrap_or_default();
     let routing = envelope.get_routing(&type_value);
 
     match routing {
@@ -721,6 +730,7 @@ mod tests {
     /// pointing to wrapper-level fields (timestamp, role, content) as they appear
     /// at the top level of each JSONL line in envelope_test.jsonl.
     /// Used to test parsing behavior without envelope extraction configured.
+    #[allow(dead_code)]
     fn create_non_envelope_test_plugin() -> Plugin {
         Plugin {
             plugin: PluginMeta {
