@@ -342,11 +342,78 @@ impl super::FormatParser for JsonlParser {
         let session_id = match &plugin.source.session_detection {
             SessionDetection::OneFilePerSession { session_id_from } => {
                 match session_id_from {
-                    SessionIdSource::Filename => source_path
-                        .file_stem()
-                        .and_then(|s| s.to_str())
-                        .unwrap_or("unknown")
-                        .to_string(),
+                    SessionIdSource::Filename => {
+                        // For subagent sessions, include parent directory in session ID
+                        // to maintain hierarchy and avoid collisions
+                        let is_subagent = source_path
+                            .components()
+                            .any(|c| c.as_os_str() == "subagents");
+
+                        eprintln!("DEBUG: source_path = {:?}", source_path);
+                        eprintln!("DEBUG: is_subagent = {}", is_subagent);
+
+                        if is_subagent {
+                            // Extract path from "projects/<project>/<parent>/subagents/<agent>.jsonl"
+                            // to get "<parent>/<agent>"
+                            let components: Vec<_> = source_path.components().collect();
+                            eprintln!("DEBUG: components = {:?}", components);
+
+                            if let Some(subagents_idx) =
+                                components.iter().position(|c| c.as_os_str() == "subagents")
+                            {
+                                if subagents_idx >= 2 {
+                                    let parent_idx = subagents_idx - 1;
+                                    if let (Some(parent_os), Some(agent_os)) = (
+                                        components.get(parent_idx),
+                                        components.get(subagents_idx + 1),
+                                    ) {
+                                        if let (Some(parent_name), Some(agent_name)) = (
+                                            parent_os.as_os_str().to_str(),
+                                            agent_os.as_os_str().to_str(),
+                                        ) {
+                                            // Get agent name without extension
+                                            let agent_stem = agent_name
+                                                .strip_suffix(".jsonl")
+                                                .or_else(|| agent_name.strip_suffix(".json"))
+                                                .unwrap_or(agent_name);
+                                            format!("{}/{}", parent_name, agent_stem)
+                                        } else {
+                                            source_path
+                                                .file_stem()
+                                                .and_then(|s| s.to_str())
+                                                .unwrap_or("unknown")
+                                                .to_string()
+                                        }
+                                    } else {
+                                        source_path
+                                            .file_stem()
+                                            .and_then(|s| s.to_str())
+                                            .unwrap_or("unknown")
+                                            .to_string()
+                                    }
+                                } else {
+                                    source_path
+                                        .file_stem()
+                                        .and_then(|s| s.to_str())
+                                        .unwrap_or("unknown")
+                                        .to_string()
+                                }
+                            } else {
+                                source_path
+                                    .file_stem()
+                                    .and_then(|s| s.to_str())
+                                    .unwrap_or("unknown")
+                                    .to_string()
+                            }
+                        } else {
+                            // For main sessions, use just the filename
+                            source_path
+                                .file_stem()
+                                .and_then(|s| s.to_str())
+                                .unwrap_or("unknown")
+                                .to_string()
+                        }
+                    }
                     SessionIdSource::Field(_) => {
                         // Need to read first line to get session ID
                         "unknown".to_string() // Will be updated during parsing
@@ -401,11 +468,73 @@ impl super::FormatParser for JsonlParser {
         match &plugin.source.session_detection {
             SessionDetection::OneFilePerSession { session_id_from } => {
                 let session_id = match session_id_from {
-                    SessionIdSource::Filename => source_path
-                        .file_stem()
-                        .and_then(|s| s.to_str())
-                        .unwrap_or("unknown")
-                        .to_string(),
+                    SessionIdSource::Filename => {
+                        // For subagent sessions, include parent directory in session ID
+                        // to maintain hierarchy and avoid collisions
+                        let is_subagent = source_path
+                            .components()
+                            .any(|c| c.as_os_str() == "subagents");
+
+                        if is_subagent {
+                            // Extract path from ".../<parent>/subagents/<agent>.jsonl"
+                            // to get "<parent>/<agent>"
+                            let components: Vec<_> = source_path.components().collect();
+
+                            if let Some(subagents_idx) =
+                                components.iter().position(|c| c.as_os_str() == "subagents")
+                            {
+                                if subagents_idx >= 2 {
+                                    let parent_idx = subagents_idx - 1;
+                                    if let (Some(parent_os), Some(agent_os)) = (
+                                        components.get(parent_idx),
+                                        components.get(subagents_idx + 1),
+                                    ) {
+                                        if let (Some(parent_name), Some(agent_name)) = (
+                                            parent_os.as_os_str().to_str(),
+                                            agent_os.as_os_str().to_str(),
+                                        ) {
+                                            // Get agent name without extension
+                                            let agent_stem = agent_name
+                                                .strip_suffix(".jsonl")
+                                                .or_else(|| agent_name.strip_suffix(".json"))
+                                                .unwrap_or(agent_name);
+                                            format!("{}/{}", parent_name, agent_stem)
+                                        } else {
+                                            source_path
+                                                .file_stem()
+                                                .and_then(|s| s.to_str())
+                                                .unwrap_or("unknown")
+                                                .to_string()
+                                        }
+                                    } else {
+                                        source_path
+                                            .file_stem()
+                                            .and_then(|s| s.to_str())
+                                            .unwrap_or("unknown")
+                                            .to_string()
+                                    }
+                                } else {
+                                    source_path
+                                        .file_stem()
+                                        .and_then(|s| s.to_str())
+                                        .unwrap_or("unknown")
+                                        .to_string()
+                                }
+                            } else {
+                                source_path
+                                    .file_stem()
+                                    .and_then(|s| s.to_str())
+                                    .unwrap_or("unknown")
+                                    .to_string()
+                            }
+                        } else {
+                            source_path
+                                .file_stem()
+                                .and_then(|s| s.to_str())
+                                .unwrap_or("unknown")
+                                .to_string()
+                        }
+                    }
                     SessionIdSource::Field(field) => {
                         // Read first line to extract session ID (handle zst)
                         match open_file_maybe_zst(source_path) {
