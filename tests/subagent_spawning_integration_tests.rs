@@ -136,7 +136,7 @@ fn test_full_lifecycle_main_to_grandchild() {
 
     let plugin = jsonl_plugin(
         "claude-code",
-        &claude_dir.join("**/*.jsonl").to_str().unwrap(),
+        claude_dir.join("**/*.jsonl").to_str().unwrap(),
     );
 
     scraper.plugin_manager_mut().add_plugin(plugin);
@@ -160,7 +160,7 @@ fn test_full_lifecycle_main_to_grandchild() {
     );
 
     // 6. Verify parent_session_id propagation via index search
-    let index_manager = IndexManager::open(&data_dir.path()).expect("Failed to open index");
+    let index_manager = IndexManager::open(data_dir.path()).expect("Failed to open index");
     let index = index_manager.index();
     let reader = index
         .reader_builder()
@@ -252,7 +252,7 @@ fn test_parent_session_id_database_persistence() {
 
     let plugin = jsonl_plugin(
         "claude-code",
-        &claude_dir.join("**/*.jsonl").to_str().unwrap(),
+        claude_dir.join("**/*.jsonl").to_str().unwrap(),
     );
 
     scraper.plugin_manager_mut().add_plugin(plugin);
@@ -267,7 +267,7 @@ fn test_parent_session_id_database_persistence() {
     assert_eq!(result.sessions_indexed, 2, "Should index both sessions");
 
     // Open index and verify persistence
-    let index_manager = IndexManager::open(&data_dir.path()).expect("Failed to open index");
+    let index_manager = IndexManager::open(data_dir.path()).expect("Failed to open index");
     let index = index_manager.index();
     let reader = index
         .reader_builder()
@@ -366,7 +366,7 @@ fn test_multiple_subagents_same_parent_propagation() {
 
     let plugin = jsonl_plugin(
         "claude-code",
-        &claude_dir.join("**/*.jsonl").to_str().unwrap(),
+        claude_dir.join("**/*.jsonl").to_str().unwrap(),
     );
 
     scraper.plugin_manager_mut().add_plugin(plugin);
@@ -385,7 +385,7 @@ fn test_multiple_subagents_same_parent_propagation() {
     );
 
     // Verify all subagents have correct parent_session_id
-    let index_manager = IndexManager::open(&data_dir.path()).expect("Failed to open index");
+    let index_manager = IndexManager::open(data_dir.path()).expect("Failed to open index");
     let index = index_manager.index();
     let reader = index
         .reader_builder()
@@ -502,7 +502,7 @@ fn test_deep_nesting_parent_session_id_propagation() {
 
     let plugin = jsonl_plugin(
         "claude-code",
-        &claude_dir.join("**/*.jsonl").to_str().unwrap(),
+        claude_dir.join("**/*.jsonl").to_str().unwrap(),
     );
 
     scraper.plugin_manager_mut().add_plugin(plugin);
@@ -517,7 +517,7 @@ fn test_deep_nesting_parent_session_id_propagation() {
     assert_eq!(result.sessions_scraped, 5, "Should scrape all 5 levels");
 
     // Verify parent_session_id chain
-    let index_manager = IndexManager::open(&data_dir.path()).expect("Failed to open index");
+    let index_manager = IndexManager::open(data_dir.path()).expect("Failed to open index");
     let index = index_manager.index();
     let reader = index
         .reader_builder()

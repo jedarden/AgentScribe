@@ -165,7 +165,7 @@ fn test_full_flow_subagent_session() {
 
     let plugin = jsonl_plugin(
         "claude-code",
-        &claude_dir.join("**/*.jsonl").to_str().unwrap(),
+        claude_dir.join("**/*.jsonl").to_str().unwrap(),
     );
 
     scraper.plugin_manager_mut().add_plugin(plugin);
@@ -319,7 +319,7 @@ fn test_multiple_subagents_same_parent() {
 
     let plugin = jsonl_plugin(
         "claude-code",
-        &claude_dir.join("**/*.jsonl").to_str().unwrap(),
+        claude_dir.join("**/*.jsonl").to_str().unwrap(),
     );
 
     scraper.plugin_manager_mut().add_plugin(plugin);
@@ -413,7 +413,7 @@ fn test_search_by_parent_session_id() {
 
     let plugin = jsonl_plugin(
         "claude-code",
-        &claude_dir.join("**/*.jsonl").to_str().unwrap(),
+        claude_dir.join("**/*.jsonl").to_str().unwrap(),
     );
 
     scraper.plugin_manager_mut().add_plugin(plugin);
@@ -487,7 +487,7 @@ fn test_main_session_jsonl_parser_no_parent() {
 
     let plugin = jsonl_plugin(
         "claude-code",
-        &claude_dir.join("**/*.jsonl").to_str().unwrap(),
+        claude_dir.join("**/*.jsonl").to_str().unwrap(),
     );
 
     scraper.plugin_manager_mut().add_plugin(plugin);
@@ -546,7 +546,7 @@ fn test_main_session_multiple_main_sessions_no_parent() {
 
     let plugin = jsonl_plugin(
         "claude-code",
-        &claude_dir.join("**/*.jsonl").to_str().unwrap(),
+        claude_dir.join("**/*.jsonl").to_str().unwrap(),
     );
 
     scraper.plugin_manager_mut().add_plugin(plugin);
@@ -615,7 +615,7 @@ fn test_main_session_nested_directories_no_parent() {
 
     let plugin = jsonl_plugin(
         "claude-code",
-        &data_dir
+        data_dir
             .path()
             .join("sessions/claude-code/**/*.jsonl")
             .to_str()
@@ -677,7 +677,7 @@ fn test_main_session_with_similar_path_to_subagent_no_parent() {
 
     let plugin = jsonl_plugin(
         "claude-code",
-        &claude_dir.join("**/*.jsonl").to_str().unwrap(),
+        claude_dir.join("**/*.jsonl").to_str().unwrap(),
     );
 
     scraper.plugin_manager_mut().add_plugin(plugin);

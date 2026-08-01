@@ -586,10 +586,10 @@ mod tests {
             {"ts": "2026-03-16T12:01:00Z", "role": "assistant", "content": "Hi there"}
         ]);
 
-        std::fs::write(&path, content.to_string()).unwrap();
+        std::fs::write(path, content.to_string()).unwrap();
 
         let plugin = create_test_plugin();
-        let sessions = JsonArrayParser.detect_sessions(&path, &plugin).unwrap();
+        let sessions = JsonArrayParser.detect_sessions(path, &plugin).unwrap();
 
         assert_eq!(sessions.len(), 1);
         assert_eq!(
@@ -609,14 +609,14 @@ mod tests {
             {"ts": "2026-03-16T12:02:00Z", "role": "user", "content": "New", "sessionId": "session-2"}
         ]);
 
-        std::fs::write(&path, content.to_string()).unwrap();
+        std::fs::write(path, content.to_string()).unwrap();
 
         let mut plugin = create_test_plugin();
         plugin.source.session_detection = SessionDetection::OneFilePerSession {
             session_id_from: SessionIdSource::Field("sessionId".to_string()),
         };
 
-        let sessions = JsonArrayParser.detect_sessions(&path, &plugin).unwrap();
+        let sessions = JsonArrayParser.detect_sessions(path, &plugin).unwrap();
 
         assert_eq!(sessions.len(), 2);
         let session_ids: Vec<&str> = sessions.iter().map(|s| s.session_id.as_str()).collect();
@@ -634,10 +634,10 @@ mod tests {
             {"ts": "2026-03-16T12:01:00Z", "role": "assistant", "content": "Hi there"}
         ]);
 
-        std::fs::write(&path, content.to_string()).unwrap();
+        std::fs::write(path, content.to_string()).unwrap();
 
         let plugin = create_test_plugin();
-        let events = JsonArrayParser.parse(&path, &plugin).unwrap();
+        let events = JsonArrayParser.parse(path, &plugin).unwrap();
 
         assert_eq!(events.len(), 2);
         assert_eq!(events[0].role, Role::User);
@@ -660,10 +660,10 @@ mod tests {
             }
         });
 
-        std::fs::write(&path, content.to_string()).unwrap();
+        std::fs::write(path, content.to_string()).unwrap();
 
         let plugin = create_nested_plugin();
-        let events = JsonArrayParser.parse(&path, &plugin).unwrap();
+        let events = JsonArrayParser.parse(path, &plugin).unwrap();
 
         assert_eq!(events.len(), 2);
         assert_eq!(events[0].role, Role::User);
@@ -683,14 +683,14 @@ mod tests {
             {"ts": "2026-03-16T12:02:00Z", "role": "user", "content": "New", "sessionId": "session-2"}
         ]);
 
-        std::fs::write(&path, content.to_string()).unwrap();
+        std::fs::write(path, content.to_string()).unwrap();
 
         let mut plugin = create_test_plugin();
         plugin.source.session_detection = SessionDetection::OneFilePerSession {
             session_id_from: SessionIdSource::Field("sessionId".to_string()),
         };
 
-        let events = JsonArrayParser.parse(&path, &plugin).unwrap();
+        let events = JsonArrayParser.parse(path, &plugin).unwrap();
 
         assert_eq!(events.len(), 3);
         // Events should be tagged with their session IDs
@@ -705,10 +705,10 @@ mod tests {
         let path = temp_file.path();
 
         // Create invalid JSON (not an array)
-        std::fs::write(&path, r#"{"not": "an array"}"#).unwrap();
+        std::fs::write(path, r#"{"not": "an array"}"#).unwrap();
 
         let plugin = create_test_plugin();
-        let result = JsonArrayParser.parse(&path, &plugin);
+        let result = JsonArrayParser.parse(path, &plugin);
 
         // Should fail (not skippable - file-level error)
         assert!(result.is_err());
@@ -724,10 +724,10 @@ mod tests {
             {"ts": "invalid-timestamp", "role": "user", "content": "Invalid"}
         ]);
 
-        std::fs::write(&path, content.to_string()).unwrap();
+        std::fs::write(path, content.to_string()).unwrap();
 
         let plugin = create_test_plugin();
-        let events = JsonArrayParser.parse(&path, &plugin);
+        let events = JsonArrayParser.parse(path, &plugin);
 
         // Should succeed but with warning for invalid item
         assert!(events.is_ok());
