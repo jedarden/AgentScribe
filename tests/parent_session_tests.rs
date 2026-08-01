@@ -294,16 +294,17 @@ fn test_multiple_subagents_same_parent() {
     let claude_dir = data_dir.path().join("sessions/claude-code");
 
     let parent_uuid = "parent-shared-123";
+    let project_dir = claude_dir.join("test-project");
     let subagent_count = 3;
 
-    // Create parent session
-    let parent_path = claude_dir.join(format!("{}.jsonl", parent_uuid));
+    // Create parent session (under project directory)
+    let parent_path = project_dir.join(format!("{}.jsonl", parent_uuid));
     fs::create_dir_all(parent_path.parent().unwrap()).expect("Failed to create parent directory");
     fs::write(&parent_path, test_jsonl_content()).expect("Failed to write parent content");
 
     // Create multiple subagent sessions
     for i in 0..subagent_count {
-        let subagent_path = claude_dir
+        let subagent_path = project_dir
             .join(parent_uuid)
             .join("subagents")
             .join(format!("agent-{:03}.jsonl", i));
@@ -341,12 +342,22 @@ fn test_multiple_subagents_same_parent() {
         .list_sessions(plugin_name)
         .expect("Should list sessions");
 
+    println!("Total sessions found: {}", sessions.len());
+    for session in &sessions {
+        println!("  Session: {}", session);
+    }
+
     // Count subagent sessions (they contain the parent UUID in their path)
     let parent_session_id = format!("claude-code/{}", parent_uuid);
+    println!("Looking for sessions containing: {}", parent_uuid);
+    println!("Excluding: {}", parent_session_id);
+
     let subagent_sessions: Vec<_> = sessions
         .iter()
         .filter(|s| s.contains(parent_uuid) && *s != &parent_session_id)
         .collect();
+
+    println!("Subagent sessions found: {}", subagent_sessions.len());
 
     assert_eq!(
         subagent_sessions.len(),
