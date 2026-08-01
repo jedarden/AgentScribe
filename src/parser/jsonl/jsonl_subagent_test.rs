@@ -123,7 +123,6 @@ mod tests {
     #[test]
     fn test_subagent_session_info_structure() {
         use crate::parser::jsonl::JsonlParser;
-        use crate::parser::SessionInfo;
 
         let path =
             PathBuf::from("/home/coding/.claude/projects/test/parent-uuid/subagents/agent-1.jsonl");
@@ -180,7 +179,7 @@ mod tests {
         )
         .unwrap();
 
-        let mut scraper = Scraper::new(data_dir).unwrap();
+        let _scraper = Scraper::new(data_dir).unwrap();
         let plugin = create_claude_code_plugin();
 
         // Detect sessions

@@ -145,6 +145,7 @@ impl IdMap {
     }
 
     /// Get the ID for a given index
+    #[allow(dead_code)]
     fn get_id(&self, index: usize) -> Option<&str> {
         self.index_to_id.get(&index).map(|s| s.as_str())
     }
@@ -285,6 +286,7 @@ impl VectorIndex {
     }
 
     /// Create a new TurboQuantIndex with the given dimension and bit width (STUB)
+    #[allow(dead_code)]
     fn create_index(dim: usize, bit_width: u8) -> Result<bool> {
         // STUB: returning bool instead
         // Validate bit width (turbovec supports 2, 3, or 4 bits)
