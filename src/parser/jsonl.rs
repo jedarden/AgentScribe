@@ -32,6 +32,7 @@ pub struct JsonlParser;
 ///
 /// Gracefully handles missing type_field and payload_field by returning
 /// (empty object, None) to skip the line.
+#[allow(dead_code)]
 pub fn unwrap_envelope(
     raw_json: &Value,
     envelope: &crate::plugin::Envelope,
@@ -1905,7 +1906,7 @@ mod tests {
         assert!(
             payload_different_type
                 .as_object()
-                .map_or(false, |obj| obj.is_empty()),
+                .is_some_and(|obj| obj.is_empty()),
             "Type 'heartbeat' should return empty payload (skip routing)"
         );
 

@@ -249,20 +249,32 @@ mod tests {
     fn test_multiple_subagents_same_parent() {
         use crate::parser::jsonl::JsonlParser;
 
+        let temp = tempfile::tempdir().unwrap();
+        let plugin = create_claude_code_plugin();
+
         // Test multiple subagent sessions under the same parent
         let parent_id = "shared-parent-uuid";
         let subagent_ids = vec!["agent-1", "agent-2", "agent-3"];
 
         for agent_id in subagent_ids {
-            let path_str = format!(
-                "/home/coding/.claude/projects/test/{}/subagents/{}.jsonl",
+            let subagent_path = temp.path().join(format!(
+                ".claude/projects/test/{}/subagents/{}.jsonl",
                 parent_id, agent_id
-            );
-            let path = PathBuf::from(path_str);
-            let plugin = create_claude_code_plugin();
+            ));
+
+            // Create the directory and file
+            std::fs::create_dir_all(subagent_path.parent().unwrap()).unwrap();
+            std::fs::write(
+                &subagent_path,
+                format!(
+                    r#"{{"timestamp": "2026-07-23T10:00:00Z", "role": "user", "content": "Test message from {}", "source_agent": "claude-code"}}"#,
+                    agent_id
+                ),
+            )
+            .unwrap();
 
             let sessions = JsonlParser
-                .detect_sessions(&path, &plugin)
+                .detect_sessions(&subagent_path, &plugin)
                 .expect("detect_sessions should succeed");
 
             assert_eq!(sessions.len(), 1);
