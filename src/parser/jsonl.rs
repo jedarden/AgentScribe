@@ -1925,4 +1925,36 @@ mod tests {
             "Type 'heartbeat' should return None for wrapper (skip routing)"
         );
     }
+
+    #[test]
+    fn test_unwrap_envelope_basic_type_field_extraction() {
+        // Basic unit test that verifies unwrap_envelope can extract the type_field from a JSON value
+        let envelope = create_test_envelope();
+
+        // Create a sample JSON value with a type field
+        let json_line = r#"{"type": "message", "timestamp": "2026-03-16T12:00:00Z", "payload": {"role": "user", "content": "Hello World"}}"#;
+        let json_value: Value =
+            serde_json::from_str(json_line).expect("JSON should parse successfully");
+
+        // Call unwrap_envelope with appropriate EnvelopeConfig
+        let (payload, wrapper) =
+            unwrap_envelope(&json_value, &envelope).expect("unwrap_envelope should succeed");
+
+        // Verify the type field is read correctly
+        assert!(wrapper.is_some(), "Wrapper should be Some for event type");
+        let wrapper_ref = wrapper.as_ref().expect("Wrapper should be Some");
+        let extracted_type = wrapper_ref.get("type").and_then(|v| v.as_str());
+        assert_eq!(
+            extracted_type,
+            Some("message"),
+            "Type field should be extracted as 'message'"
+        );
+
+        // Verify payload extraction works correctly
+        assert_eq!(payload.get("role").and_then(|v| v.as_str()), Some("user"));
+        assert_eq!(
+            payload.get("content").and_then(|v| v.as_str()),
+            Some("Hello World")
+        );
+    }
 }
