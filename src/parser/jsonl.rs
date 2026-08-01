@@ -53,11 +53,14 @@ pub fn unwrap_envelope(
     match routing {
         "skip" => {
             // Return empty payload with None to signal "drop this line"
-            Ok((serde_json::json!({}), None))
+            Ok((Value::Object(serde_json::Map::new()), None))
         }
         "meta" => {
             // Return empty payload with the full wrapper JSON
-            Ok((serde_json::json!({}), Some(raw_json.clone())))
+            Ok((
+                Value::Object(serde_json::Map::new()),
+                Some(raw_json.clone()),
+            ))
         }
         "event" => {
             // Extract payload from payload_field
@@ -80,13 +83,13 @@ pub fn unwrap_envelope(
                         "Warning: Envelope payload_field '{}' missing or not an object for type '{}', skipping line",
                         envelope.payload_field, type_value
                     );
-                    Ok((serde_json::json!({}), None))
+                    Ok((Value::Object(serde_json::Map::new()), None))
                 }
             }
         }
         _ => {
             // Unknown routing (shouldn't happen due to get_routing defaults, but handle defensively)
-            Ok((serde_json::json!({}), None))
+            Ok((Value::Object(serde_json::Map::new()), None))
         }
     }
 }
