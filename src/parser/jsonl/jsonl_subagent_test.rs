@@ -302,4 +302,59 @@ mod tests {
             Some("session-uuid".to_string())
         );
     }
+
+    #[test]
+    fn test_single_subagent_detection() {
+        use crate::parser::jsonl::JsonlParser;
+
+        let temp = tempfile::tempdir().unwrap();
+        let plugin = create_claude_code_plugin();
+
+        // Define parent UUID and agent filename
+        let parent_uuid = "abc123-def456-789";
+        let agent_filename = "agent-xyz";
+
+        // Create a single subagent file under the parent UUID directory
+        let subagent_path = temp.path().join(format!(
+            ".claude/projects/test/{}/subagents/{}.jsonl",
+            parent_uuid, agent_filename
+        ));
+
+        // Create the directory and file
+        std::fs::create_dir_all(subagent_path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &subagent_path,
+            r#"{"timestamp": "2026-08-01T12:00:00Z", "role": "user", "content": "Test message"}"#,
+        )
+        .unwrap();
+
+        // Detect sessions from the subagent file
+        let sessions = JsonlParser
+            .detect_sessions(&subagent_path, &plugin)
+            .expect("detect_sessions should succeed");
+
+        // Verify exactly 1 session is detected
+        assert_eq!(
+            sessions.len(),
+            1,
+            "detect_sessions should return exactly 1 session"
+        );
+
+        let session = &sessions[0];
+
+        // Verify the session_id matches the agent filename (without .jsonl extension)
+        // Note: For subagents, session_id is "parent_uuid/agent_name"
+        let expected_session_id = format!("{}/{}", parent_uuid, agent_filename);
+        assert_eq!(
+            session.session_id, expected_session_id,
+            "session_id should match 'parent_uuid/agent_filename' format"
+        );
+
+        // Verify the parent_session_id matches the parent UUID
+        assert_eq!(
+            session.parent_session_id,
+            Some(parent_uuid.to_string()),
+            "parent_session_id should match the parent UUID"
+        );
+    }
 }
