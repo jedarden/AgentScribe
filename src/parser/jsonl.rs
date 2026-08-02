@@ -1960,4 +1960,89 @@ mod tests {
             Some("Hello World")
         );
     }
+
+    #[test]
+    fn test_detect_sessions_multiple_subagents_same_parent() {
+        // Test that multiple subagent files under the same parent UUID
+        // each return exactly 1 session with correct session_id and parent_session_id
+
+        let temp = tempfile::tempdir().expect("Failed to create temp dir");
+        let parent_uuid = "parent-session-abc123";
+
+        // Create parent directory structure
+        let parent_dir = temp
+            .path()
+            .join(".claude/projects/test-project")
+            .join(parent_uuid);
+        let subagents_dir = parent_dir.join("subagents");
+        std::fs::create_dir_all(&subagents_dir).expect("Failed to create subagents directory");
+
+        // Create multiple subagent files: agent-1, agent-2, agent-3
+        let subagent_files = vec!["agent-1", "agent-2", "agent-3"];
+
+        for agent_name in &subagent_files {
+            let agent_path = subagents_dir.join(format!("{}.jsonl", agent_name));
+            let content = r#"{"timestamp": "2026-07-23T10:00:00Z", "role": "user", "content": "Test message"}"#;
+            std::fs::write(&agent_path, content).expect("Failed to write agent content");
+        }
+
+        // Create a test plugin
+        let plugin = create_test_plugin();
+
+        // Test each subagent file
+        for agent_name in &subagent_files {
+            let agent_path = subagents_dir.join(format!("{}.jsonl", agent_name));
+
+            // Call detect_sessions for this subagent file
+            let sessions = JsonlParser::detect_sessions(&JsonlParser, &agent_path, &plugin)
+                .expect("detect_sessions should succeed");
+
+            // Verify exactly 1 session is returned
+            assert_eq!(
+                sessions.len(),
+                1,
+                "detect_sessions should return exactly 1 session for {}",
+                agent_name
+            );
+
+            let session_info = &sessions[0];
+
+            // Verify session_id matches the agent filename (without .jsonl extension)
+            assert_eq!(
+                session_info.session_id,
+                format!("{}/{}", parent_uuid, agent_name),
+                "session_id should be '{}/{}' for {}",
+                parent_uuid,
+                agent_name,
+                agent_name
+            );
+
+            // Verify parent_session_id matches the shared parent UUID
+            assert_eq!(
+                session_info.parent_session_id,
+                Some(parent_uuid.to_string()),
+                "parent_session_id should be '{}' for {}",
+                parent_uuid,
+                agent_name
+            );
+
+            // Verify offsets
+            assert_eq!(
+                session_info.start_offset, 0,
+                "start_offset should be 0 for {}",
+                agent_name
+            );
+            assert!(
+                session_info.end_offset > 0,
+                "end_offset should be positive for {}",
+                agent_name
+            );
+        }
+
+        println!(
+            "✅ Multiple subagents with same parent test passed! Tested {} subagent files under parent '{}'",
+            subagent_files.len(),
+            parent_uuid
+        );
+    }
 }
