@@ -616,7 +616,27 @@ impl super::FormatParser for JsonlParser {
                 let file_size = std::fs::metadata(source_path)?.len();
 
                 // Detect subagent sessions and extract parent_session_id from directory structure
+                //
                 // Subagent files are at: .../<parent-session-uuid>/subagents/agent-<id>.jsonl
+                //
+                // ROOT CAUSE FIX (bead bf-1pkfp):
+                // The previous implementation required:
+                // 1. At least 2 components before "subagents" (subagents_idx >= 2)
+                // 2. A "projects" directory somewhere before the parent session
+                //
+                // This caused test fixtures and non-standard directory structures to fail
+                // parent_session_id extraction because they didn't match the exact production
+                // layout of ~/.claude/projects/<path>/<parent>/subagents/...
+                //
+                // THE FIX:
+                // - Removed the "projects" directory requirement entirely
+                // - Reduced minimum components before "subagents" from 2 to 1
+                // - Directly extract parent session ID as the component immediately before "subagents"
+                //
+                // This allows subagent detection to work for both:
+                // - Production paths: ~/.claude/projects/<path>/<parent>/subagents/...
+                // - Test paths: /tmp/.../sessions/<parent>/subagents/...
+                //
                 let parent_session_id = source_path
                     .components()
                     .collect::<Vec<_>>()
