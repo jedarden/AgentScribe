@@ -17,6 +17,13 @@ use serde_json::Value;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
 
+/// Check if a source path is a subagent file
+fn is_subagent_file(source_path: &Path) -> bool {
+    source_path
+        .components()
+        .any(|c| c.as_os_str() == "subagents")
+}
+
 /// JSONL parser implementation
 pub struct JsonlParser;
 
@@ -358,9 +365,7 @@ impl super::FormatParser for JsonlParser {
                     SessionIdSource::Filename => {
                         // For subagent sessions, include parent directory in session ID
                         // to maintain hierarchy and avoid collisions
-                        let is_subagent = source_path
-                            .components()
-                            .any(|c| c.as_os_str() == "subagents");
+                        let is_subagent = is_subagent_file(source_path);
 
                         eprintln!("DEBUG: source_path = {:?}", source_path);
                         eprintln!("DEBUG: is_subagent = {}", is_subagent);
@@ -436,11 +441,15 @@ impl super::FormatParser for JsonlParser {
             _ => "unknown".to_string(),
         };
 
-        let context = ParseContext::new(
-            session_id,
-            plugin.plugin.name.clone(),
-            source_path.display().to_string(),
-        );
+        // Adjust source_agent for subagent files
+        let source_agent = if is_subagent_file(source_path) {
+            format!("{}-subagent", plugin.plugin.name.clone())
+        } else {
+            plugin.plugin.name.clone()
+        };
+
+        let context =
+            ParseContext::new(session_id, source_agent, source_path.display().to_string());
 
         for (line_num, line_result) in reader.lines().enumerate() {
             let line_num = line_num + 1;
