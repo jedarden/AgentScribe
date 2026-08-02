@@ -708,8 +708,16 @@ fn build_more_like_this(
         all_text.push_str(text);
         all_text.push(' ');
     }
-    // `content` is indexed but not stored (ADR-2). Try `code_content` (same
-    // text, for code-artifact docs) before re-reading the session's JSONL.
+    // `content` is indexed but not stored (ADR-2, bead bf-1pkfp).
+    //
+    // **TWO-TIER FALLBACK PATTERN:**
+    // 1. Try `code_content` first (stored field) — for code-artifact documents,
+    //    this holds the same text as `content` and is still stored.
+    // 2. If not available, re-read the session's JSONL file via
+    //    `load_session_content()`. The JSONL is the durable source of truth.
+    //
+    // This ensures snippet extraction works for both session docs (via JSONL)
+    // and code-artifact docs (via stored `code_content` field).
     let content_text = doc
         .get_first(fields.content)
         .and_then(|v| v.as_str())
@@ -880,9 +888,16 @@ fn doc_to_search_result(
             fields.content
         };
 
-        // `content` is indexed but not stored (ADR-2). `code_content` still
-        // is, and holds the same text for code-artifact docs, so try that
-        // before falling back to re-reading the session's JSONL file.
+        // `content` is indexed but not stored (ADR-2, bead bf-1pkfp).
+        //
+        // **TWO-TIER FALLBACK FOR SNIPPETS:**
+        // - For code artifacts: `code_content` is stored and holds the full text
+        // - For sessions: `content` is not stored, so we try `code_content` as a
+        //   fallback (same text for code-artifact docs), then re-read JSONL
+        //   via `load_session_content()` as the final fallback.
+        //
+        // This ensures snippets work across all document types without duplicating
+        // storage.
         let content = doc
             .get_first(content_field)
             .and_then(|v| v.as_str())

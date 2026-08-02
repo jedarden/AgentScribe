@@ -332,8 +332,18 @@ pub(crate) fn extract_session_data(
         .map(|s| s.to_string())
         .collect();
 
-    // `content` is indexed but not stored (ADR-2) — fall back to re-reading
-    // the session's JSONL file, the durable source of truth for this text.
+    // `content` is indexed but not stored (ADR-2, bead bf-1pkfp).
+    //
+    // **PATTERN:** Try the stored field first (for `code_content`, which is still
+    // stored on code-artifact docs), then fall back to re-reading the session's
+    // JSONL file via `load_session_content()`. The JSONL file is the durable
+    // source of truth for session text — see plan.md's Data Directory Layout.
+    //
+    // **PERFORMANCE NOTE:** This pattern is used here in `extract_session_data`
+    // (which scans the full corpus) and in `search.rs` (which only touches top-K
+    // results). For full-corpus scans like analytics, digest, and pulse-report,
+    // the one-JSONL-read-per-session cost is bounded and acceptable for periodic
+    // reporting operations.
     let content_text = doc
         .get_first(fields.content)
         .and_then(|v| v.as_str())
