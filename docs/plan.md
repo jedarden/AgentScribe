@@ -1760,6 +1760,8 @@ Make daemon scrape-state persistence crash-safe and self-healing:
 
 **Status: implemented 2026-07-27** (`src/index.rs` schema, `src/scraper/mod.rs::load_session_content`, `src/search.rs`, `src/analytics.rs`, `src/digest.rs`, `src/pulse_report.rs`, `src/file_knowledge.rs`, `src/config.rs::VectorConfig`).
 
+**Documentation bead:** bf-1pkfp — This root cause analysis and fix documentation was captured in bead bf-1pkfp, ensuring future maintainers understand the issue and the reasoning behind the solution.
+
 ### Context
 
 This ADR followed a disk-usage question about AgentScribe's on-server index, prompted by a real prior

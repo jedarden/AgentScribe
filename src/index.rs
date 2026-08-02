@@ -138,11 +138,24 @@ pub fn fields_from_schema(schema: &Schema) -> IndexFields {
 pub fn build_schema() -> (Schema, IndexFields) {
     let mut builder = Schema::builder();
 
-    // Full-text searchable. NOT stored (ADR-2): the normalized session JSONL
-    // under sessions/ is already the durable copy of this text; storing it a
-    // second time in Tantivy's doc store scaled 1:1 with corpus size and was
-    // the single largest contributor to on-disk index growth. Readers that
-    // need the raw text (snippets, more-like-this) re-read the JSONL file.
+    // Full-text searchable. NOT stored (ADR-2, bead bf-1pkfp):
+    //
+    // **ROOT CAUSE:** Prior to this fix, `content` was stored (TEXT | STORED),
+    // duplicating the full conversation text already present in
+    // `sessions/<plugin>/<id>.jsonl`. At a measured corpus of 13.3GB raw logs,
+    // this caused the index to grow to 76GB by storing the same text twice.
+    //
+    // **THE FIX:** The `content` field is now indexed-only (TEXT, not STORED).
+    // The normalized JSONL sessions remain the source of truth. Consumers that
+    // need the raw text call `load_session_content()` to re-read from JSONL.
+    //
+    // **WHY THIS IS SAFE:** The JSONL files are already the durable copy — see
+    // plan.md's Data Directory Layout. Storing them a second time in the index
+    // provided no redundancy benefit, only storage overhead.
+    //
+    // **EXCEPTIONS:** `summary`, `solution_summary`, and `code_content` remain
+    // STORED — these are short display fields or small code artifacts, not
+    // full conversations. They don't contribute significantly to index growth.
     let content = builder.add_text_field("content", TEXT);
     let summary = builder.add_text_field("summary", TEXT | STORED);
     let solution_summary = builder.add_text_field("solution_summary", TEXT | STORED);
@@ -256,8 +269,16 @@ fn trim_middle(content: String) -> String {
 /// - tool_result content: capped at 1000 chars
 /// - Total capped at 500KB with trim-middle strategy
 ///
-/// `pub(crate)` so `search.rs` can rebuild this same string from a session's
-/// JSONL file at query time, now that the `content` field isn't stored (ADR-2).
+/// **ADR-2 CONTEXT (bead bf-1pkfp):** This function is `pub(crate)` specifically
+/// so `load_session_content()` in `src/scraper/mod.rs` can rebuild this exact
+/// string from a session's JSONL file at query time. Before ADR-2, the `content`
+/// field was stored in Tantivy, so we could read it directly from the doc store.
+/// Now that `content` is indexed-only, we re-read the JSONL file instead.
+///
+/// This preserves the exact same content format that would have been in the
+/// stored field, ensuring that search snippets, more-like-this term extraction,
+/// and analytics (cost estimation, problem-type classification) work identically
+/// after ADR-2.
 pub(crate) fn build_content(events: &[Event]) -> String {
     let mut parts: Vec<String> = Vec::new();
 

@@ -212,12 +212,24 @@ pub struct VectorConfig {
     #[serde(default = "default_true")]
     pub index_sessions: bool,
 
-    /// Index chunk-level embeddings (default: false; ADR-2).
-    /// Chunk-level embeddings (overlapping token windows within a session)
-    /// enable finding the exact moment within a session, at several times
-    /// the disk cost of session-level embeddings alone. Off by default —
-    /// session-level embeddings already answer "which past session solved a
-    /// similar problem," which is the common case. Set to true to opt in.
+    /// Index chunk-level embeddings (default: false; ADR-2, bead bf-1pkfp).
+    ///
+    /// **ROOT CAUSE:** Prior to ADR-2, this defaulted to `true`, causing chunk-level
+    /// embeddings (overlapping 512-token windows per session) to be built and stored
+    /// alongside session-level embeddings. At 500K sessions, this adds ~1.15GB of
+    /// vector data vs ~192MB for session-level alone — a 6x disk cost increase for
+    /// a capability ("find the exact moment within a session") beyond the primary
+    /// use case ("find a past session that solved a similar problem").
+    ///
+    /// **THE FIX:** Defaults to `false` post-ADR-2. Session-level embeddings are
+    /// sufficient for the common case of finding relevant past sessions. Set to
+    /// `true` to opt in to chunk-level retrieval when you need "which exact moment"
+    /// precision.
+    ///
+    /// **MEMORY BUDGET:** See plan.md's Memory Budget Impact table for detailed
+    /// sizing. Chunk-level indexing grows with corpus size and can dominate memory
+    /// use at scale. The daemon loads it on-demand only for `context` and
+    /// `search --semantic` queries.
     #[serde(default = "default_false")]
     pub index_chunks: bool,
 }

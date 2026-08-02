@@ -836,12 +836,27 @@ impl Scraper {
 /// Reconstruct a session's full text by re-reading and re-normalizing its
 /// JSONL file under `sessions/`.
 ///
-/// The Tantivy `content` field is indexed but not stored (ADR-2) — the JSONL
-/// file is already the durable copy, so this is a cache-miss fallback for
-/// consumers that need the raw text (search snippets, more-like-this,
-/// analytics problem-type classification), not a second storage location.
-/// Returns `None` if the session file is missing, unreadable, or empty (e.g.
-/// already garbage-collected).
+/// **ROOT CAUSE (ADR-2, bead bf-1pkfp):** Prior to this fix, the Tantivy schema
+/// stored the `content` field (TEXT | STORED), duplicating the full conversation
+/// text already present in `sessions/<plugin>/<id>.jsonl`. This caused the index
+/// to grow to 76GB against a ~385MB normalized corpus — text was stored twice:
+/// once durably in JSONL, and again in Tantivy's doc store.
+///
+/// **THE FIX:** This function provides a shared fallback for consumers that need
+/// the raw text (search snippets, more-like-this term extraction, analytics
+/// cost estimation and problem-type classification). Instead of reading from
+/// the stored `content` field (which no longer exists), we re-read the original
+/// JSONL file and re-normalize it via `Scraper::read_session` + `build_content`.
+///
+/// **PERFORMANCE NOTE:** This adds one JSONL file read per session for operations
+/// that scan the full corpus (analytics, digest, pulse-report). This is bounded
+/// and consistent with existing patterns like `gc --dry-run`. Search operations
+/// only pay this cost for the top-K results, not the entire corpus.
+///
+/// **GRACEFUL DEGRADATION:** Returns `None` if the session file is missing,
+/// unreadable, or empty (e.g., already garbage-collected). Callers should handle
+/// this gracefully — analytics/reporting use empty string fallbacks, search
+/// proceeds without snippets.
 pub(crate) fn load_session_content(data_dir: &Path, session_id: &str) -> Option<String> {
     let scraper = Scraper::new(data_dir.to_path_buf()).ok()?;
     let events = scraper.read_session(session_id).ok()?;
