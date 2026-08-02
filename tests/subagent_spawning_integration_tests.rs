@@ -311,7 +311,7 @@ fn test_parent_session_id_database_persistence() {
 
     // This search should find the subagent session
     let search_results =
-        search::execute_search(&data_dir.path(), &search_options).expect("Search should succeed");
+        search::execute_search(data_dir.path(), &search_options).expect("Search should succeed");
 
     assert_eq!(
         search_results.results.len(),
@@ -404,7 +404,7 @@ fn test_multiple_subagents_same_parent_propagation() {
         );
 
         let subagent_doc = search_by_session_id(searcher, &subagent_session_id_full)
-            .expect(&format!("Should find subagent session {}", i));
+            .unwrap_or_else(|| panic!("Should find subagent session {}", i));
 
         let subagent_parent = get_doc_parent_session_id(searcher, &subagent_doc);
         assert_eq!(

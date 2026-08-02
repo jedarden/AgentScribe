@@ -291,20 +291,21 @@ fn test_manifest_main_session_no_parent() {
 fn test_multiple_subagents_same_parent() {
     // Test that multiple subagent sessions from the same parent all have the same parent_session_id
     let data_dir = make_data_dir();
-    let claude_dir = data_dir.path().join("sessions/claude-code");
 
+    // Create a separate source directory to simulate Claude's actual log location
+    let source_dir = data_dir.path().join("source/.claude/projects/test-project");
+    let claude_dir = source_dir.join("test-project");
     let parent_uuid = "parent-shared-123";
-    let project_dir = claude_dir.join("test-project");
     let subagent_count = 3;
 
     // Create parent session (under project directory)
-    let parent_path = project_dir.join(format!("{}.jsonl", parent_uuid));
+    let parent_path = claude_dir.join(format!("{}.jsonl", parent_uuid));
     fs::create_dir_all(parent_path.parent().unwrap()).expect("Failed to create parent directory");
     fs::write(&parent_path, test_jsonl_content()).expect("Failed to write parent content");
 
     // Create multiple subagent sessions
     for i in 0..subagent_count {
-        let subagent_path = project_dir
+        let subagent_path = claude_dir
             .join(parent_uuid)
             .join("subagents")
             .join(format!("agent-{:03}.jsonl", i));
@@ -319,7 +320,7 @@ fn test_multiple_subagents_same_parent() {
 
     let plugin = jsonl_plugin(
         "claude-code",
-        claude_dir.join("**/*.jsonl").to_str().unwrap(),
+        source_dir.join("**/*.jsonl").to_str().unwrap(),
     );
 
     scraper.plugin_manager_mut().add_plugin(plugin);

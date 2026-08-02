@@ -779,15 +779,43 @@ impl Scraper {
 
         let mut sessions = Vec::new();
 
-        for entry in std::fs::read_dir(&plugin_dir)? {
-            let entry = entry?;
-            let path = entry.path();
+        // Recursively scan for session files to handle subagent sessions
+        // Subagent sessions are stored as: plugin_dir/parent-uuid/agent-id.jsonl
+        fn scan_session_dir(
+            dir: &std::path::Path,
+            plugin_name: &str,
+            base_path: &std::path::Path,
+            sessions: &mut Vec<String>,
+        ) -> std::io::Result<()> {
+            for entry in std::fs::read_dir(dir)? {
+                let entry = entry?;
+                let path = entry.path();
 
-            if path.extension().and_then(|s| s.to_str()) == Some("jsonl") {
-                if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
-                    sessions.push(format!("{}/{}", plugin_name, stem));
+                if path.is_dir() {
+                    // Recursively scan subdirectories
+                    scan_session_dir(&path, plugin_name, base_path, sessions)?;
+                } else if path.extension().and_then(|s| s.to_str()) == Some("jsonl") {
+                    // Calculate relative path from plugin_dir to preserve session_id structure
+                    if let Ok(rel_path) = path.strip_prefix(base_path) {
+                        // Remove .jsonl extension and convert to session_id
+                        let path_without_ext = rel_path.with_extension("");
+                        let session_id = path_without_ext.to_str().unwrap_or("unknown");
+
+                        // Convert path separators to match session_id format
+                        let normalized_id = session_id.replace('/', "{SLASH}");
+
+                        sessions.push(format!("{}/{}", plugin_name, normalized_id));
+                    }
                 }
             }
+            Ok(())
+        }
+
+        scan_session_dir(&plugin_dir, plugin_name, &plugin_dir, &mut sessions)?;
+
+        // Convert {SLASH} back to / for session IDs
+        for session in &mut sessions {
+            *session = session.replace("{SLASH}", "/");
         }
 
         Ok(sessions)
