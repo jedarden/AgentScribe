@@ -59,11 +59,50 @@ fn jsonl_plugin(name: &str, glob: &str) -> Plugin {
     }
 }
 
+/// Create a JSONL plugin that doesn't override source_agent from content.
+fn jsonl_plugin_preserve_source_agent(name: &str, glob: &str) -> Plugin {
+    Plugin {
+        plugin: PluginMeta {
+            name: name.to_string(),
+            version: "1.0".to_string(),
+        },
+        source: Source {
+            paths: vec![glob.to_string()],
+            exclude: vec![],
+            format: LogFormat::Jsonl,
+            session_detection: SessionDetection::OneFilePerSession {
+                session_id_from: SessionIdSource::Filename,
+            },
+            tree: None,
+            truncation_limit: None,
+            envelope: None,
+            array: None,
+        },
+        parser: Parser {
+            timestamp: Some("timestamp".to_string()),
+            role: Some("role".to_string()),
+            content: Some("content".to_string()),
+            static_fields: std::collections::HashMap::new(), // Don't override source_agent
+            ..Default::default()
+        },
+        metadata: None,
+    }
+}
+
 /// Create test JSONL content with minimal events.
 fn test_jsonl_content() -> String {
     r#"{"timestamp": "2026-07-23T10:00:00Z", "role": "user", "content": "Test message"}
 {"timestamp": "2026-07-23T10:00:01Z", "role": "assistant", "content": "Test response"}"#
         .to_string()
+}
+
+/// Create JSONL content with specific source_agent.
+fn test_jsonl_content_with_source(source_agent: &str) -> String {
+    format!(
+        r#"{{"timestamp": "2026-07-23T10:00:00Z", "role": "user", "content": "Test message", "source_agent": "{}" }}
+{{"timestamp": "2026-07-23T10:00:01Z", "role": "assistant", "content": "Test response", "source_agent": "{}" }}"#,
+        source_agent, source_agent
+    )
 }
 
 // ─── Unit Tests: Path Parsing Logic ────────────────────────────────────────────
@@ -311,14 +350,18 @@ fn test_multiple_subagents_same_parent() {
             .join(format!("agent-{:03}.jsonl", i));
 
         fs::create_dir_all(subagent_path.parent().unwrap()).expect("Failed to create directory");
-        fs::write(&subagent_path, test_jsonl_content()).expect("Failed to write session content");
+        fs::write(
+            &subagent_path,
+            test_jsonl_content_with_source("claude-code-subagent"),
+        )
+        .expect("Failed to write session content");
     }
 
     // Create scraper and plugin
     let mut scraper =
         Scraper::new(data_dir.path().to_path_buf()).expect("Failed to create scraper");
 
-    let plugin = jsonl_plugin(
+    let plugin = jsonl_plugin_preserve_source_agent(
         "claude-code",
         source_dir.join("**/*.jsonl").to_str().unwrap(),
     );
