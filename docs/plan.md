@@ -85,8 +85,8 @@ agentscribe <command>
 ├── plugins      # Manage scraper plugin definitions (list|validate|show)
 ├── scrape       # Discover and read agent log files from known locations
 ├── index        # Manage the Tantivy search index (rebuild|stats|optimize)
-├── search       # Query the index — primary interface for agents (BM25 + optional --semantic [EXPERIMENTAL - Currently non-functional])
-├── embed        # Manage the vector index: build, rebuild, stats (Phase 8) [EXPERIMENTAL - Currently non-functional stub]
+├── search       # Query the index — primary interface for agents (BM25 + optional --semantic [NON-FUNCTIONAL STUB])
+├── embed        # Manage the vector index: build, rebuild, stats (Phase 8) [NON-FUNCTIONAL - Requires turbovec BLAS dependency fixes]
 ├── blame        # Bidirectional git commit ↔ session linking
 ├── file         # File knowledge map — show all sessions that touched a file
 ├── recurring    # Surface problems that keep being solved repeatedly
@@ -266,7 +266,7 @@ max_session_age_days = 0              # 0 = no limit; >0 = ignore sessions older
 tantivy_heap_size_mb = 50             # IndexWriter memory budget
 
 [vector]
-enabled = false                       # Enable semantic vector index (Phase 8) — [EXPERIMENTAL: Currently non-functional stub due to BLAS dependency issues]
+enabled = false                       # Enable semantic vector index (Phase 8) — [NON-FUNCTIONAL STUB: Requires turbovec BLAS dependency resolution; see src/vector.rs for restoration steps]
 bit_width = 4                         # turbovec quantization: 2 or 4 (4 recommended)
 embedding_model = "nomic-embed-text"  # Local Ollama model, or "openai:text-embedding-3-small"
 ollama_url = "http://localhost:11434" # Ollama endpoint for local embedding
