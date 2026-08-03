@@ -848,3 +848,10 @@
 {"bead":"bf-16vn","duration_ms":701,"event":"complete","exit_code":0,"outcome":"success","strand":"explore","ts":"2026-08-03T08:11:35.222454139+00:00","worker":"test-worker"}
 {"bead":"bf-26g76","event":"claim","strand":"explore","ts":"2026-08-03T08:11:35.478292659+00:00","worker":"debug-worker"}
 {"adapter":"echo-test","bead":"bf-26g76","event":"dispatch","model":null,"strand":"explore","ts":"2026-08-03T08:11:36.188037937+00:00","worker":"debug-worker"}
+{"bead":"bf-26g76","event":"claim","strand":"explore","ts":"2026-08-03T08:11:36.212716826+00:00","worker":"test-worker"}
+{"bead":"bf-26g76","duration_ms":424,"event":"complete","exit_code":0,"outcome":"success","strand":"explore","ts":"2026-08-03T08:11:36.613443787+00:00","worker":"debug-worker"}
+{"bead":"bf-26g76","event":"claim","strand":"explore","ts":"2026-08-03T08:11:38.460763641+00:00","worker":"debug-worker"}
+{"adapter":"echo-test","bead":"bf-26g76","event":"dispatch","model":null,"strand":"explore","ts":"2026-08-03T08:11:40.692876419+00:00","worker":"debug-worker"}
+{"bead":"bf-26g76","duration_ms":164,"event":"complete","exit_code":0,"outcome":"success","strand":"explore","ts":"2026-08-03T08:11:40.859563964+00:00","worker":"debug-worker"}
+{"bead":"bf-16vn","event":"claim","strand":"explore","ts":"2026-08-03T08:11:42.350217638+00:00","worker":"test-worker"}
+{"adapter":"echo-test","bead":"bf-16vn","event":"dispatch","model":null,"strand":"explore","ts":"2026-08-03T08:11:42.501218592+00:00","worker":"test-worker"}
