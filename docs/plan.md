@@ -85,8 +85,8 @@ agentscribe <command>
 ├── plugins      # Manage scraper plugin definitions (list|validate|show)
 ├── scrape       # Discover and read agent log files from known locations
 ├── index        # Manage the Tantivy search index (rebuild|stats|optimize)
-├── search       # Query the index — primary interface for agents (BM25 + optional --semantic)
-├── embed        # Manage the vector index: build, rebuild, stats (Phase 8)
+├── search       # Query the index — primary interface for agents (BM25 + optional --semantic [EXPERIMENTAL - Currently non-functional])
+├── embed        # Manage the vector index: build, rebuild, stats (Phase 8) [EXPERIMENTAL - Currently non-functional stub]
 ├── blame        # Bidirectional git commit ↔ session linking
 ├── file         # File knowledge map — show all sessions that touched a file
 ├── recurring    # Surface problems that keep being solved repeatedly
@@ -202,7 +202,7 @@ Bundled plugins ship for Claude Code, Aider, OpenCode, Codex, Cursor, and Windsu
 │   └── <agent>/<session-id>.md    # Markdown summary (human/agent readable)
 ├── index/
 │   ├── tantivy/                   # Tantivy BM25 search index (rebuildable from sessions)
-│   └── vector/                    # turbovec quantized vector index (rebuildable from sessions)
+│   └── vector/                    # turbovec quantized vector index (EXPERIMENTAL - Currently non-functional stub)
 │       ├── sessions.tvim          # IdMapIndex — session-level embeddings, keyed by session_id hash
 │       └── chunks.tvim            # IdMapIndex — chunk-level embeddings for finer retrieval
 └── state/
@@ -266,7 +266,7 @@ max_session_age_days = 0              # 0 = no limit; >0 = ignore sessions older
 tantivy_heap_size_mb = 50             # IndexWriter memory budget
 
 [vector]
-enabled = false                       # Enable semantic vector index (Phase 8)
+enabled = false                       # Enable semantic vector index (Phase 8) — [EXPERIMENTAL: Currently non-functional stub due to BLAS dependency issues]
 bit_width = 4                         # turbovec quantization: 2 or 4 (4 recommended)
 embedding_model = "nomic-embed-text"  # Local Ollama model, or "openai:text-embedding-3-small"
 ollama_url = "http://localhost:11434" # Ollama endpoint for local embedding
@@ -1462,9 +1462,23 @@ agentscribe render <session-id> [--output <path>] [--format html|markdown]
 
 ## Phase 8: Semantic Vector Index
 
+**⚠️ EXPERIMENTAL - CURRENTLY NON-FUNCTIONAL STUB IMPLEMENTATION**
+
+Phase 8 is stubbed due to turbovec BLAS library linking issues (specifically, `cblas_sgemm` linking failures). The implementation exists in `src/vector.rs` but provides no actual vector search capability:
+
+- turbovec::TurboQuantIndex is commented out (line 47)
+- VectorIndex.sessions_index/chunks_index fields are commented out
+- create_index() returns a placeholder bool instead of an actual index
+- upsert_session/upsert_chunk skip actual indexing and insert dummy index 0 into the ID map
+- No real embedding storage or similarity search happens
+
+The `agentscribe embed build` command appears to succeed and `agentscribe search --semantic` and `--hybrid` run without error, but silently return no real semantic results. Restoring functionality requires resolving BLAS/cblas_sgemm linking issues for turbovec.
+
+---
+
 BM25 (Tantivy) handles keyword search well. It misses semantic similarity — a past session that fixed "could not connect to postgres" won't surface for a query about "database connection timing out" even though they are the same class of problem. Phase 8 adds a vector index tier alongside Tantivy, enabling hybrid retrieval.
 
-### What Changes
+### What Changes (Intended Design - When Functional)
 
 **New index tier:** turbovec `IdMapIndex` stores 4-bit quantized embeddings for each indexed session. A session-level index holds one embedding per session (summary + solution_summary concatenated) — enabled by default (`vector.index_sessions = true`). A chunk-level index holds embeddings for overlapping 512-token windows of the conversation, enabling retrieval of the specific moment in a session that's relevant rather than the whole session — **off by default since ADR-2** (`vector.index_chunks = false`): it runs several times the disk cost of session-level embeddings alone (see Memory Budget Impact below) for a capability — "which moment," not "which session" — beyond what the common case (finding a past session that solved a similar problem) needs. Set `vector.index_chunks = true` to opt in.
 
@@ -1474,50 +1488,54 @@ BM25 (Tantivy) handles keyword search well. It misses semantic similarity — a 
 - **Local (preferred):** `nomic-embed-text` via Ollama (`ollama pull nomic-embed-text`). No external dependency, 768-dim output, free. If Ollama is not running, embedding is skipped and the session is queued for retry on next daemon wake.
 - **Cloud fallback:** `text-embedding-3-small` (OpenAI API, 1536-dim, $0.02/M tokens). At ~320 new chunks/day, ~$0.007/day. Configured via `[vector] embedding_model = "openai:text-embedding-3-small"` + `OPENAI_API_KEY`.
 
-### New: `agentscribe embed` Subcommand
+### New: `agentscribe embed` Subcommand (STUB - Non-functional)
+
+The subcommands exist but perform no real embedding:
 
 ```bash
-agentscribe embed build          # Embed all unembedded sessions (batch, one-time)
-agentscribe embed rebuild        # Rebuild the vector index from scratch
-agentscribe embed stats          # Sessions embedded, model used, index size, coverage
-agentscribe embed missing        # List sessions in Tantivy that have no vector embedding
+agentscribe embed build          # STUB: Creates dummy files, no real embeddings
+agentscribe embed rebuild        # STUB: Deletes and recreates dummy index files
+agentscribe embed stats          # STUB: Returns dummy session/chunk counts from ID maps
+agentscribe embed missing        # STUB: Lists sessions but doesn't actually embed
 ```
 
-### Updated: `agentscribe search --semantic`
+### Updated: `agentscribe search --semantic` (STUB - Non-functional)
+
+The flags exist but return no real semantic results:
 
 ```bash
-agentscribe search --semantic "database connection timing out" --json
-agentscribe search --hybrid "postgres migration" --json     # BM25 + semantic, RRF-merged
+agentscribe search --semantic "database connection timing out" --json  # STUB: Returns dummy results
+agentscribe search --hybrid "postgres migration" --json                  # STUB: BM25 only, no semantic component
 ```
 
-- `--semantic`: pure vector search — embed the query, scan the turbovec index, return top-K by cosine similarity
-- `--hybrid`: run BM25 and semantic in parallel, merge results via Reciprocal Rank Fusion (RRF). This is the recommended mode for most queries.
-- `--semantic` and `--hybrid` require `[vector] enabled = true` in config and at least one embedding model reachable.
+- `--semantic`: **[STUB]** Would embed the query and scan the turbovec index, but currently returns all sessions with dummy similarity scores
+- `--hybrid`: **[STUB]** Would run BM25 and semantic in parallel with RRF merge, but currently runs BM25 only
+- `--semantic` and `--hybrid` require `[vector] enabled = true` in config and at least one embedding model reachable (when functional)
 
 Output format is identical to the existing `search --json` schema — same fields, just a different ranking signal. Callers need no changes.
 
-### Updated: `agentscribe context` — Hybrid by Default
+### Updated: `agentscribe context` — Hybrid by Default (STUB - Non-functional)
 
-The `context` subcommand (Phase 7) is upgraded to run hybrid retrieval when the vector index is present:
+The `context` subcommand (Phase 7) would run hybrid retrieval when the vector index is present, but currently:
 
-1. BM25 search (Tantivy) — keyword ranking
-2. Semantic search (turbovec) — embedding similarity
-3. RRF merge of both result sets
+1. **[FUNCTIONAL]** BM25 search (Tantivy) — keyword ranking
+2. **[STUB]** Semantic search (turbovec) — embedding similarity (currently returns dummy results)
+3. **[STUB]** RRF merge of both result sets (currently BM25 only due to stub semantic search)
 4. Pack to `--token-budget` using merged rank
 
-When the vector index is absent (disabled or not yet built), `context` falls back to BM25-only silently. NEEDLE workers and the Claude Code Stop hook need no changes — the improvement is transparent.
+When the vector index is absent (disabled or not yet built), `context` falls back to BM25-only silently. **Currently always falls back to BM25-only due to non-functional vector index.** NEEDLE workers and the Claude Code Stop hook need no changes — the improvement would be transparent when functional.
 
-### Embedding Pipeline in the Daemon
+### Embedding Pipeline in the Daemon (STUB - Non-functional)
 
-After each successful scrape, the daemon queues new sessions for embedding:
+After each successful scrape, the daemon would queue new sessions for embedding, but currently:
 
-1. Scrape produces normalized JSONL → session indexed in Tantivy
-2. Daemon picks session from embedding queue
-3. Calls embedding model (Ollama or OpenAI)
-4. Upserts vector into `sessions.tvim` (session-level) and `chunks.tvim` (chunk-level)
-5. Flushes turbovec index to disk
+1. Scrape produces normalized JSONL → session indexed in Tantivy **[FUNCTIONAL]**
+2. Daemon picks session from embedding queue **[STUB]** - queue exists but no real embedding happens
+3. Calls embedding model (Ollama or OpenAI) **[STUB]** - no actual embedding API calls
+4. Upserts vector into `sessions.tvim` (session-level) and `chunks.tvim` (chunk-level) **[STUB]** - creates dummy files only
+5. Flushes turbovec index to disk **[STUB]** - writes placeholder files
 
-Embedding is async and never blocks the scrape path. If the embedding model is unreachable, the session is retried on next daemon tick. A `state/embed-state.json` tracks which session IDs have been embedded — same pattern as scrape state.
+Embedding would be async and never block the scrape path when functional. If the embedding model is unreachable, the session would be retried on next daemon tick. A `state/embed-state.json` tracks which session IDs have been embedded — same pattern as scrape state. **Currently this file is updated but contains no real embeddings.**
 
 ### Data Flow
 
@@ -1539,11 +1557,12 @@ For `chunks.tvim`, each session is split into overlapping windows before embeddi
 
 Chunk-level retrieval is used by `context` when the session is long — it surfaces the specific exchange in the session that's relevant, not just the session summary.
 
-### Crate
+### Crate (STUB - Dependency Commented Out)
 
 ```toml
 [dependencies]
-turbovec = "0.1"   # https://crates.io/crates/turbovec — MIT, native Rust, AVX-512/NEON SIMD
+# turbovec = "0.1"   # TEMPORARILY DISABLED: BLAS linking issues (cblas_sgemm)
+# https://crates.io/crates/turbovec — MIT, native Rust, AVX-512/NEON SIMD
 ```
 
 Research note: `turbovec` implements Google Research's TurboQuant algorithm (arXiv 2504.19874). The algorithm's advantage over RaBitQ is disputed in peer literature (arXiv 2604.19528), but the crate's value here is operational simplicity (zero training, incremental adds, built-in persistence) rather than squeezing the last 0.5% of recall. See `~/research/chat-log-search/turbovec-turboquant.md` for full analysis.
@@ -1559,6 +1578,27 @@ Research note: `turbovec` implements Google Research's TurboQuant algorithm (arX
 **Important:** The chunk index grows with corpus size and will eventually dominate memory. Mitigation: load the chunk index only during `context` and `search --semantic` queries; drop it when idle (same mmap-on-demand pattern as Tantivy segments). Session-level index (smaller) stays resident.
 
 An alternative: skip the chunk index and use session-level only. For a 500K-session corpus this recovers 80%+ of the chunk-level recall benefit at 1/6th the memory. This is now the settled default (`[vector] index_chunks = false`, ADR-2) — the code had drifted from this documented intent (defaulting `true`) until ADR-2 corrected it; set `index_chunks = true` to opt back into chunk-level retrieval.
+
+---
+
+**Current Status Summary:**
+
+Phase 8 semantic vector search is a **non-functional stub**. The API surface exists (`agentscribe embed`, `agentscribe search --semantic/--hybrid`) but provides no actual vector search capability. All documentation in this section describes the intended design when functional.
+
+**What's broken:** turbovec dependency is commented out in `src/vector.rs` due to BLAS library linking failures (specifically `cblas_sgemm` linking issues).
+
+**What works:** The stub implementation maintains file structure and CLI commands, runs without errors, and creates dummy index files that make the system appear functional.
+
+**What needs to happen to restore functionality:**
+1. Resolve turbovec BLAS/cblas_sgemm linking issues
+2. Uncomment turbovec::TurboQuantIndex imports and fields in src/vector.rs
+3. Restore real TurboQuantIndex creation in create_index()
+4. Implement actual embedding storage in upsert_session/upsert_chunk
+5. Implement real similarity search in search_sessions/search_chunks
+6. Uncomment turbovec dependency in Cargo.toml
+7. Add integration tests that verify real embedding + search functionality
+
+**User-facing impact:** `agentscribe embed build` appears to succeed and `agentscribe search --semantic/--hybrid` run without error, but silently return no real semantic results — a functional regression hidden behind a green CLI.
 
 ---
 
