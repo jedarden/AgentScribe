@@ -1,51 +1,62 @@
-# Bead bf-7qnh: Helper Functions Already Implemented
+# Task bf-7qnh: create_test_plugin() and create_envelope_plugin() Implementation
 
-## Task
-Implement `create_test_plugin()` and `create_envelope_plugin()` helper functions.
+## Summary
 
-## Status: ✅ COMPLETE (Already Implemented)
+Verified that both helper functions are correctly implemented in `tests/test_helpers.rs` and all associated tests pass.
 
-Both helper functions are already fully implemented in `/home/coding/AgentScribe/tests/test_helpers.rs`:
+## Functions Verified
 
-### `create_test_plugin()` (lines 139-169)
-- Creates a basic `Plugin` instance for testing
-- Configured with name "test", version "1.0"
-- JSONL format, one-file-per-session detection from filename
-- Basic parser with timestamp, role, and content fields
-- No envelope routing, no array handling
-- Static field: source_agent = "test"
+### create_test_plugin() (lines 139-169)
+- Returns a minimal Plugin instance for testing
+- PluginMeta: name="test", version="1.0"
+- Source configuration:
+  - Format: Jsonl
+  - Path: /tmp/test.jsonl
+  - Session detection: OneFilePerSession from Filename
+  - **No envelope routing** (envelope: None)
+- Parser configuration:
+  - timestamp, role, content fields mapped
+  - Static field: source_agent="test"
 
-### `create_envelope_plugin()` (lines 198-242)
-- Creates a `Plugin` with envelope routing enabled
-- Configured with name "test-envelope", version "1.0"
-- JSONL format, one-file-per-session detection from filename
-- Envelope routing with type mapping:
-  - "message" → "event"
-  - "session" → "skip"
-  - "compaction" → "meta"
-  - "model_change" → "skip"
-- Role mapping: "toolResult" → "tool_result"
-- Parser configured for envelope fields (timestamp, role, content)
-- Static field: source_agent = "test-envelope"
+### create_envelope_plugin() (lines 198-242)
+- Returns a Plugin instance with envelope routing configured
+- PluginMeta: name="test-envelope", version="1.0"
+- Source configuration:
+  - Format: Jsonl
+  - Path: /tmp/test-envelope.jsonl
+  - **Envelope routing enabled**:
+    - payload_field: "message"
+    - type_field: "type"
+    - type_routing:
+      - message → event
+      - session → skip
+      - compaction → meta
+      - model_change → skip
+- Parser configuration:
+  - timestamp, role, content fields mapped
+  - role_map: toolResult → tool_result
+  - Static field: source_agent="test-envelope"
 
-## Verification
+## Test Results
 
-All tests pass:
-```bash
-$ cargo test --test test_helpers -- test_create_test_plugin test_create_envelope_plugin
-running 2 tests
-test tests::test_create_envelope_plugin ... ok
-test tests::test_create_test_plugin ... ok
+All 7 tests in test_helpers module pass:
+- test_setup_temp_directory_creates_required_structure ✓
+- test_setup_temp_directory_is_unique ✓
+- test_create_claude_code_plugin_structure ✓
+- test_create_claude_code_plugin_includes_subagents ✓
+- test_create_simple_parser ✓
+- **test_create_test_plugin ✓** (verified Plugin structure and absence of envelope)
+- **test_create_envelope_plugin ✓** (verified envelope routing, type_routing map, and role_map)
 
-test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 5 filtered out
-```
+## Compilation
 
-Build compiles without errors.
+- `cargo check --tests`: No errors
+- Both functions compile without warnings
+- Ready for use in envelope routing tests
 
 ## Acceptance Criteria Met
-- ✅ create_test_plugin() correctly constructs a test Plugin instance
-- ✅ create_envelope_plugin() correctly constructs a Plugin with envelope routing enabled
-- ✅ Both functions compile without errors
-- ✅ Functions return valid Plugin instances suitable for testing
 
-No additional work required.
+- ✓ create_test_plugin() correctly constructs a test Plugin instance
+- ✓ create_envelope_plugin() correctly constructs a Plugin with envelope routing enabled
+- ✓ Both functions compile without errors
+- ✓ Functions return valid Plugin instances suitable for testing
