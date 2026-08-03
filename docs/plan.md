@@ -185,7 +185,7 @@ source = "none"                      # Aider doesn't log the model name; model w
 content_regex = true                 # Aider has no structured tool_call fields; extract paths from content
 ```
 
-Bundled plugins ship for Claude Code, Aider, OpenCode, and Codex. Cursor and Windsurf plugins are added in Phase 5 (SQLite format support). Users can add custom plugins by dropping a TOML file in `~/.agentscribe/plugins/`.
+Bundled plugins ship for Claude Code, Aider, OpenCode, Codex, Cursor, and Windsurf. Users can add custom plugins by dropping a TOML file in `~/.agentscribe/plugins/`.
 
 ### Data Directory Layout
 

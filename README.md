@@ -12,8 +12,8 @@ AgentScribe normalizes logs from multiple AI coding agents into a unified format
 | Aider | Markdown | `aider` (bundled) |
 | OpenCode | JSON tree | `opencode` (bundled) |
 | Codex | JSONL | `codex` (bundled) |
-| Cursor | SQLite | user-provided |
-| Windsurf | SQLite | user-provided |
+| Cursor | SQLite | `cursor` (bundled) |
+| Windsurf | SQLite | `windsurf` (bundled) |
 
 Add new agents by writing a single TOML file — no code changes needed. See the [Plugin Authoring Guide](plugins/BUILDING_PLUGINS.md).
 
