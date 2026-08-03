@@ -1214,10 +1214,19 @@ fn execute_semantic_search(
     use crate::embedding::create_client;
     use crate::vector::VectorIndex;
 
-    eprintln!("⚠️  WARNING: Semantic search (--semantic) is currently STUBBED and NON-FUNCTIONAL.");
-    eprintln!("    The turbovec dependency is disabled due to BLAS library linking issues.");
-    eprintln!("    This search will return dummy results with fake similarity scores.");
-    eprintln!("    See src/vector.rs for details on restoring functionality.\n");
+    // Check if vector index is in stub mode (turbovec disabled due to BLAS linking issues)
+    let sessions_index_path = data_dir.join("index").join("vector").join("sessions.tvim");
+    if sessions_index_path.exists() {
+        if let Ok(content) = std::fs::read(&sessions_index_path) {
+            if content.starts_with(b"STUB: turbovec disabled") {
+                return Err(AgentScribeError::DataDir(
+                    "Semantic search (--semantic) is currently non-functional (stub mode). The turbovec dependency is disabled due to BLAS library linking issues. \
+                    Use regular BM25 search instead (omit --semantic flag). \
+                    See src/vector.rs for details on restoring functionality.".to_string()
+                ));
+            }
+        }
+    }
 
     // Load config to get vector settings
     let cfg_path = crate::config::config_path().unwrap_or_default();
@@ -1251,6 +1260,15 @@ fn execute_semantic_search(
         client.dimension(),
     )
     .map_err(|e| AgentScribeError::DataDir(format!("Failed to load vector index: {}", e)))?;
+
+    // Check if the vector index is functional (not in stub mode)
+    if !vector_index.is_functional() {
+        return Err(AgentScribeError::DataDir(
+            "Semantic search (--semantic) is currently non-functional (stub mode). The turbovec dependency is disabled due to BLAS library linking issues. \
+            Use regular BM25 search instead (omit --semantic flag). \
+            See src/vector.rs for details on restoring functionality.".to_string()
+        ));
+    }
 
     // Search the session-level index
     let raw_results = vector_index.search_sessions(&query_embedding, opts.max_results * 5)?;
@@ -1341,10 +1359,19 @@ fn execute_hybrid_search(
     use crate::embedding::create_client;
     use crate::vector::VectorIndex;
 
-    eprintln!("⚠️  WARNING: Hybrid search (--hybrid) is currently STUBBED and NON-FUNCTIONAL.");
-    eprintln!("    The turbovec dependency is disabled due to BLAS library linking issues.");
-    eprintln!("    This search will fall back to BM25-only results; semantic component is disabled.");
-    eprintln!("    See src/vector.rs for details on restoring functionality.\n");
+    // Check if vector index is in stub mode (turbovec disabled due to BLAS linking issues)
+    let sessions_index_path = data_dir.join("index").join("vector").join("sessions.tvim");
+    if sessions_index_path.exists() {
+        if let Ok(content) = std::fs::read(&sessions_index_path) {
+            if content.starts_with(b"STUB: turbovec disabled") {
+                return Err(AgentScribeError::DataDir(
+                    "Hybrid search (--hybrid) is currently non-functional (stub mode). The turbovec dependency is disabled due to BLAS library linking issues. \
+                    Use regular BM25 search instead (omit --hybrid flag). \
+                    See src/vector.rs for details on restoring functionality.".to_string()
+                ));
+            }
+        }
+    }
 
     // Load config to get vector settings
     let cfg_path = crate::config::config_path().unwrap_or_default();
@@ -1444,6 +1471,15 @@ fn execute_hybrid_search(
         client.dimension(),
     )
     .map_err(|e| AgentScribeError::DataDir(format!("Failed to load vector index: {}", e)))?;
+
+    // Check if the vector index is functional (not in stub mode)
+    if !vector_index.is_functional() {
+        return Err(AgentScribeError::DataDir(
+            "Hybrid search (--hybrid) is currently non-functional (stub mode). The turbovec dependency is disabled due to BLAS library linking issues. \
+            Use regular BM25 search instead (omit --hybrid flag). \
+            See src/vector.rs for details on restoring functionality.".to_string()
+        ));
+    }
 
     let semantic_results = vector_index.search_sessions(&query_embedding, opts.max_results * 5)?;
 

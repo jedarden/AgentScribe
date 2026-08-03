@@ -1,7 +1,7 @@
 //! CLI commands for AgentScribe
 
 use crate::config::{self, Config};
-use crate::error::Result;
+use crate::error::{AgentScribeError, Result};
 use crate::index::IndexManager;
 use crate::plugin::validate_plugin_file;
 use crate::scraper::{git_auto_commit, Scraper};
@@ -1836,10 +1836,20 @@ fn run_embed_build(
 
     let vector_config = config.vector.clone();
 
-    eprintln!("⚠️  WARNING: Vector search is currently STUBBED and NON-FUNCTIONAL.");
-    eprintln!("    The turbovec dependency is disabled due to BLAS library linking issues.");
-    eprintln!("    This command will create placeholder indexes but provides no real semantic search capability.");
-    eprintln!("    See src/vector.rs for details on restoring functionality.\n");
+    // Check if vector index is in stub mode (turbovec disabled due to BLAS linking issues)
+    // The stub mode writes a marker file "STUB: turbovec disabled" to the index file
+    let sessions_index_path = data_dir.join("index").join("vector").join("sessions.tvim");
+    if sessions_index_path.exists() {
+        if let Ok(content) = std::fs::read(&sessions_index_path) {
+            if content.starts_with(b"STUB: turbovec disabled") {
+                return Err(AgentScribeError::DataDir(
+                    "Vector search is currently non-functional (stub mode). The turbovec dependency is disabled due to BLAS library linking issues. \
+                    See src/vector.rs for details on restoring functionality. \
+                    Until then, 'agentscribe embed build' cannot create real semantic indexes.".to_string()
+                ));
+            }
+        }
+    }
 
     println!("Building vector index...");
     println!("  Model: {}", vector_config.embedding_model);
@@ -1867,6 +1877,15 @@ fn run_embed_build(
         vector_config.clone(),
         embedding_dim,
     )?;
+
+    // Check if the vector index is functional (not in stub mode)
+    if !vector_index.is_functional() {
+        return Err(AgentScribeError::DataDir(
+            "Vector search is currently non-functional (stub mode). The turbovec dependency is disabled due to BLAS library linking issues. \
+            See src/vector.rs for details on restoring functionality. \
+            Until then, 'agentscribe embed build' cannot create real semantic indexes.".to_string()
+        ));
+    }
 
     // Get sessions directory
     let sessions_dir = data_dir.join("sessions");
