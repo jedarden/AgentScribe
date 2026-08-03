@@ -119,6 +119,128 @@ pub fn create_simple_parser() -> Parser {
     }
 }
 
+/// Create a basic test plugin for simple JSONL parsing
+///
+/// Returns a minimal `Plugin` configured for basic JSONL format testing.
+/// This plugin has no envelope routing, no array handling, and uses
+/// simple field mappings for timestamp, role, and content.
+///
+/// # Returns
+///
+/// A configured `Plugin` suitable for basic parsing tests.
+///
+/// # Example
+///
+/// ```ignore
+/// let plugin = create_test_plugin();
+/// assert_eq!(plugin.plugin.name, "test");
+/// assert!(plugin.source.envelope.is_none());
+/// ```
+pub fn create_test_plugin() -> Plugin {
+    let mut static_fields = HashMap::new();
+    static_fields.insert("source_agent".to_string(), serde_json::json!("test"));
+
+    Plugin {
+        plugin: PluginMeta {
+            name: "test".to_string(),
+            version: "1.0".to_string(),
+        },
+        source: Source {
+            paths: vec!["/tmp/test.jsonl".to_string()],
+            exclude: vec![],
+            format: LogFormat::Jsonl,
+            session_detection: SessionDetection::OneFilePerSession {
+                session_id_from: SessionIdSource::Filename,
+            },
+            tree: None,
+            truncation_limit: None,
+            envelope: None,
+            array: None,
+        },
+        parser: Parser {
+            timestamp: Some("timestamp".to_string()),
+            role: Some("role".to_string()),
+            content: Some("content".to_string()),
+            static_fields,
+            ..Default::default()
+        },
+        metadata: None,
+    }
+}
+
+/// Create a plugin with envelope routing configured
+///
+/// Returns a `Plugin` configured with envelope routing for testing
+/// envelope-based log formats where JSONL lines are wrapped in an
+/// envelope structure with type-based routing.
+///
+/// The envelope configuration includes:
+/// - `message` events → routed as "event" (extracted from payload_field)
+/// - `session` events → routed as "skip" (dropped)
+/// - `compaction` events → routed as "meta" (metadata preserved)
+/// - `model_change` events → routed as "skip" (dropped)
+///
+/// # Returns
+///
+/// A configured `Plugin` with envelope routing enabled.
+///
+/// # Example
+///
+/// ```ignore
+/// let plugin = create_envelope_plugin();
+/// assert_eq!(plugin.plugin.name, "test-envelope");
+/// assert!(plugin.source.envelope.is_some());
+///
+/// let envelope = plugin.source.envelope.unwrap();
+/// assert_eq!(envelope.get_routing("message"), "event");
+/// assert_eq!(envelope.get_routing("session"), "skip");
+/// ```
+pub fn create_envelope_plugin() -> Plugin {
+    let mut type_routing = HashMap::new();
+    type_routing.insert("message".to_string(), "event".to_string());
+    type_routing.insert("session".to_string(), "skip".to_string());
+    type_routing.insert("compaction".to_string(), "meta".to_string());
+    type_routing.insert("model_change".to_string(), "skip".to_string());
+
+    let mut role_map = HashMap::new();
+    role_map.insert("toolResult".to_string(), "tool_result".to_string());
+
+    let mut static_fields = HashMap::new();
+    static_fields.insert("source_agent".to_string(), serde_json::json!("test-envelope"));
+
+    Plugin {
+        plugin: PluginMeta {
+            name: "test-envelope".to_string(),
+            version: "1.0".to_string(),
+        },
+        source: Source {
+            paths: vec!["/tmp/test-envelope.jsonl".to_string()],
+            exclude: vec![],
+            format: LogFormat::Jsonl,
+            session_detection: SessionDetection::OneFilePerSession {
+                session_id_from: SessionIdSource::Filename,
+            },
+            tree: None,
+            truncation_limit: None,
+            envelope: Some(agentscribe::plugin::Envelope {
+                payload_field: "message".to_string(),
+                type_field: "type".to_string(),
+                type_routing,
+            }),
+            array: None,
+        },
+        parser: Parser {
+            timestamp: Some("timestamp".to_string()),
+            role: Some("role".to_string()),
+            content: Some("content".to_string()),
+            role_map,
+            static_fields,
+            ..Default::default()
+        },
+        metadata: None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -191,6 +313,63 @@ mod tests {
         assert_eq!(
             parser.static_fields.get("source_agent"),
             Some(&serde_json::json!("test-agent"))
+        );
+    }
+
+    #[test]
+    fn test_create_test_plugin() {
+        let plugin = create_test_plugin();
+
+        // Verify plugin metadata
+        assert_eq!(plugin.plugin.name, "test");
+        assert_eq!(plugin.plugin.version, "1.0");
+
+        // Verify source configuration
+        assert_eq!(plugin.source.format, LogFormat::Jsonl);
+        assert_eq!(plugin.source.paths, vec!["/tmp/test.jsonl"]);
+        assert!(plugin.source.envelope.is_none());
+        assert!(plugin.source.array.is_none());
+
+        // Verify parser configuration
+        assert_eq!(plugin.parser.timestamp, Some("timestamp".to_string()));
+        assert_eq!(plugin.parser.role, Some("role".to_string()));
+        assert_eq!(plugin.parser.content, Some("content".to_string()));
+    }
+
+    #[test]
+    fn test_create_envelope_plugin() {
+        let plugin = create_envelope_plugin();
+
+        // Verify plugin metadata
+        assert_eq!(plugin.plugin.name, "test-envelope");
+        assert_eq!(plugin.plugin.version, "1.0");
+
+        // Verify source configuration
+        assert_eq!(plugin.source.format, LogFormat::Jsonl);
+        assert_eq!(plugin.source.paths, vec!["/tmp/test-envelope.jsonl"]);
+
+        // Verify envelope is configured
+        assert!(plugin.source.envelope.is_some());
+        let envelope = plugin.source.envelope.as_ref().unwrap();
+        assert_eq!(envelope.type_field, "type");
+        assert_eq!(envelope.payload_field, "message");
+
+        // Verify type routing
+        assert_eq!(envelope.get_routing("message"), "event");
+        assert_eq!(envelope.get_routing("session"), "skip");
+        assert_eq!(envelope.get_routing("compaction"), "meta");
+        assert_eq!(envelope.get_routing("model_change"), "skip");
+        assert_eq!(envelope.get_routing("unknown"), "skip"); // Unknown types default to skip
+
+        // Verify parser configuration
+        assert_eq!(plugin.parser.timestamp, Some("timestamp".to_string()));
+        assert_eq!(plugin.parser.role, Some("role".to_string()));
+        assert_eq!(plugin.parser.content, Some("content".to_string()));
+
+        // Verify role_map
+        assert_eq!(
+            plugin.parser.role_map.get("toolResult"),
+            Some(&"tool_result".to_string())
         );
     }
 }
