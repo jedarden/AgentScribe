@@ -22,7 +22,7 @@ Add new agents by writing a single TOML file — no code changes needed. See the
 - **Multi-agent archival** — Scrape and normalize conversations from any supported agent into a canonical JSONL format
 - **Incremental scraping** — Tracks file offsets; only processes new data on each run
 - **Full-text search** — BM25-ranked search with fuzzy matching, faceted filters, "more like this", and code search
-- **Semantic vector search** — Embedding-based similarity search using quantized vector indexes (4-bit quantization via turbovec); finds related sessions even when exact terms don't match
+- **Semantic vector search** — **[EXPERIMENTAL - Currently non-functional]** Embedding-based similarity search using quantized vector indexes (4-bit quantization via turbovec); `agentscribe embed` and `--semantic`/`--hybrid` search flags exist but require turbovec BLAS dependency fixes before they can function
 - **Intelligence pipeline** — Outcome detection, solution extraction, error fingerprinting, anti-pattern detection
 - **Cross-agent analytics** — Compare success rates, specialization, cost efficiency across agents
 - **Recurring problems** — Detect errors that happen repeatedly, with links to sessions that fixed them
