@@ -297,7 +297,7 @@ test.
 | `timestamp` | string (RFC 3339) | Nullable — `null` when no timestamp was recorded. Format e.g. `"2026-03-14T10:30:00+00:00"`. |
 | `turns` | integer | Nullable — `null` when turn count was not recorded. |
 | `outcome` | string | Nullable — `null` when unset; otherwise e.g. `success`, `failure`, `abandoned`. |
-| `score` | number (float) | Always present. BM25 relevance, RRF fusion score, or cosine similarity depending on mode (`--semantic` / `--hybrid`). Range is not contractually bounded. |
+| `score` | number (float) | Always present. BM25 relevance, RRF fusion score, or cosine similarity depending on mode (`--semantic` / `--hybrid`). **Note:** `--semantic` and `--hybrid` modes are currently non-functional stub implementations — they return dummy similarity scores. Range is not contractually bounded. |
 | `summary` | string | Nullable — `null` when the session had no summary. |
 | `snippet` | string | Nullable — `null` when no snippet was extracted (e.g. `--snippet-length 0` or empty content). May be truncated and end with `...`. |
 | `tags` | array of strings | Always present. May be empty `[]`; never omitted. |
