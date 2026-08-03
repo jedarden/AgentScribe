@@ -19,10 +19,17 @@ The tests were already implemented in the codebase:
 
 ### Test Results
 ```bash
-cargo test --lib test_envelope_routing_meta test_envelope_routing_unknown_type
+$ cargo test --lib 'test_envelope_routing'
+running 4 tests
+test parser::jsonl::tests::test_envelope_routing_meta ... ok
+test parser::jsonl::tests::test_envelope_routing_event ... ok
+test parser::jsonl::tests::test_envelope_routing_skip ... ok
+test parser::jsonl::tests::test_envelope_routing_unknown_type ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured
 ```
-- Both tests compile and pass
-- All 649 library tests pass in 24.93s
+
+Full test suite: **649 tests passed**, 0 failed, 0 ignored (35.51s)
 
 ### Acceptance Criteria Met
 1. ✅ test_envelope_routing_meta: meta lines accumulate envelope state and produce 0 events
