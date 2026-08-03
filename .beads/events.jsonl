@@ -845,3 +845,6 @@
 {"adapter":"echo-test","bead":"bf-7qnh","event":"dispatch","model":null,"strand":"explore","ts":"2026-08-03T08:06:07.920148223+00:00","worker":"debug-worker"}
 {"bead":"bf-7qnh","duration_ms":112,"event":"complete","exit_code":0,"outcome":"success","strand":"explore","ts":"2026-08-03T08:06:08.034144428+00:00","worker":"debug-worker"}
 {"bead":"bf-7qnh","event":"claim","strand":"explore","ts":"2026-08-03T08:06:08.099494713+00:00","worker":"test-worker"}
+{"bead":"bf-16vn","duration_ms":701,"event":"complete","exit_code":0,"outcome":"success","strand":"explore","ts":"2026-08-03T08:11:35.222454139+00:00","worker":"test-worker"}
+{"bead":"bf-26g76","event":"claim","strand":"explore","ts":"2026-08-03T08:11:35.478292659+00:00","worker":"debug-worker"}
+{"adapter":"echo-test","bead":"bf-26g76","event":"dispatch","model":null,"strand":"explore","ts":"2026-08-03T08:11:36.188037937+00:00","worker":"debug-worker"}
