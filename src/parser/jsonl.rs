@@ -2074,4 +2074,64 @@ mod tests {
             parent_uuid
         );
     }
+
+    #[test]
+    fn test_envelope_routing_event() {
+        // Test that event lines correctly unwrap payload and produce events
+        let plugin = create_envelope_test_plugin();
+        let context = ParseContext::new(
+            "test-session".to_string(),
+            "test".to_string(),
+            "/tmp/test.jsonl".to_string(),
+        );
+
+        // Event line: type=message routes to event, should unwrap payload and produce event
+        let line = r#"{"type": "message", "timestamp": "2026-03-16T12:00:00Z", "message": {"role": "user", "content": "Hello world"}}"#;
+        let events = JsonlParser::parse_line(line, 1, &context, &plugin).unwrap();
+
+        // Should produce exactly 1 event
+        assert_eq!(
+            events.len(),
+            1,
+            "Event routing should produce exactly 1 event"
+        );
+
+        let event = &events[0];
+
+        // Verify payload was correctly unwrapped - role and content from payload
+        assert_eq!(event.role, Role::User, "Role should be from unwrapped payload");
+        assert_eq!(
+            event.content, "Hello world",
+            "Content should be from unwrapped payload"
+        );
+
+        // Verify timestamp from envelope wrapper (^timestamp)
+        assert_eq!(
+            event.ts.to_rfc3339(),
+            "2026-03-16T12:00:00+00:00",
+            "Timestamp should be from envelope wrapper"
+        );
+    }
+
+    #[test]
+    fn test_envelope_routing_skip() {
+        // Test that skip lines drop (produce 0 events)
+        let plugin = create_envelope_test_plugin();
+        let context = ParseContext::new(
+            "test-session".to_string(),
+            "test".to_string(),
+            "/tmp/test.jsonl".to_string(),
+        );
+
+        // Skip line: type=session routes to skip, should drop the line
+        let line = r#"{"type": "session", "timestamp": "2026-03-16T12:00:00Z", "message": {"role": "system", "content": "session start"}}"#;
+        let events = JsonlParser::parse_line(line, 1, &context, &plugin).unwrap();
+
+        // Should produce exactly 0 events (line dropped)
+        assert_eq!(
+            events.len(),
+            0,
+            "Skip routing should drop line and produce 0 events"
+        );
+    }
 }
