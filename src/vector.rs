@@ -1,7 +1,33 @@
 //! Vector index for semantic search using turbovec.
 //!
+//! **⚠️ EXPERIMENTAL - CURRENTLY NON-FUNCTIONAL STUB IMPLEMENTATION**
+//!
 //! This module provides a quantized vector index built on turbovec's TurboQuantIndex.
-//! It maintains two separate indexes:
+//! However, the turbovec dependency is currently disabled due to BLAS library linking issues
+//! (specifically, cblas_sgemm linking failures). The implementation below is a stub that:
+//! - Commented out turbovec::TurboQuantIndex usage (line 21)
+//! - Returns placeholder bool values instead of real indexes
+//! - Performs no actual embedding storage or similarity search
+//! - Inserts dummy index 0 values into ID maps
+//!
+//! As a result, `agentscribe embed build` appears to succeed and `agentscribe search --semantic`
+//! and `--hybrid` run without errors, but silently return no real semantic results.
+//!
+//! **Restoring functionality requires:**
+//! 1. Resolving BLAS/cblas_sgemm linking issues for turbovec
+//! 2. Uncommenting turbovec::TurboQuantIndex imports and fields
+//! 3. Restoring real TurboQuantIndex creation in create_index()
+//! 4. Implementing actual embedding storage in upsert_session/upsert_chunk
+//! 5. Implementing real similarity search in search_sessions/search_chunks
+//!
+//! Until then, this module is a stub that maintains the API surface but provides no
+//! actual vector search capability.
+//!
+//! ---
+//!
+//! **Intended design (when functional):**
+//!
+//! This module maintains two separate indexes:
 //! - Session-level index: one embedding per session (summary + solution)
 //! - Chunk-level index: embeddings for overlapping chunks of conversation content
 //!
