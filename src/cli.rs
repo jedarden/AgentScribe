@@ -147,11 +147,11 @@ enum Commands {
         #[arg(long)]
         anti_patterns: bool,
 
-        /// Enable semantic vector search (requires vector index)
+        /// Enable semantic vector search (requires vector index) - **[EXPERIMENTAL - Currently non-functional, requires turbovec BLAS dependency fixes]**
         #[arg(long)]
         semantic: bool,
 
-        /// Enable hybrid search (BM25 + semantic, requires vector index)
+        /// Enable hybrid search (BM25 + semantic, requires vector index) - **[EXPERIMENTAL - Currently non-functional, requires turbovec BLAS dependency fixes]**
         #[arg(long)]
         hybrid: bool,
 
