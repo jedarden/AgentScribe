@@ -2136,6 +2136,7 @@ mod tests {
     }
 
     #[test]
+    #[test]
     fn test_envelope_routing_meta() {
         // Test that meta lines accumulate envelope state and produce 0 events
         let plugin = create_envelope_test_plugin();
