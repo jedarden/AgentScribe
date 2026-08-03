@@ -2134,4 +2134,48 @@ mod tests {
             "Skip routing should drop line and produce 0 events"
         );
     }
+
+    #[test]
+    fn test_envelope_routing_meta() {
+        // Test that meta lines accumulate envelope state and produce 0 events
+        let plugin = create_envelope_test_plugin();
+        let context = ParseContext::new(
+            "test-session".to_string(),
+            "test".to_string(),
+            "/tmp/test.jsonl".to_string(),
+        );
+
+        // Meta line: type=compaction routes to meta, should accumulate state and produce 0 events
+        let line = r#"{"type": "compaction", "timestamp": "2026-03-16T12:00:00Z", "message": {"role": "system", "content": "compaction info"}}"#;
+        let events = JsonlParser::parse_line(line, 1, &context, &plugin).unwrap();
+
+        // Should produce exactly 0 events (meta accumulates state but doesn't emit events)
+        assert_eq!(
+            events.len(),
+            0,
+            "Meta routing should accumulate envelope state and produce 0 events"
+        );
+    }
+
+    #[test]
+    fn test_envelope_routing_unknown_type() {
+        // Test that unknown type defaults to skip behavior (0 events)
+        let plugin = create_envelope_test_plugin();
+        let context = ParseContext::new(
+            "test-session".to_string(),
+            "test".to_string(),
+            "/tmp/test.jsonl".to_string(),
+        );
+
+        // Unknown type line: type=unknown_event not in routing map, should default to skip
+        let line = r#"{"type": "unknown_event", "timestamp": "2026-03-16T12:00:00Z", "message": {"role": "user", "content": "test content"}}"#;
+        let events = JsonlParser::parse_line(line, 1, &context, &plugin).unwrap();
+
+        // Should produce exactly 0 events (unknown types default to skip)
+        assert_eq!(
+            events.len(),
+            0,
+            "Unknown type should default to skip behavior and produce 0 events"
+        );
+    }
 }
