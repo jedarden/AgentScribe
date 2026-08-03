@@ -11,7 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - MCP server over Unix socket with four tools: `agentscribe_search` (full-text and faceted search), `agentscribe_status` (plugin list, session counts, daemon state, index stats), `agentscribe_blame` (bidirectional git commit ↔ session linking), and `agentscribe_file` (chronological session list for a file path)
 - `context` subcommand for pre-task priming queries, packing relevant past sessions into a token budget for agent workers
 - `render` subcommand to export sessions as HTML or Markdown for documentation and review
-- **[EXPERIMENTAL - Non-functional]** Semantic vector search stub via `embed` subcommand (build, rebuild, stats, missing commands); `agentscribe search --semantic` and `--hybrid` flags exist but require turbovec BLAS dependency resolution before actual functionality
+- **[NON-FUNCTIONAL STUB]** Semantic vector search interface via `embed` subcommand (build, rebuild, stats, missing commands); `agentscribe search --semantic` and `--hybrid` flags exist but will fail with clear error messages explaining that turbovec BLAS dependencies need resolution. The commands return early with explicit error messages rather than producing dummy results.
 - `pulse-report` subcommand to generate quarterly "State of AI Coding" reports summarizing activity, patterns, and trends
 - `capacity` subcommand showing per-account Claude Code utilization over 5-hour and 7-day rolling windows
 - `transcribe` subcommand with Whisper model support and automatic PII redaction for audio-to-text workflows

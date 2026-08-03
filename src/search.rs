@@ -176,11 +176,29 @@ pub fn execute_search(data_dir: &Path, opts: &SearchOptions) -> Result<SearchOut
 
     // Handle --semantic search
     if opts.semantic {
+        // Early check for stub mode to give clear error message
+        if !is_vector_index_functional(data_dir) {
+            return Err(AgentScribeError::DataDir(
+                "Semantic search (--semantic) is currently non-functional (stub mode). \
+                 The turbovec dependency is disabled due to BLAS library linking issues. \
+                 See src/vector.rs for restoration steps. \
+                 Use regular BM25 search instead (omit --semantic flag).".to_string()
+            ));
+        }
         return execute_semantic_search(data_dir, opts, &start, total_docs);
     }
 
     // Handle --hybrid search
     if opts.hybrid {
+        // Early check for stub mode to give clear error message
+        if !is_vector_index_functional(data_dir) {
+            return Err(AgentScribeError::DataDir(
+                "Hybrid search (--hybrid) is currently non-functional (stub mode). \
+                 The turbovec dependency is disabled due to BLAS library linking issues. \
+                 See src/vector.rs for restoration steps. \
+                 Use regular BM25 search instead (omit --hybrid flag).".to_string()
+            ));
+        }
         return execute_hybrid_search(data_dir, opts, &start, total_docs);
     }
 
@@ -1154,6 +1172,34 @@ fn knapsack_pack(results: Vec<SearchResult>, token_budget: usize) -> Vec<SearchR
     selected
 }
 
+/// Check if the vector index is actually functional (not stub mode)
+///
+/// This is a runtime check to determine if real turbovec functionality is available.
+/// Returns false if we're in stub mode (turbovec dependency commented out).
+fn is_vector_index_functional(data_dir: &Path) -> bool {
+    use crate::config::Config;
+    use crate::vector::VectorIndex;
+
+    let cfg_path = match crate::config::config_path() {
+        Some(p) => p,
+        None => return false,
+    };
+
+    let config = match Config::load(&cfg_path) {
+        Ok(c) => c,
+        Err(_) => return false,
+    };
+
+    if !config.vector.enabled {
+        return false;
+    }
+
+    match VectorIndex::load_or_create(data_dir.to_path_buf(), config.vector.clone(), 768) {
+        Ok(idx) => idx.is_functional(),
+        Err(_) => false,
+    }
+}
+
 /// Execute semantic search using the vector index.
 ///
 /// Embeds the query using the configured embedding model and searches
@@ -1167,6 +1213,11 @@ fn execute_semantic_search(
     use crate::config::Config;
     use crate::embedding::create_client;
     use crate::vector::VectorIndex;
+
+    eprintln!("⚠️  WARNING: Semantic search (--semantic) is currently STUBBED and NON-FUNCTIONAL.");
+    eprintln!("    The turbovec dependency is disabled due to BLAS library linking issues.");
+    eprintln!("    This search will return dummy results with fake similarity scores.");
+    eprintln!("    See src/vector.rs for details on restoring functionality.\n");
 
     // Load config to get vector settings
     let cfg_path = crate::config::config_path().unwrap_or_default();
@@ -1289,6 +1340,11 @@ fn execute_hybrid_search(
     use crate::config::Config;
     use crate::embedding::create_client;
     use crate::vector::VectorIndex;
+
+    eprintln!("⚠️  WARNING: Hybrid search (--hybrid) is currently STUBBED and NON-FUNCTIONAL.");
+    eprintln!("    The turbovec dependency is disabled due to BLAS library linking issues.");
+    eprintln!("    This search will fall back to BM25-only results; semantic component is disabled.");
+    eprintln!("    See src/vector.rs for details on restoring functionality.\n");
 
     // Load config to get vector settings
     let cfg_path = crate::config::config_path().unwrap_or_default();

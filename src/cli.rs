@@ -1791,6 +1791,28 @@ fn run_embed(action: EmbedAction) -> Result<()> {
         std::process::exit(1);
     }
 
+    // Check if vector index is actually functional (not stub mode)
+    // This detects if turbovec dependency is commented out due to BLAS linking issues
+    let test_index = crate::vector::VectorIndex::new(
+        data_dir.clone(),
+        config.vector.clone(),
+        768, // Will be updated when client is created
+    );
+    if !test_index.is_functional() {
+        eprintln!("❌ Vector search is currently non-functional (stub mode).");
+        eprintln!("\nThe turbovec dependency is disabled due to BLAS library linking issues.");
+        eprintln!("\nWhat this means:");
+        eprintln!("  • 'agentscribe embed build' creates dummy indexes");
+        eprintln!("  • 'agentscribe search --semantic' returns meaningless results");
+        eprintln!("  • No real semantic search is happening");
+        eprintln!("\nTo restore functionality:");
+        eprintln!("  1. Uncomment turbovec dependency in Cargo.toml");
+        eprintln!("  2. Resolve BLAS/cblas_sgemm linking issues");
+        eprintln!("  3. Uncomment turbovec code in src/vector.rs");
+        eprintln!("\nSee src/vector.rs for detailed restoration steps.");
+        std::process::exit(1);
+    }
+
     match action {
         EmbedAction::Build { plugin, concurrent } => {
             run_embed_build(&data_dir, &config, plugin.as_deref(), concurrent)
@@ -1813,6 +1835,11 @@ fn run_embed_build(
     use crate::vector::EmbedState;
 
     let vector_config = config.vector.clone();
+
+    eprintln!("⚠️  WARNING: Vector search is currently STUBBED and NON-FUNCTIONAL.");
+    eprintln!("    The turbovec dependency is disabled due to BLAS library linking issues.");
+    eprintln!("    This command will create placeholder indexes but provides no real semantic search capability.");
+    eprintln!("    See src/vector.rs for details on restoring functionality.\n");
 
     println!("Building vector index...");
     println!("  Model: {}", vector_config.embedding_model);
@@ -1995,6 +2022,11 @@ fn run_embed_rebuild(
     plugin_filter: Option<&str>,
     _concurrent: usize,
 ) -> Result<()> {
+    eprintln!("⚠️  WARNING: Vector search is currently STUBBED and NON-FUNCTIONAL.");
+    eprintln!("    The turbovec dependency is disabled due to BLAS library linking issues.");
+    eprintln!("    This command will create placeholder indexes but provides no real semantic search capability.");
+    eprintln!("    See src/vector.rs for details on restoring functionality.\n");
+
     println!("Rebuilding vector index from scratch...");
 
     let vector_config = config.vector.clone();

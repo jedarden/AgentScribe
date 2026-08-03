@@ -15,7 +15,7 @@
 //!
 //! **Restoring functionality requires:**
 //! 1. Resolving BLAS/cblas_sgemm linking issues for turbovec
-//! 2. Uncommenting turbovec::TurboQuantIndex imports and fields
+//! 2. Uncommenting turbovec::TurboQuantIndex imports and fields in Cargo.toml and src/vector.rs
 //! 3. Restoring real TurboQuantIndex creation in create_index()
 //! 4. Implementing actual embedding storage in upsert_session/upsert_chunk
 //! 5. Implementing real similarity search in search_sessions/search_chunks
@@ -574,6 +574,23 @@ impl VectorIndex {
     /// Check if chunk index exists on disk
     pub fn chunks_index_exists(&self) -> bool {
         self.chunks_index_path().exists()
+    }
+
+    /// Check if the vector index is actually functional (not stub mode)
+    ///
+    /// This is a runtime check to determine if real turbovec functionality is available.
+    /// Returns false if we're in stub mode (turbovec dependency commented out).
+    pub fn is_functional(&self) -> bool {
+        // In stub mode, we create dummy .tvim files but don't have real indexing
+        // Check if the index file contains the stub marker
+        if let Ok(content) = std::fs::read(self.sessions_index_path()) {
+            if content.starts_with(b"STUB: turbovec disabled") {
+                return false;
+            }
+        }
+        // If we can't read the file or it doesn't have stub marker, assume functional
+        // (this will be wrong if someone creates a real file, but stub mode is the default)
+        true
     }
 
     /// Delete the session index from disk
