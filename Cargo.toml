@@ -57,7 +57,7 @@ tantivy = "0.22"
 
 # Vector search (quantized embeddings for semantic search)
 # Temporarily commented out for testing - requires BLAS libraries
-# turbovec = "0.1"
+turbovec = "0.1"
 
 # HTTP client for embedding APIs
 reqwest = { version = "0.12", features = ["blocking", "json", "rustls-tls"], default-features = false }
