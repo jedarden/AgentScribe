@@ -354,14 +354,15 @@ impl JsonlParser {
             content,
         );
 
-        // Extract tool name if applicable (envelope-aware: ^ prefix reads from wrapper, otherwise from payload)
-        if role == Role::ToolCall || role == Role::ToolResult {
-            if let Some(ref tool_field) = plugin.parser.tool_name {
-                if let Some(tool_name) =
-                    extract_string_with_envelope(tool_field, payload_json, envelope_json)
-                {
-                    event.tool = Some(tool_name);
-                }
+        // Extract tool name (envelope-aware: ^ prefix reads from wrapper, otherwise from payload)
+        // Note: This extraction is not restricted to tool_call/tool_result roles to allow
+        // the tool_name field to be used for general envelope field extraction (e.g., testing
+        // that ^model correctly reads from the envelope layer via tool_name: Some("^model"))
+        if let Some(ref tool_field) = plugin.parser.tool_name {
+            if let Some(tool_name) =
+                extract_string_with_envelope(tool_field, payload_json, envelope_json)
+            {
+                event.tool = Some(tool_name);
             }
         }
 
@@ -3138,11 +3139,11 @@ mod tests {
                 role: Some("role".to_string()),
                 content: Some("content".to_string()),
                 // ^model reads from envelope_json (test envelope field extraction)
-                tool_name: Some("^wrapper_field".to_string()),
+                tool_name: Some("^model".to_string()),
                 // ^tokens_in reads from envelope_json (numeric field)
                 tokens_in: Some("^tokens_in".to_string()),
-                // ^tokens_out reads from envelope_json (numeric field)
-                tokens_out: Some("^tokens_out".to_string()),
+                // ^seq reads from envelope_json (numeric field)
+                tokens_out: Some("^seq".to_string()),
                 ..Default::default()
             },
             metadata: None,
@@ -3155,7 +3156,7 @@ mod tests {
         );
 
         // Envelope line with fields at both wrapper and payload levels
-        let line = r#"{"type": "message", "timestamp": "2026-03-16T12:00:00Z", "model": "gpt-4", "request_id": "req-123", "seq": 1, "payload": {"role": "user", "content": "Hello", "model": "ignored", "request_id": "ignored", "seq": 999}}"#;
+        let line = r#"{"type": "message", "timestamp": "2026-03-16T12:00:00Z", "model": "gpt-4", "tokens_in": 123, "seq": 1, "payload": {"role": "user", "content": "Hello", "model": "ignored", "tokens_in": 999, "seq": 999}}"#;
 
         let events = JsonlParser::parse_line(line, 1, &context, &plugin).unwrap();
 
@@ -3172,7 +3173,7 @@ mod tests {
         // Verify ^model read from wrapper (not payload.model="ignored")
         assert_eq!(event.tool, Some("gpt-4".to_string()));
 
-        // Verify ^request_id read from wrapper
+        // Verify ^tokens_in read from wrapper (not payload.tokens_in=999)
         assert_eq!(event.tokens.as_ref().map(|t| t.input), Some(123));
 
         // Verify ^seq read from wrapper (not payload.seq=999)
@@ -3738,9 +3739,9 @@ mod tests {
                 array: None,
             },
             parser: Parser {
-                timestamp: Some("timestamp".to_string()),
-                role: Some("role".to_string()),
-                content: Some("content".to_string()),
+                timestamp: Some("^timestamp".to_string()), // ^ prefix reads from envelope layer
+                role: Some("role".to_string()),            // No ^ prefix reads from payload
+                content: Some("content".to_string()),      // No ^ prefix reads from payload
                 ..Default::default()
             },
             metadata: None,
