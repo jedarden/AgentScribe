@@ -2251,7 +2251,7 @@ mod tests {
             type_field: "type".to_string(),
             type_routing,
         });
-        plugin.parser.timestamp = Some("timestamp".to_string());
+        plugin.parser.timestamp = Some("^timestamp".to_string());
         plugin.parser.role = Some("role".to_string());
         plugin.parser.content = Some("content".to_string());
 
@@ -2288,7 +2288,7 @@ mod tests {
             type_field: "type".to_string(),
             type_routing,
         });
-        plugin.parser.timestamp = Some("timestamp".to_string());
+        plugin.parser.timestamp = Some("^timestamp".to_string());
         plugin.parser.role = Some("role".to_string());
         plugin.parser.content = Some("content".to_string());
 
@@ -2335,7 +2335,7 @@ mod tests {
             type_field: "type".to_string(),
             type_routing,
         });
-        plugin.parser.timestamp = Some("timestamp".to_string());
+        plugin.parser.timestamp = Some("^timestamp".to_string());
         plugin.parser.role = Some("role".to_string());
         plugin.parser.content = Some("content".to_string());
 
