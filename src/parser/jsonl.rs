@@ -751,6 +751,7 @@ mod tests {
     #[derive(Debug, Clone)]
     struct MetaRoutingTestFixture {
         /// Test case description
+        #[allow(dead_code)]
         description: &'static str,
         /// Type field value for the envelope line
         type_value: &'static str,
@@ -1447,6 +1448,43 @@ mod tests {
         }
     }
 
+    /// Helper function for testing meta routing fixture lines that should return Ok(Vec::new()).
+    ///
+    /// This function encapsulates the common pattern for testing envelope lines that are
+    /// routed to "meta" types (such as session_start, session_end, metrics, compaction).
+    /// These meta-type lines should parse successfully but produce zero canonical events.
+    ///
+    /// # Arguments
+    /// * `line` - The JSONL fixture line to parse
+    /// * `line_number` - The line number (for realistic error reporting)
+    /// * `assertion_msg` - Custom assertion message describing what should produce zero events
+    ///
+    /// # Examples
+    /// ```ignore
+    /// let fixture_line = r#"{"type":"session_start","timestamp":"2026-07-04T10:00:00Z","payload":{"session_id":"sess-001"}}"#;
+    /// assert_meta_routing_returns_empty(fixture_line, 3, "session_start should produce zero events");
+    /// ```
+    fn assert_meta_routing_returns_empty(line: &str, line_number: usize, assertion_msg: &str) {
+        let plugin = create_skip_meta_unknown_plugin();
+        let context = ParseContext::new(
+            "test-session".to_string(),
+            "test".to_string(),
+            "/tmp/test.jsonl".to_string(),
+        );
+
+        // Verify the line parses successfully
+        let result = JsonlParser::parse_line(line, line_number, &context, &plugin);
+        assert!(
+            result.is_ok(),
+            "Meta routing line should parse successfully: {}",
+            assertion_msg
+        );
+
+        // Verify it produces zero events (the expected behavior for meta-type routing)
+        let events = result.unwrap();
+        assert!(events.is_empty(), "{}", assertion_msg);
+    }
+
     #[test]
     fn test_skip_type_heartbeat_produces_zero_events() {
         let plugin = create_skip_meta_unknown_plugin();
@@ -1586,6 +1624,26 @@ mod tests {
             "fixture with only skip/meta/unknown lines should produce zero events, got {}",
             all_events.len()
         );
+    }
+
+    #[test]
+    fn test_session_start_fixture_line_returns_empty_vec() {
+        // Test case for session_start fixture line from non-event-types.jsonl
+        // Verifies that Ok(Vec::new()) is returned for session_start meta routing
+        // Exact fixture line from non-event-types.jsonl line 3
+        let line = r#"{"type":"session_start","timestamp":"2026-07-04T10:00:00Z","payload":{"session_id":"sess-001"}}"#;
+
+        assert_meta_routing_returns_empty(line, 3, "session_start should produce zero events");
+    }
+
+    #[test]
+    fn test_session_end_fixture_line_returns_empty_vec() {
+        // Test case for session_end fixture line from non-event-types.jsonl
+        // Verifies that Ok(Vec::new()) is returned for session_end meta routing
+        // Exact fixture line from non-event-types.jsonl line 4
+        let line = r#"{"type":"session_end","timestamp":"2026-07-04T10:00:30Z","payload":{"duration":30}}"#;
+
+        assert_meta_routing_returns_empty(line, 4, "session_end should produce zero events");
     }
 
     #[test]
@@ -2923,7 +2981,7 @@ mod tests {
         let events = events.unwrap();
 
         // Should produce multiple events (fixture has user + assistant + tool_use)
-        assert!(events.len() > 0, "Should produce at least one event");
+        assert!(!events.is_empty(), "Should produce at least one event");
 
         // Verify event structure matches expectations
         let first_event = &events[0];

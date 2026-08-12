@@ -244,6 +244,158 @@ pub fn create_envelope_plugin() -> Plugin {
     }
 }
 
+/// Create a plugin with meta routing for testing envelope types
+///
+/// Returns a `Plugin` configured with envelope routing specifically for testing
+/// meta-type events (session_start, session_end, etc.) that should accumulate
+/// metadata without producing canonical events.
+///
+/// The envelope configuration includes:
+/// - `message` events → routed as "event" (produce canonical events)
+/// - `heartbeat` events → routed as "skip" (dropped)
+/// - `ping` events → routed as "skip" (dropped)
+/// - `session_start` events → routed as "meta" (metadata preserved, no events)
+/// - `session_end` events → routed as "meta" (metadata preserved, no events)
+/// - `metrics` events → routed as "meta" (metadata preserved, no events)
+/// - `compaction` events → routed as "meta" (metadata preserved, no events)
+///
+/// # Returns
+///
+/// A configured `Plugin` with meta routing enabled for testing.
+///
+/// # Example
+///
+/// ```ignore
+/// let plugin = create_meta_routing_test_plugin();
+/// assert_eq!(plugin.plugin.name, "test-meta-routing");
+/// assert!(plugin.source.envelope.is_some());
+///
+/// let envelope = plugin.source.envelope.unwrap();
+/// assert_eq!(envelope.get_routing("session_start"), "meta");
+/// assert_eq!(envelope.get_routing("session_end"), "meta");
+/// ```
+pub fn create_meta_routing_test_plugin() -> Plugin {
+    let mut type_routing = HashMap::new();
+    type_routing.insert("message".to_string(), "event".to_string());
+    type_routing.insert("heartbeat".to_string(), "skip".to_string());
+    type_routing.insert("ping".to_string(), "skip".to_string());
+    type_routing.insert("session_start".to_string(), "meta".to_string());
+    type_routing.insert("session_end".to_string(), "meta".to_string());
+    type_routing.insert("metrics".to_string(), "meta".to_string());
+    type_routing.insert("compaction".to_string(), "meta".to_string());
+
+    let mut static_fields = HashMap::new();
+    static_fields.insert(
+        "source_agent".to_string(),
+        serde_json::json!("test-meta-routing"),
+    );
+
+    Plugin {
+        plugin: PluginMeta {
+            name: "test-meta-routing".to_string(),
+            version: "1.0".to_string(),
+        },
+        source: Source {
+            paths: vec!["/tmp/test-meta-routing.jsonl".to_string()],
+            exclude: vec![],
+            format: LogFormat::Jsonl,
+            session_detection: SessionDetection::OneFilePerSession {
+                session_id_from: SessionIdSource::Filename,
+            },
+            tree: None,
+            truncation_limit: None,
+            envelope: Some(agentscribe::plugin::Envelope {
+                payload_field: "payload".to_string(),
+                type_field: "type".to_string(),
+                type_routing,
+            }),
+            array: None,
+        },
+        parser: Parser {
+            timestamp: Some("timestamp".to_string()),
+            role: Some("role".to_string()),
+            content: Some("content".to_string()),
+            static_fields,
+            ..Default::default()
+        },
+        metadata: None,
+    }
+}
+
+/// Helper function for testing meta routing fixture lines that should return Ok(Vec::new()).
+///
+/// This function encapsulates the common pattern for testing envelope lines that are
+/// routed to "meta" types (such as session_start, session_end, metrics, compaction).
+/// These meta-type lines should parse successfully but produce zero canonical events,
+/// returning Ok(Vec::new()).
+///
+/// # Arguments
+///
+/// * `fixture_line` - The JSONL fixture line to parse
+/// * `line_number` - The line number (for realistic error reporting in tests)
+/// * `assertion_message` - Custom assertion message describing what should produce zero events
+///
+/// # Purpose
+///
+/// Meta-type routing is used for events that should accumulate session metadata but not
+/// emit canonical events. Examples include:
+/// - `session_start`: Marks session beginning with metadata (session_id, model, cwd)
+/// - `session_end`: Marks session end with metadata (duration, final state)
+/// - `compaction`: Metadata about storage operations
+/// - `metrics`: Performance or operational metrics
+///
+/// # Examples
+///
+/// ```ignore
+/// use agentscribe::parser::jsonl::JsonlParser;
+/// use agentscribe::parser::ParseContext;
+///
+/// let session_start_line = r#"{"type":"session_start","timestamp":"2026-07-04T10:00:00Z","payload":{"session_id":"sess-001"}}"#;
+/// assert_meta_routing_returns_empty(
+///     session_start_line,
+///     1,
+///     "session_start should produce zero events"
+/// );
+///
+/// let session_end_line = r#"{"type":"session_end","timestamp":"2026-07-04T10:30:00Z","payload":{"duration":1800}}"#;
+/// assert_meta_routing_returns_empty(
+///     session_end_line,
+///     5,
+///     "session_end should produce zero events"
+/// );
+/// ```
+pub fn assert_meta_routing_returns_empty(
+    fixture_line: &str,
+    line_number: usize,
+    assertion_message: &str,
+) {
+    use agentscribe::parser::{JsonlParser, ParseContext};
+
+    let plugin = create_meta_routing_test_plugin();
+    let context = ParseContext::new(
+        "test-session".to_string(),
+        "test-meta-routing".to_string(),
+        "/tmp/test-meta-routing.jsonl".to_string(),
+    );
+
+    // Verify the line parses successfully
+    let result = JsonlParser::parse_line(fixture_line, line_number, &context, &plugin);
+    assert!(
+        result.is_ok(),
+        "Meta routing line should parse successfully: {}",
+        assertion_message
+    );
+
+    // Verify it produces zero events (the expected behavior for meta-type routing)
+    let events = result.unwrap();
+    assert!(
+        events.is_empty(),
+        "{}: Meta-type routing should produce zero events, got {} events",
+        assertion_message,
+        events.len()
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
