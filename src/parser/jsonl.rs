@@ -393,7 +393,12 @@ impl JsonlParser {
             match key.as_str() {
                 "source_agent" => {
                     if let Some(s) = value.as_str() {
-                        event.source_agent = s.to_string();
+                        // Only override if we don't already have a subagent suffix
+                        // The ParseContext sets source_agent with "-subagent" suffix for subagent files,
+                        // and we need to preserve that instead of overwriting with the static value
+                        if !event.source_agent.ends_with("-subagent") {
+                            event.source_agent = s.to_string();
+                        }
                     }
                 }
                 "source_version" => {
