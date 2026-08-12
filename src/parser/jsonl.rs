@@ -16,6 +16,7 @@ use chrono::Utc;
 use serde_json::Value;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
+use tracing::warn;
 
 /// Check if a source path is a subagent file
 fn is_subagent_file(source_path: &Path) -> bool {
@@ -86,10 +87,36 @@ pub fn unwrap_envelope(
                 }
                 None => {
                     // Missing or non-object payload_field - skip with warning
-                    eprintln!(
-                        "Warning: Envelope payload_field '{}' missing or not an object for type '{}', skipping line",
-                        envelope.payload_field, type_value
-                    );
+                    // Determine specific warning reason
+                    let has_payload_field = raw_json.get(&envelope.payload_field).is_some();
+                    let warning_msg = if has_payload_field {
+                        let payload_value = raw_json.get(&envelope.payload_field).unwrap();
+                        let value_desc = match payload_value {
+                            Value::String(s) => {
+                                let truncated = if s.len() > 50 {
+                                    format!("{}...", &s[..50])
+                                } else {
+                                    s.clone()
+                                };
+                                format!("string '{}'", truncated)
+                            }
+                            Value::Null => "null".to_string(),
+                            Value::Bool(b) => format!("bool {}", b),
+                            Value::Number(n) => format!("number {}", n),
+                            Value::Array(_) => "array".to_string(),
+                            Value::Object(_) => "object".to_string(),
+                        };
+                        format!(
+                            "Envelope payload_field '{}' exists for type '{}' but is not an object (found: {}), skipping line",
+                            envelope.payload_field, type_value, value_desc
+                        )
+                    } else {
+                        format!(
+                            "Envelope payload_field '{}' missing for type '{}', skipping line",
+                            envelope.payload_field, type_value
+                        )
+                    };
+                    warn!("{}", warning_msg);
                     Ok((Value::Object(serde_json::Map::new()), None))
                 }
             }
