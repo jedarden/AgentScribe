@@ -2099,7 +2099,11 @@ mod tests {
         let event = &events[0];
 
         // Verify payload was correctly unwrapped - role and content from payload
-        assert_eq!(event.role, Role::User, "Role should be from unwrapped payload");
+        assert_eq!(
+            event.role,
+            Role::User,
+            "Role should be from unwrapped payload"
+        );
         assert_eq!(
             event.content, "Hello world",
             "Content should be from unwrapped payload"
