@@ -65,6 +65,22 @@ impl ParseContext {
     }
 }
 
+/// Check if a field name has a caret prefix (^)
+///
+/// Returns true if the field name starts with `^`, false otherwise.
+/// Handles empty strings gracefully (returns false).
+///
+/// # Examples
+/// ```
+/// assert!(has_caret_prefix("^foo"));
+/// assert!(!has_caret_prefix("foo"));
+/// assert!(!has_caret_prefix("bar^baz"));
+/// assert!(!has_caret_prefix(""));
+/// ```
+pub fn has_caret_prefix(field_name: &str) -> bool {
+    field_name.starts_with('^')
+}
+
 /// Extract a nested field from JSON using dot notation
 pub fn extract_field(value: &Value, path: &str) -> Option<Value> {
     if path.is_empty() {
@@ -154,7 +170,7 @@ pub fn extract_with_envelope(
     payload: &Value,
     envelope: Option<&Value>,
 ) -> Option<Value> {
-    if path.starts_with('^') {
+    if has_caret_prefix(path) {
         // Strip the caret prefix
         if let Some(envelope_path) = path.strip_prefix('^') {
             // Try envelope first
@@ -436,5 +452,33 @@ mod tests {
         // Only ^ with no field name should return None (empty path after removing ^)
         let result = extract_with_envelope("^", &payload, Some(&envelope));
         assert_eq!(result, None);
+    }
+
+    // has_caret_prefix tests
+
+    #[test]
+    fn test_has_caret_prefix_with_caret() {
+        assert!(has_caret_prefix("^foo"));
+        assert!(has_caret_prefix("^timestamp"));
+        assert!(has_caret_prefix("^outer.ts"));
+        assert!(has_caret_prefix("^items[0].name"));
+    }
+
+    #[test]
+    fn test_has_caret_prefix_without_caret() {
+        assert!(!has_caret_prefix("foo"));
+        assert!(!has_caret_prefix("timestamp"));
+        assert!(!has_caret_prefix("bar^baz"));
+        assert!(!has_caret_prefix("items[0].name"));
+    }
+
+    #[test]
+    fn test_has_caret_prefix_empty_string() {
+        assert!(!has_caret_prefix(""));
+    }
+
+    #[test]
+    fn test_has_caret_prefix_only_caret() {
+        assert!(has_caret_prefix("^"));
     }
 }
