@@ -745,4 +745,332 @@ mod tests {
         let result = extract_string_with_envelope("role", &payload, Some(&envelope));
         assert_eq!(result, Some("admin".to_string()));
     }
+
+    // -- Envelope-first lookup success tests --
+
+    #[test]
+    fn test_envelope_first_basic_lookup_success() {
+        // Basic foundational test: verify envelope-first lookup works for a simple field
+        let payload = json!({"model": "gpt-4"});
+        let envelope = json!({"model": "claude-sonnet-4"});
+
+        // Field present in envelope: should return envelope value
+        let result = extract_string_with_envelope("^model", &payload, Some(&envelope));
+        assert_eq!(result, Some("claude-sonnet-4".to_string()));
+    }
+
+    #[test]
+    fn test_envelope_first_string_field_success() {
+        let payload = json!({"model": "gpt-4", "content": "hello"});
+        let envelope = json!({"model": "claude-sonnet-4", "timestamp": "2026-03-16T12:00:00Z"});
+
+        // ^ prefix with field in envelope: should return envelope value
+        let result = extract_string_with_envelope("^model", &payload, Some(&envelope));
+        assert_eq!(result, Some("claude-sonnet-4".to_string()));
+        // Verify payload was not consulted
+        assert_ne!(result, Some("gpt-4".to_string()));
+    }
+
+    #[test]
+    fn test_envelope_first_number_field_success() {
+        let payload = json!({"count": 42, "items": 5});
+        let envelope = json!({"count": 100, "version": 1});
+
+        // ^ prefix with number field in envelope: should return envelope number
+        let result = extract_with_envelope("^count", &payload, Some(&envelope));
+        assert_eq!(result, Some(json!(100)));
+        // Verify payload number was not returned
+        assert_ne!(result, Some(json!(42)));
+    }
+
+    #[test]
+    fn test_envelope_first_bool_field_success() {
+        let payload = json!({"active": false, "enabled": true});
+        let envelope = json!({"active": true, "debug": false});
+
+        // ^ prefix with bool field in envelope: should return envelope bool
+        let result = extract_with_envelope("^active", &payload, Some(&envelope));
+        assert_eq!(result, Some(json!(true)));
+        // Verify payload bool was not returned
+        assert_ne!(result, Some(json!(false)));
+    }
+
+    #[test]
+    fn test_envelope_first_nested_field_success() {
+        let payload = json!({"user": {"role": "user", "name": "alice"}});
+        let envelope = json!({"user": {"role": "admin", "permissions": ["read", "write"]}});
+
+        // ^ prefix with nested field in envelope: should return envelope nested value
+        let result = extract_with_envelope("^user.role", &payload, Some(&envelope));
+        assert_eq!(result, Some(json!("admin")));
+        // Verify payload nested value was not returned
+        assert_ne!(result, Some(json!("user")));
+    }
+
+    #[test]
+    fn test_envelope_first_array_element_success() {
+        let payload = json!({"items": [{"name": "first"}, {"name": "second"}]});
+        let envelope = json!({"items": [{"name": "envelope_first"}, {"name": "envelope_second"}]});
+
+        // ^ prefix with array index in envelope: should return envelope array element
+        let result = extract_with_envelope("^items[0].name", &payload, Some(&envelope));
+        assert_eq!(result, Some(json!("envelope_first")));
+        // Verify payload array element was not returned
+        assert_ne!(result, Some(json!("first")));
+    }
+
+    #[test]
+    fn test_envelope_first_deeply_nested_field_success() {
+        let payload = json!({"outer": {"inner": {"deep": {"value": "payload_value"}}}});
+        let envelope = json!({"outer": {"inner": {"deep": {"value": "envelope_value"}}}});
+
+        // ^ prefix with deeply nested field in envelope: should return envelope value
+        let result = extract_with_envelope("^outer.inner.deep.value", &payload, Some(&envelope));
+        assert_eq!(result, Some(json!("envelope_value")));
+        // Verify payload value was not returned
+        assert_ne!(result, Some(json!("payload_value")));
+    }
+
+    #[test]
+    fn test_envelope_first_mixed_types_success() {
+        let payload = json!({
+            "string_field": "payload_string",
+            "number_field": 42,
+            "bool_field": false,
+            "array_field": [1, 2, 3],
+            "object_field": {"key": "payload_value"}
+        });
+        let envelope = json!({
+            "string_field": "envelope_string",
+            "number_field": 100,
+            "bool_field": true,
+            "array_field": [4, 5, 6],
+            "object_field": {"key": "envelope_value"}
+        });
+
+        // Test all types with ^ prefix - envelope should win for each
+        assert_eq!(
+            extract_string_with_envelope("^string_field", &payload, Some(&envelope)),
+            Some("envelope_string".to_string())
+        );
+        assert_eq!(
+            extract_with_envelope("^number_field", &payload, Some(&envelope)),
+            Some(json!(100))
+        );
+        assert_eq!(
+            extract_with_envelope("^bool_field", &payload, Some(&envelope)),
+            Some(json!(true))
+        );
+        assert_eq!(
+            extract_with_envelope("^array_field", &payload, Some(&envelope)),
+            Some(json!([4, 5, 6]))
+        );
+        assert_eq!(
+            extract_with_envelope("^object_field.key", &payload, Some(&envelope)),
+            Some(json!("envelope_value"))
+        );
+    }
+
+    #[test]
+    fn test_envelope_first_timestamp_various_formats() {
+        let payload = json!({"timestamp": "2026-03-16T10:00:00Z"});
+        let envelope = json!({"timestamp": "2026-03-16T12:00:00Z"});
+
+        // ISO 8601 format
+        let result1 = extract_string_with_envelope("^timestamp", &payload, Some(&envelope));
+        assert_eq!(result1, Some("2026-03-16T12:00:00Z".to_string()));
+
+        // Unix epoch seconds
+        let payload2 = json!({"ts": 1710590400});
+        let envelope2 = json!({"ts": 1710590405});
+        let result2 = extract_string_with_envelope("^ts", &payload2, Some(&envelope2));
+        assert_eq!(result2, Some("1710590405".to_string()));
+
+        // Unix epoch milliseconds
+        let payload3 = json!({"ts": 1710590400000i64});
+        let envelope3 = json!({"ts": 1710590405000i64});
+        let result3 = extract_string_with_envelope("^ts", &payload3, Some(&envelope3));
+        assert_eq!(result3, Some("1710590405000".to_string()));
+    }
+
+    #[test]
+    fn test_envelope_first_null_vs_value() {
+        let payload = json!({"model": null});
+        let envelope = json!({"model": "claude-sonnet-4"});
+
+        // Envelope has value, payload has null: envelope value should win
+        let result = extract_string_with_envelope("^model", &payload, Some(&envelope));
+        assert_eq!(result, Some("claude-sonnet-4".to_string()));
+    }
+
+    #[test]
+    fn test_envelope_first_value_vs_null() {
+        let payload = json!({"model": "gpt-4"});
+        let envelope = json!({"model": null});
+
+        // Envelope has null, payload has value: with ^ prefix, envelope null wins
+        // (null coerces to empty string in extract_string_with_envelope)
+        let result = extract_string_with_envelope("^model", &payload, Some(&envelope));
+        assert_eq!(result, Some("".to_string()));
+    }
+
+    #[test]
+    fn test_envelope_first_field_exists_only_in_envelope() {
+        let payload = json!({"role": "user"});
+        let envelope = json!({"model": "claude-sonnet-4", "session_id": "abc123"});
+
+        // Field exists only in envelope: envelope value should be returned
+        let result = extract_string_with_envelope("^model", &payload, Some(&envelope));
+        assert_eq!(result, Some("claude-sonnet-4".to_string()));
+    }
+
+    #[test]
+    fn test_envelope_first_complex_object_in_envelope() {
+        let payload = json!({"metadata": {"version": "1.0"}});
+        let envelope =
+            json!({"metadata": {"version": "2.0", "build": "12345", "features": ["a", "b", "c"]}});
+
+        // Complex object in envelope: should return full envelope object
+        let result = extract_with_envelope("^metadata", &payload, Some(&envelope));
+        assert_eq!(
+            result,
+            Some(json!({"version": "2.0", "build": "12345", "features": ["a", "b", "c"]}))
+        );
+    }
+
+    #[test]
+    fn test_envelope_first_special_characters_in_field_value() {
+        let payload = json!({"message": "simple"});
+        let envelope =
+            json!({"message": "Line 1\nLine 2\tTabbed", "path": "/home/user/file with spaces.txt"});
+
+        // Field with special characters in envelope: should preserve them
+        let result1 = extract_string_with_envelope("^message", &payload, Some(&envelope));
+        assert_eq!(result1, Some("Line 1\nLine 2\tTabbed".to_string()));
+
+        let result2 = extract_string_with_envelope("^path", &payload, Some(&envelope));
+        assert_eq!(result2, Some("/home/user/file with spaces.txt".to_string()));
+    }
+
+    #[test]
+    fn test_envelope_first_unicode_field_value() {
+        let payload = json!({"text": "ascii"});
+        let envelope = json!({"text": "Unicode: 你好世界 🌍 Émojis Ñoño"});
+
+        // Unicode in envelope: should be preserved
+        let result = extract_string_with_envelope("^text", &payload, Some(&envelope));
+        assert_eq!(result, Some("Unicode: 你好世界 🌍 Émojis Ñoño".to_string()));
+    }
+
+    #[test]
+    fn test_envelope_first_very_long_field_value() {
+        let long_payload = "x".repeat(10000);
+        let long_envelope = "y".repeat(10000);
+        let payload = json!({"content": long_payload});
+        let envelope = json!({"content": long_envelope});
+
+        // Long value in envelope: should return envelope value, not payload
+        let result = extract_string_with_envelope("^content", &payload, Some(&envelope));
+        assert_eq!(result, Some(long_envelope));
+        assert_ne!(result, Some(long_payload));
+    }
+
+    #[test]
+    fn test_envelope_first_empty_string_vs_non_empty() {
+        let payload = json!({"model": "gpt-4"});
+        let envelope = json!({"model": ""});
+
+        // Envelope has empty string, payload has value: envelope empty string wins with ^ prefix
+        let result = extract_string_with_envelope("^model", &payload, Some(&envelope));
+        assert_eq!(result, Some("".to_string()));
+    }
+
+    #[test]
+    fn test_envelope_first_non_empty_vs_empty_string() {
+        let payload = json!({"model": ""});
+        let envelope = json!({"model": "claude-sonnet-4"});
+
+        // Envelope has value, payload has empty string: envelope value wins
+        let result = extract_string_with_envelope("^model", &payload, Some(&envelope));
+        assert_eq!(result, Some("claude-sonnet-4".to_string()));
+    }
+
+    #[test]
+    fn test_envelope_first_zero_vs_non_zero() {
+        let payload = json!({"count": 100});
+        let envelope = json!({"count": 0});
+
+        // Envelope has 0, payload has 100: envelope 0 wins with ^ prefix
+        let result = extract_with_envelope("^count", &payload, Some(&envelope));
+        assert_eq!(result, Some(json!(0)));
+    }
+
+    #[test]
+    fn test_envelope_first_false_vs_true() {
+        let payload = json!({"enabled": true});
+        let envelope = json!({"enabled": false});
+
+        // Envelope has false, payload has true: envelope false wins with ^ prefix
+        let result = extract_with_envelope("^enabled", &payload, Some(&envelope));
+        assert_eq!(result, Some(json!(false)));
+    }
+
+    #[test]
+    fn test_envelope_first_field_shadowing_comprehensive() {
+        // Comprehensive test: envelope shadows payload for every field type
+        let payload = json!({
+            "string": "payload_string",
+            "number": 42,
+            "float": 1.5,
+            "bool": true,
+            "null": null,
+            "array": [1, 2],
+            "object": {"key": "payload"},
+            "nested": {"level": {"value": "payload_nested"}}
+        });
+        let envelope = json!({
+            "string": "envelope_string",
+            "number": 100,
+            "float": 2.5,
+            "bool": false,
+            "null": "not_null",
+            "array": [3, 4],
+            "object": {"key": "envelope"},
+            "nested": {"level": {"value": "envelope_nested"}}
+        });
+
+        // Every ^-prefixed field should read from envelope, not payload
+        assert_eq!(
+            extract_with_envelope("^string", &payload, Some(&envelope)),
+            Some(json!("envelope_string"))
+        );
+        assert_eq!(
+            extract_with_envelope("^number", &payload, Some(&envelope)),
+            Some(json!(100))
+        );
+        assert_eq!(
+            extract_with_envelope("^float", &payload, Some(&envelope)),
+            Some(json!(2.5))
+        );
+        assert_eq!(
+            extract_with_envelope("^bool", &payload, Some(&envelope)),
+            Some(json!(false))
+        );
+        assert_eq!(
+            extract_with_envelope("^null", &payload, Some(&envelope)),
+            Some(json!("not_null"))
+        );
+        assert_eq!(
+            extract_with_envelope("^array", &payload, Some(&envelope)),
+            Some(json!([3, 4]))
+        );
+        assert_eq!(
+            extract_with_envelope("^object", &payload, Some(&envelope)),
+            Some(json!({"key": "envelope"}))
+        );
+        assert_eq!(
+            extract_with_envelope("^nested.level.value", &payload, Some(&envelope)),
+            Some(json!("envelope_nested"))
+        );
+    }
 }
