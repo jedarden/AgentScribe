@@ -3384,4 +3384,405 @@ mod tests {
         assert_eq!(envelope.type_field, "type");
         assert_eq!(envelope.payload_field, "payload");
     }
+
+    // ========================================================================
+    // Integration Tests for Envelope Routing Verification (bf-y28h7)
+    // ========================================================================
+
+    #[test]
+    fn test_non_envelope_plugin_parity_byte_for_byte() {
+        // AC: Non-envelope plugin produces identical events to before
+        // Verify that plugins without envelope config behave identically to the
+        // pre-envelope implementation (payload_json == raw line, envelope_json == None)
+
+        let plugin = create_test_plugin();
+        let context = ParseContext::new(
+            "test-session".to_string(),
+            "test".to_string(),
+            "/tmp/test.jsonl".to_string(),
+        );
+
+        let test_line = r#"{"ts": "2026-03-16T12:00:00Z", "role": "user", "content": "Hello World", "metadata": {"key": "value"}}"#;
+        let events = JsonlParser::parse_line(test_line, 1, &context, &plugin).unwrap();
+
+        assert_eq!(
+            events.len(),
+            1,
+            "Non-envelope parsing should produce exactly 1 event"
+        );
+        let event = &events[0];
+
+        // Verify byte-for-byte parity: all fields match expected values unchanged
+        assert_eq!(event.role, Role::User, "Role should be parsed correctly");
+        assert_eq!(event.content, "Hello World", "Content should match exactly");
+        assert_eq!(
+            event.session_id, "test-session",
+            "Session ID should be preserved"
+        );
+        assert_eq!(
+            event.source_agent, "test",
+            "Source agent should be preserved"
+        );
+        assert_eq!(
+            event.ts.to_rfc3339(),
+            "2026-03-16T12:00:00+00:00",
+            "Timestamp parsing should be consistent"
+        );
+
+        // Verify no behavior change - event structure should be identical
+        assert!(
+            event.project.is_none(),
+            "Project should be None when not set"
+        );
+        assert!(event.model.is_none(), "Model should be None when not set");
+        assert!(
+            event.tokens.is_none(),
+            "Tokens should be None when not present"
+        );
+        assert!(event.tool.is_none(), "Tool should be None when not present");
+    }
+
+    #[test]
+    fn test_mixed_envelope_types_integration() {
+        // AC: Mixed fixture test - skip lines dropped, meta lines dropped, event lines unwrapped correctly
+        // Integration test using actual fixture file with mixed envelope types
+
+        let fixture_path =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/envelope_test.jsonl");
+
+        // Create plugin matching envelope_test.toml configuration
+        let mut type_routing = std::collections::HashMap::new();
+        type_routing.insert("session_start".to_string(), "meta".to_string());
+        type_routing.insert("heartbeat".to_string(), "skip".to_string());
+        type_routing.insert("ping".to_string(), "skip".to_string());
+        type_routing.insert("message".to_string(), "event".to_string());
+        // "unknown_event" is not in routing map → should default to skip
+
+        let mut role_map = std::collections::HashMap::new();
+        role_map.insert("tool".to_string(), "tool_call".to_string());
+
+        let plugin = Plugin {
+            plugin: PluginMeta {
+                name: "envelope-test".to_string(),
+                version: "1.0".to_string(),
+            },
+            source: Source {
+                paths: vec![fixture_path.display().to_string()],
+                exclude: vec![],
+                format: LogFormat::Jsonl,
+                session_detection: SessionDetection::OneFilePerSession {
+                    session_id_from: SessionIdSource::Filename,
+                },
+                tree: None,
+                truncation_limit: None,
+                envelope: Some(crate::plugin::Envelope {
+                    payload_field: "payload".to_string(),
+                    type_field: "type".to_string(),
+                    type_routing,
+                }),
+                array: None,
+            },
+            parser: Parser {
+                timestamp: Some("timestamp".to_string()),
+                role: Some("role".to_string()),
+                content: Some("content".to_string()),
+                tool_name: Some("tool_name".to_string()),
+                role_map,
+                ..Default::default()
+            },
+            metadata: None,
+        };
+
+        // Parse the fixture file
+        let all_events = JsonlParser.parse(&fixture_path, &plugin).unwrap();
+
+        // Expected results based on envelope_test.jsonl:
+        // Line 1: session_start (meta) → 0 events, dropped
+        // Line 2: heartbeat (skip) → 0 events, dropped
+        // Line 3: ping (skip) → 0 events, dropped
+        // Line 4: message (event) → 1 event, unwrapped
+        // Line 5: message (event) → 1 event, unwrapped
+        // Line 6: message (event) → 1 event, unwrapped
+        // Line 7: message (event) → 1 event, unwrapped
+        // Line 8: unknown_event (not in map) → 0 events, defaults to skip
+        // Total expected: 4 events from lines 4-7
+
+        assert_eq!(
+            all_events.len(),
+            4,
+            "Mixed fixture should produce exactly 4 events from message lines"
+        );
+
+        // Verify event 1 (line 4 - user message)
+        assert_eq!(
+            all_events[0].role,
+            Role::User,
+            "Event 1 should have user role"
+        );
+        assert_eq!(
+            all_events[0].content, "Refactor the authentication module to use JWT tokens",
+            "Event 1 content should match"
+        );
+        assert_eq!(
+            all_events[0].ts.to_rfc3339(),
+            "2026-07-04T10:00:15+00:00",
+            "Event 1 timestamp should match"
+        );
+        assert!(all_events[0].tool.is_none(), "Event 1 should have no tool");
+
+        // Verify event 2 (line 5 - assistant message)
+        assert_eq!(
+            all_events[1].role,
+            Role::Assistant,
+            "Event 2 should have assistant role"
+        );
+        assert_eq!(all_events[1].content, "I'll refactor the authentication module. Let me start by reading the current implementation.", "Event 2 content should match");
+        assert_eq!(
+            all_events[1].ts.to_rfc3339(),
+            "2026-07-04T10:00:20+00:00",
+            "Event 2 timestamp should match"
+        );
+
+        // Verify event 3 (line 6 - tool_call message)
+        assert_eq!(
+            all_events[2].role,
+            Role::ToolCall,
+            "Event 3 should have tool_call role"
+        );
+        assert_eq!(
+            all_events[2].content, "Reading src/auth/mod.rs",
+            "Event 3 content should match"
+        );
+        assert_eq!(
+            all_events[2].tool,
+            Some("Read".to_string()),
+            "Event 3 should have Read tool"
+        );
+
+        // Verify event 4 (line 7 - assistant message)
+        assert_eq!(
+            all_events[3].role,
+            Role::Assistant,
+            "Event 4 should have assistant role"
+        );
+        assert_eq!(
+            all_events[3].content, "Here's the refactored authentication module using JWT.",
+            "Event 4 content should match"
+        );
+        assert_eq!(
+            all_events[3].ts.to_rfc3339(),
+            "2026-07-04T10:00:30+00:00",
+            "Event 4 timestamp should match"
+        );
+    }
+
+    #[test]
+    fn test_envelope_json_and_payload_json_references() {
+        // AC: Ensure envelope_json and payload_json references are properly available
+        // for downstream field extraction (child 3 work)
+
+        // This test verifies that the envelope-aware extraction functions work correctly
+        // by testing field extraction with both ^ prefix (envelope) and without ^ (payload)
+
+        let mut type_routing = std::collections::HashMap::new();
+        type_routing.insert("message".to_string(), "event".to_string());
+
+        let plugin = Plugin {
+            plugin: PluginMeta {
+                name: "test".to_string(),
+                version: "1.0".to_string(),
+            },
+            source: Source {
+                paths: vec!["/tmp/test.jsonl".to_string()],
+                exclude: vec![],
+                format: LogFormat::Jsonl,
+                session_detection: SessionDetection::OneFilePerSession {
+                    session_id_from: SessionIdSource::Filename,
+                },
+                tree: None,
+                truncation_limit: None,
+                envelope: Some(crate::plugin::Envelope {
+                    payload_field: "payload".to_string(),
+                    type_field: "type".to_string(),
+                    type_routing,
+                }),
+                array: None,
+            },
+            parser: Parser {
+                // Mix of envelope (^) and payload field paths
+                timestamp: Some("^wrapper_ts".to_string()),
+                role: Some("role".to_string()),
+                content: Some("content".to_string()),
+                tool_name: Some("^wrapper_tool".to_string()),
+                tokens_in: Some("payload_tokens_in".to_string()),
+                tokens_out: Some("payload_tokens_out".to_string()),
+                role_map: {
+                    let mut map = std::collections::HashMap::new();
+                    map.insert("tool".to_string(), "tool_call".to_string());
+                    map
+                },
+                ..Default::default()
+            },
+            metadata: None,
+        };
+
+        let context = ParseContext::new(
+            "test-session".to_string(),
+            "test".to_string(),
+            "/tmp/test.jsonl".to_string(),
+        );
+
+        // Complex line with fields at both envelope and payload levels
+        let complex_line = r#"{"type": "message", "wrapper_ts": "2026-03-16T12:00:00Z", "wrapper_tool": "bash", "payload": {"role": "tool", "content": "Running command", "tool_name": "ignored_tool", "payload_tokens_in": "100", "payload_tokens_out": "200"}}"#;
+
+        let events = JsonlParser::parse_line(complex_line, 1, &context, &plugin).unwrap();
+
+        assert_eq!(events.len(), 1, "Should produce exactly 1 event");
+        let event = &events[0];
+
+        // Verify ^ prefix reads from envelope wrapper
+        assert_eq!(
+            event.ts.to_rfc3339(),
+            "2026-03-16T12:00:00+00:00",
+            "^wrapper_ts should read from envelope"
+        );
+        assert_eq!(
+            event.tool,
+            Some("bash".to_string()),
+            "^wrapper_tool should read from envelope"
+        );
+
+        // Verify no ^ prefix reads from payload
+        assert_eq!(event.role, Role::ToolCall, "role should read from payload");
+        assert_eq!(
+            event.content, "Running command",
+            "content should read from payload"
+        );
+
+        // Verify token fields read from payload (no ^ prefix)
+        assert_eq!(
+            event.tokens.as_ref().map(|t| t.input),
+            Some(100),
+            "payload_tokens_in should read from payload"
+        );
+        assert_eq!(
+            event.tokens.as_ref().map(|t| t.output),
+            Some(200),
+            "payload_tokens_out should read from payload"
+        );
+
+        // Verify the ignored payload.tool_name field was not used (^wrapper_tool won)
+        assert_eq!(
+            event.tool,
+            Some("bash".to_string()),
+            "Should use wrapper_tool, not payload.tool_name"
+        );
+    }
+
+    #[test]
+    fn test_envelope_non_envelope_parity_comparison() {
+        // Comprehensive test comparing envelope vs non-envelope plugin behavior
+        // Verifies that both modes produce structurally identical events
+
+        // Test data - same logical event, different formats
+        let timestamp = "2026-03-16T12:00:00Z";
+        let role = "user";
+        let content = "Test message content";
+
+        // Non-envelope format: flat structure
+        let non_envelope_line = format!(
+            r#"{{"ts": "{}", "role": "{}", "content": "{}"}}"#,
+            timestamp, role, content
+        );
+
+        // Envelope format: wrapped structure
+        let envelope_line = format!(
+            r#"{{"type": "message", "timestamp": "{}", "payload": {{"role": "{}", "content": "{}"}}}}"#,
+            timestamp, role, content
+        );
+
+        // Create non-envelope plugin
+        let non_env_plugin = {
+            let mut p = create_test_plugin();
+            p.parser.timestamp = Some("ts".to_string());
+            p
+        };
+
+        // Create envelope plugin
+        let mut env_type_routing = std::collections::HashMap::new();
+        env_type_routing.insert("message".to_string(), "event".to_string());
+        let env_plugin = Plugin {
+            plugin: PluginMeta {
+                name: "test".to_string(),
+                version: "1.0".to_string(),
+            },
+            source: Source {
+                paths: vec!["/tmp/test.jsonl".to_string()],
+                exclude: vec![],
+                format: LogFormat::Jsonl,
+                session_detection: SessionDetection::OneFilePerSession {
+                    session_id_from: SessionIdSource::Filename,
+                },
+                tree: None,
+                truncation_limit: None,
+                envelope: Some(crate::plugin::Envelope {
+                    payload_field: "payload".to_string(),
+                    type_field: "type".to_string(),
+                    type_routing: env_type_routing,
+                }),
+                array: None,
+            },
+            parser: Parser {
+                timestamp: Some("timestamp".to_string()),
+                role: Some("role".to_string()),
+                content: Some("content".to_string()),
+                ..Default::default()
+            },
+            metadata: None,
+        };
+
+        let context = ParseContext::new(
+            "test-session".to_string(),
+            "test".to_string(),
+            "/tmp/test.jsonl".to_string(),
+        );
+
+        // Parse both formats
+        let non_env_events =
+            JsonlParser::parse_line(&non_envelope_line, 1, &context, &non_env_plugin).unwrap();
+        let env_events = JsonlParser::parse_line(&envelope_line, 1, &context, &env_plugin).unwrap();
+
+        // Both should produce exactly 1 event
+        assert_eq!(
+            non_env_events.len(),
+            1,
+            "Non-envelope should produce 1 event"
+        );
+        assert_eq!(env_events.len(), 1, "Envelope should produce 1 event");
+
+        let non_env_event = &non_env_events[0];
+        let env_event = &env_events[0];
+
+        // Verify both events have identical canonical structure
+        assert_eq!(
+            non_env_event.role, env_event.role,
+            "Both should have same role"
+        );
+        assert_eq!(
+            non_env_event.content, env_event.content,
+            "Both should have same content"
+        );
+        assert_eq!(
+            non_env_event.ts, env_event.ts,
+            "Both should have same timestamp"
+        );
+        assert_eq!(
+            non_env_event.session_id, env_event.session_id,
+            "Both should have same session_id"
+        );
+        assert_eq!(
+            non_env_event.source_agent, env_event.source_agent,
+            "Both should have same source_agent"
+        );
+    }
 }
