@@ -1,0 +1,15 @@
+{
+  "workers": [
+    {
+      "id": "claude-code-glm-4.7-agentscribe",
+      "pid": 3963539,
+      "workspace": "/home/coding/AgentScribe",
+      "agent": "claude-code-glm-4.7",
+      "model": null,
+      "provider": "anthropic",
+      "started_at": "2026-06-02T03:24:20.976199562Z",
+      "beads_processed": 13
+    }
+  ],
+  "updated_at": "2026-06-03T06:31:45.462064504Z"
+}

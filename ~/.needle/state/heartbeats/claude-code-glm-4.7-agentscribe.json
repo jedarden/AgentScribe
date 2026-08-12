@@ -1,0 +1,15 @@
+{
+  "worker_id": "agentscribe",
+  "qualified_id": "claude-code-glm-4.7-agentscribe",
+  "pid": 3963539,
+  "state": "SELECTING",
+  "current_bead": null,
+  "workspace": "/home/coding/AgentScribe",
+  "last_heartbeat": "2026-06-07T11:56:39.260673188Z",
+  "started_at": "2026-06-02T03:24:20.925794120Z",
+  "beads_processed": 13,
+  "session": "agentscribe",
+  "is_idle": true,
+  "current_task": null,
+  "model": "claude-code-glm-4.7"
+}

@@ -210,10 +210,38 @@ impl JsonlParser {
                         }
                         None => {
                             // Missing or non-object payload_field - skip with warning
-                            eprintln!(
-                                    "Warning: Envelope payload_field '{}' missing or not an object for type '{}', skipping line",
+                            // Determine specific warning reason
+                            let has_payload_field =
+                                raw_json.get(&envelope_cfg.payload_field).is_some();
+                            let warning_msg = if has_payload_field {
+                                let payload_value =
+                                    raw_json.get(&envelope_cfg.payload_field).unwrap();
+                                let value_desc = match payload_value {
+                                    Value::String(s) => {
+                                        let truncated = if s.len() > 50 {
+                                            format!("{}...", &s[..50])
+                                        } else {
+                                            s.clone()
+                                        };
+                                        format!("string '{}'", truncated)
+                                    }
+                                    Value::Null => "null".to_string(),
+                                    Value::Bool(b) => format!("bool {}", b),
+                                    Value::Number(n) => format!("number {}", n),
+                                    Value::Array(_) => "array".to_string(),
+                                    Value::Object(_) => "object".to_string(),
+                                };
+                                format!(
+                                    "Envelope payload_field '{}' exists for type '{}' but is not an object (found: {}), skipping line",
+                                    envelope_cfg.payload_field, type_value, value_desc
+                                )
+                            } else {
+                                format!(
+                                    "Envelope payload_field '{}' missing for type '{}', skipping line",
                                     envelope_cfg.payload_field, type_value
-                                );
+                                )
+                            };
+                            warn!("{}", warning_msg);
                             return Ok(Vec::new());
                         }
                     }

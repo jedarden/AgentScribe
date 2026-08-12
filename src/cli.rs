@@ -825,6 +825,16 @@ fn run_daemon(action: DaemonAction) -> Result<()> {
 fn print_daemon_status(info: &crate::daemon::DaemonInfo) {
     if !info.running {
         println!("Daemon: stopped");
+
+        // Print health warning even when stopped (e.g., stale last_scrape)
+        if let Some(ref health) = info.health {
+            if health == "critical" || health == "stale" {
+                if let Some(ref message) = info.health_message {
+                    println!();
+                    println!("  ⚠️  {}", message);
+                }
+            }
+        }
         return;
     }
 
@@ -856,6 +866,16 @@ fn print_daemon_status(info: &crate::daemon::DaemonInfo) {
 
     if let Some(ts) = info.started_at {
         println!("  Started at: {}", ts.to_rfc3339());
+    }
+
+    // Print health warning if present
+    if let Some(ref health) = info.health {
+        if health != "healthy" && health != "stopped" {
+            if let Some(ref message) = info.health_message {
+                println!();
+                println!("  ⚠️  {}", message);
+            }
+        }
     }
 }
 

@@ -1,0 +1,7 @@
+Worker completed idle sleep at 2026-06-07T11:52:12.734831911+00:00
+Backoff: 60 seconds
+Elapsed: 60 seconds
+Shutdown checks: 60
+Beads processed: 13
+Uptime: 462471 seconds
+PID: 3963539

@@ -206,7 +206,10 @@ pub fn create_envelope_plugin() -> Plugin {
     role_map.insert("toolResult".to_string(), "tool_result".to_string());
 
     let mut static_fields = HashMap::new();
-    static_fields.insert("source_agent".to_string(), serde_json::json!("test-envelope"));
+    static_fields.insert(
+        "source_agent".to_string(),
+        serde_json::json!("test-envelope"),
+    );
 
     Plugin {
         plugin: PluginMeta {
