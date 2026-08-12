@@ -134,31 +134,43 @@ pub fn parse_timestamp(value: &Value, path: &str) -> Result<DateTime<Utc>> {
 
 /// Extract a field from either envelope or payload based on path prefix
 ///
-/// - If path starts with `^`, extract from envelope (remove `^` prefix)
-/// - Otherwise, extract from payload
-/// - Supports dot notation for nested fields (e.g., `^outer.ts` or `user.role`)
-/// - If envelope is None but path starts with `^`, returns None
-/// - If envelope is None, falls back to payload extraction
+/// **Envelope-first with payload fallback for caret-prefixed paths:**
+/// - If path starts with `^`, try envelope first (remove `^` prefix)
+/// - If envelope is None OR field not found in envelope, fallback to payload
+/// - Otherwise, extract from payload only
+///
+/// **Resolution order for `^field`:**
+/// 1. Try `envelope.field` (if envelope exists)
+/// 2. Fallback to `payload.field` (if envelope missing or field not found)
+/// 3. Return None (if both fail)
+///
+/// **Resolution order for `field` (no caret):**
+/// - Extract from `payload.field` only
+///
+/// Supports dot notation for nested fields (e.g., `^outer.ts` or `user.role`)
+/// and array indexing (e.g., `items[0].name`).
 pub fn extract_with_envelope(
     path: &str,
     payload: &Value,
     envelope: Option<&Value>,
 ) -> Option<Value> {
     if path.starts_with('^') {
-        // Extract from envelope
+        // Strip the caret prefix
         if let Some(envelope_path) = path.strip_prefix('^') {
+            // Try envelope first
             if let Some(env) = envelope {
-                extract_field(env, envelope_path)
-            } else {
-                // No envelope available, return None
-                None
+                if let Some(value) = extract_field(env, envelope_path) {
+                    return Some(value); // Found in envelope
+                }
             }
+            // Fallback to payload (using path without ^)
+            extract_field(payload, envelope_path)
         } else {
             // Should not happen due to starts_with check, but handle defensively
             None
         }
     } else {
-        // Extract from payload
+        // No caret prefix - extract from payload only
         extract_field(payload, path)
     }
 }
@@ -347,21 +359,32 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_with_envelope_caret_prefix_no_envelope_returns_empty() {
-        let payload = json!({"role": "user", "content": "hello"});
+    fn test_extract_with_envelope_caret_prefix_no_envelope_fallback_to_payload() {
+        let payload =
+            json!({"role": "user", "content": "hello", "timestamp": "2026-03-16T12:00:00Z"});
 
-        // ^ prefix with no envelope should return None
+        // ^ prefix with no envelope should fallback to payload
         let result = extract_with_envelope("^timestamp", &payload, None);
-        assert_eq!(result, None);
+        assert_eq!(result, Some(json!("2026-03-16T12:00:00Z")));
     }
 
     #[test]
-    fn test_extract_with_envelope_missing_field_from_envelope() {
+    fn test_extract_with_envelope_missing_field_from_envelope_fallback_to_payload() {
+        let payload = json!({"role": "user", "model": "gpt-4"});
+        let envelope = json!({"timestamp": "2026-03-16T12:00:00Z"});
+
+        // Missing field in envelope should fallback to payload
+        let result = extract_with_envelope("^model", &payload, Some(&envelope));
+        assert_eq!(result, Some(json!("gpt-4")));
+    }
+
+    #[test]
+    fn test_extract_with_envelope_fallback_both_missing() {
         let payload = json!({"role": "user"});
         let envelope = json!({"timestamp": "2026-03-16T12:00:00Z"});
 
-        // Missing field in envelope should return None
-        let result = extract_with_envelope("^missing_field", &payload, Some(&envelope));
+        // Field missing in both envelope and payload should return None
+        let result = extract_with_envelope("^model", &payload, Some(&envelope));
         assert_eq!(result, None);
     }
 
