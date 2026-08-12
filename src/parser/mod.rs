@@ -481,4 +481,268 @@ mod tests {
     fn test_has_caret_prefix_only_caret() {
         assert!(has_caret_prefix("^"));
     }
+
+    // Additional caret-prefix edge cases
+
+    #[test]
+    fn test_has_caret_prefix_various_formats() {
+        // Unicode and special characters
+        assert!(has_caret_prefix("^_field"));
+        assert!(has_caret_prefix("^$field"));
+        assert!(has_caret_prefix("^field-name"));
+        assert!(has_caret_prefix("^field_name"));
+        assert!(has_caret_prefix("^fieldName"));
+
+        // Not a caret prefix
+        assert!(!has_caret_prefix(" ^field")); // space before caret
+        assert!(!has_caret_prefix("field^")); // caret after
+        assert!(has_caret_prefix("^ ")); // caret then space - still starts with ^
+        assert!(has_caret_prefix("^\t")); // caret then tab - still starts with ^
+        assert!(has_caret_prefix("^0")); // caret then number - valid
+        assert!(has_caret_prefix("^🔍")); // caret then emoji - valid Unicode
+    }
+
+    // extract_string_with_envelope tests
+
+    #[test]
+    fn test_extract_string_with_envelope_from_envelope() {
+        let payload = json!({"role": "user"});
+        let envelope = json!({"timestamp": "2026-03-16T12:00:00Z"});
+
+        // Extract string from envelope using ^ prefix
+        let result = extract_string_with_envelope("^timestamp", &payload, Some(&envelope));
+        assert_eq!(result, Some("2026-03-16T12:00:00Z".to_string()));
+    }
+
+    #[test]
+    fn test_extract_string_with_envelope_from_payload() {
+        let payload = json!({"role": "user", "content": "hello"});
+        let envelope = json!({"timestamp": "2026-03-16T12:00:00Z"});
+
+        // Extract string from payload (no ^ prefix)
+        let result = extract_string_with_envelope("role", &payload, Some(&envelope));
+        assert_eq!(result, Some("user".to_string()));
+    }
+
+    #[test]
+    fn test_extract_string_with_envelope_number_coercion() {
+        let payload = json!({"count": 42});
+        let envelope = json!({"timestamp": 1710590400});
+
+        // Numbers should be coerced to strings
+        let result1 = extract_string_with_envelope("count", &payload, None);
+        assert_eq!(result1, Some("42".to_string()));
+
+        let result2 = extract_string_with_envelope("^timestamp", &payload, Some(&envelope));
+        assert_eq!(result2, Some("1710590400".to_string()));
+    }
+
+    #[test]
+    fn test_extract_string_with_envelope_bool_coercion() {
+        let payload = json!({"active": true});
+        let envelope = json!({"enabled": false});
+
+        // Booleans should be coerced to strings
+        let result1 = extract_string_with_envelope("active", &payload, None);
+        assert_eq!(result1, Some("true".to_string()));
+
+        let result2 = extract_string_with_envelope("^enabled", &payload, Some(&envelope));
+        assert_eq!(result2, Some("false".to_string()));
+    }
+
+    #[test]
+    fn test_extract_string_with_envelope_null_coercion() {
+        let payload = json!({"field": null});
+        let envelope = json!({"other": null});
+
+        // Null should be coerced to empty string
+        let result1 = extract_string_with_envelope("field", &payload, None);
+        assert_eq!(result1, Some("".to_string()));
+
+        let result2 = extract_string_with_envelope("^other", &payload, Some(&envelope));
+        assert_eq!(result2, Some("".to_string()));
+    }
+
+    #[test]
+    fn test_extract_string_with_envelope_nested_dot_notation() {
+        let payload = json!({"user": {"name": "alice"}});
+        let envelope = json!({"meta": {"session": "abc123"}});
+
+        // Nested field from payload
+        let result1 = extract_string_with_envelope("user.name", &payload, None);
+        assert_eq!(result1, Some("alice".to_string()));
+
+        // Nested field from envelope with ^ prefix
+        let result2 = extract_string_with_envelope("^meta.session", &payload, Some(&envelope));
+        assert_eq!(result2, Some("abc123".to_string()));
+    }
+
+    #[test]
+    fn test_extract_string_with_envelope_caret_prefix_fallback_to_payload() {
+        let payload = json!({"model": "gpt-4"});
+        let envelope = json!({"timestamp": "2026-03-16T12:00:00Z"});
+
+        // Field not in envelope should fallback to payload
+        let result = extract_string_with_envelope("^model", &payload, Some(&envelope));
+        assert_eq!(result, Some("gpt-4".to_string()));
+    }
+
+    #[test]
+    fn test_extract_string_with_envelope_both_missing_returns_none() {
+        let payload = json!({"role": "user"});
+        let envelope = json!({"timestamp": "2026-03-16T12:00:00Z"});
+
+        // Field missing in both should return None
+        let result = extract_string_with_envelope("^model", &payload, Some(&envelope));
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_extract_string_with_envelope_array_returns_none() {
+        let payload = json!({"items": [{"name": "first"}]});
+        let envelope = json!({"list": [1, 2, 3]});
+
+        // Arrays cannot be coerced to strings, should return None
+        let result1 = extract_string_with_envelope("items", &payload, None);
+        assert_eq!(result1, None);
+
+        let result2 = extract_string_with_envelope("^list", &payload, Some(&envelope));
+        assert_eq!(result2, None);
+    }
+
+    #[test]
+    fn test_extract_string_with_envelope_object_returns_none() {
+        let payload = json!({"nested": {"key": "value"}});
+        let envelope = json!({"meta": {"id": "123"}});
+
+        // Objects cannot be coerced to strings, should return None
+        let result1 = extract_string_with_envelope("nested", &payload, None);
+        assert_eq!(result1, None);
+
+        let result2 = extract_string_with_envelope("^meta", &payload, Some(&envelope));
+        assert_eq!(result2, None);
+    }
+
+    // parse_timestamp_with_envelope tests
+
+    #[test]
+    fn test_parse_timestamp_with_envelope_from_envelope() {
+        let payload = json!({"role": "user"});
+        let envelope = json!({"timestamp": "2026-03-16T12:00:00Z"});
+
+        // Parse timestamp from envelope using ^ prefix
+        let result = parse_timestamp_with_envelope("^timestamp", &payload, Some(&envelope));
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_parse_timestamp_with_envelope_from_payload() {
+        let payload = json!({"timestamp": "2026-03-16T12:00:00Z"});
+        let envelope = json!({"session_id": "abc123"});
+
+        // Parse timestamp from payload (no ^ prefix)
+        let result = parse_timestamp_with_envelope("timestamp", &payload, Some(&envelope));
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_parse_timestamp_with_envelope_epoch_seconds() {
+        let payload = json!({"created_at": 1710590400});
+        let envelope = json!({"ts": 1710590400});
+
+        // Unix epoch seconds from payload
+        let result1 = parse_timestamp_with_envelope("created_at", &payload, None);
+        assert!(result1.is_ok());
+
+        // Unix epoch seconds from envelope with ^ prefix
+        let result2 = parse_timestamp_with_envelope("^ts", &payload, Some(&envelope));
+        assert!(result2.is_ok());
+    }
+
+    #[test]
+    fn test_parse_timestamp_with_envelope_epoch_milliseconds() {
+        let payload = json!({"created_at": 1710590400000i64});
+        let envelope = json!({"ts": 1710590400000i64});
+
+        // Unix epoch milliseconds from payload
+        let result1 = parse_timestamp_with_envelope("created_at", &payload, None);
+        assert!(result1.is_ok());
+
+        // Unix epoch milliseconds from envelope with ^ prefix
+        let result2 = parse_timestamp_with_envelope("^ts", &payload, Some(&envelope));
+        assert!(result2.is_ok());
+    }
+
+    #[test]
+    fn test_parse_timestamp_with_envelope_caret_prefix_fallback_to_payload() {
+        let payload = json!({"timestamp": "2026-03-16T12:00:00Z"});
+        let envelope = json!({"session_id": "abc123"});
+
+        // Field not in envelope should fallback to payload
+        let result = parse_timestamp_with_envelope("^timestamp", &payload, Some(&envelope));
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_parse_timestamp_with_envelope_both_missing_returns_error() {
+        let payload = json!({"role": "user"});
+        let envelope = json!({"session_id": "abc123"});
+
+        // Field missing in both should return error
+        let result = parse_timestamp_with_envelope("^timestamp", &payload, Some(&envelope));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_timestamp_with_envelope_invalid_format_returns_error() {
+        let payload = json!({"timestamp": "not-a-timestamp"});
+        let envelope = json!({"ts": "invalid"});
+
+        // Invalid format from payload
+        let result1 = parse_timestamp_with_envelope("timestamp", &payload, None);
+        assert!(result1.is_err());
+
+        // Invalid format from envelope with ^ prefix
+        let result2 = parse_timestamp_with_envelope("^ts", &payload, Some(&envelope));
+        assert!(result2.is_err());
+    }
+
+    #[test]
+    fn test_parse_timestamp_with_envelope_nested_field() {
+        let payload = json!({"meta": {"created_at": "2026-03-16T12:00:00Z"}});
+        let envelope = json!({"outer": {"inner": {"ts": "2026-03-16T12:00:00Z"}}});
+
+        // Nested field from payload
+        let result1 = parse_timestamp_with_envelope("meta.created_at", &payload, None);
+        assert!(result1.is_ok());
+
+        // Nested field from envelope with ^ prefix
+        let result2 = parse_timestamp_with_envelope("^outer.inner.ts", &payload, Some(&envelope));
+        assert!(result2.is_ok());
+    }
+
+    // Regression tests for non-caret-prefixed fields
+
+    #[test]
+    fn test_non_caret_prefixed_field_ignores_envelope() {
+        let payload = json!({"role": "user", "model": "gpt-4"});
+        let envelope = json!({"role": "system", "model": "gpt-3.5"});
+
+        // Without ^ prefix, should always read from payload, never envelope
+        let result1 = extract_string_with_envelope("role", &payload, Some(&envelope));
+        assert_eq!(result1, Some("user".to_string()));
+
+        let result2 = extract_string_with_envelope("model", &payload, Some(&envelope));
+        assert_eq!(result2, Some("gpt-4".to_string()));
+    }
+
+    #[test]
+    fn test_non_caret_prefixed_field_with_null_envelope() {
+        let payload = json!({"role": "admin"});
+        let envelope = json!({}); // Empty envelope
+
+        // Empty envelope should not affect payload extraction
+        let result = extract_string_with_envelope("role", &payload, Some(&envelope));
+        assert_eq!(result, Some("admin".to_string()));
+    }
 }
