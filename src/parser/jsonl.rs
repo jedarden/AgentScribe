@@ -744,6 +744,234 @@ mod tests {
     };
     use std::path::PathBuf;
 
+    /// Fixture structure for meta routing test cases
+    ///
+    /// Provides a structured way to define meta routing test scenarios
+    /// with expected behavior and assertions.
+    #[derive(Debug, Clone)]
+    struct MetaRoutingTestFixture {
+        /// Test case description
+        description: &'static str,
+        /// Type field value for the envelope line
+        type_value: &'static str,
+        /// Expected routing action: "skip", "meta", or "event"
+        expected_routing: &'static str,
+        /// Expected number of events produced (0 for skip/meta, 1 for event)
+        expected_event_count: usize,
+        /// Sample envelope line JSON for testing
+        sample_line: &'static str,
+        /// Whether the line should be dropped (skip/meta) or produce events (event)
+        should_drop: bool,
+    }
+
+    impl MetaRoutingTestFixture {
+        /// Create a new meta routing test fixture
+        fn new(
+            description: &'static str,
+            type_value: &'static str,
+            expected_routing: &'static str,
+            sample_line: &'static str,
+        ) -> Self {
+            let should_drop = expected_routing == "skip" || expected_routing == "meta";
+            let expected_event_count = if should_drop { 0 } else { 1 };
+
+            Self {
+                description,
+                type_value,
+                expected_routing,
+                expected_event_count,
+                sample_line,
+                should_drop,
+            }
+        }
+
+        /// Create a skip-type fixture (line should be dropped)
+        fn skip_fixture(
+            description: &'static str,
+            type_value: &'static str,
+            sample_line: &'static str,
+        ) -> Self {
+            Self::new(description, type_value, "skip", sample_line)
+        }
+
+        /// Create a meta-type fixture (line should accumulate metadata, not emit events)
+        fn meta_fixture(
+            description: &'static str,
+            type_value: &'static str,
+            sample_line: &'static str,
+        ) -> Self {
+            Self::new(description, type_value, "meta", sample_line)
+        }
+
+        /// Create an event-type fixture (line should produce events)
+        fn event_fixture(
+            description: &'static str,
+            type_value: &'static str,
+            sample_line: &'static str,
+        ) -> Self {
+            Self::new(description, type_value, "event", sample_line)
+        }
+    }
+
+    /// Helper function to create a plugin with custom meta routing configuration
+    ///
+    /// # Arguments
+    /// * `type_routing` - HashMap mapping type values to routing actions
+    ///
+    /// # Returns
+    /// A configured Plugin with envelope routing set up
+    fn create_meta_routing_plugin(
+        type_routing: std::collections::HashMap<String, String>,
+    ) -> Plugin {
+        let mut role_map = std::collections::HashMap::new();
+        role_map.insert("toolResult".to_string(), "tool_result".to_string());
+
+        Plugin {
+            plugin: PluginMeta {
+                name: "test".to_string(),
+                version: "1.0".to_string(),
+            },
+            source: Source {
+                paths: vec!["/tmp/test.jsonl".to_string()],
+                exclude: vec![],
+                format: LogFormat::Jsonl,
+                session_detection: SessionDetection::OneFilePerSession {
+                    session_id_from: SessionIdSource::Filename,
+                },
+                tree: None,
+                truncation_limit: None,
+                envelope: Some(crate::plugin::Envelope {
+                    payload_field: "payload".to_string(),
+                    type_field: "type".to_string(),
+                    type_routing,
+                }),
+                array: None,
+            },
+            parser: Parser {
+                timestamp: Some("^timestamp".to_string()),
+                role: Some("role".to_string()),
+                content: Some("content".to_string()),
+                role_map,
+                ..Default::default()
+            },
+            metadata: None,
+        }
+    }
+
+    /// Helper function to assert meta routing behavior
+    ///
+    /// Parses a line with the given plugin and asserts the expected routing behavior.
+    ///
+    /// # Arguments
+    /// * `plugin` - The plugin to use for parsing
+    /// * `line` - The JSONL line to parse
+    /// * `expected_event_count` - Expected number of events to be produced
+    /// * `should_drop` - Whether the line should be dropped (true) or produce events (false)
+    fn assert_meta_routing_behavior(
+        plugin: &Plugin,
+        line: &str,
+        expected_event_count: usize,
+        should_drop: bool,
+    ) {
+        let context = ParseContext::new(
+            "test-session".to_string(),
+            "test".to_string(),
+            "/tmp/test.jsonl".to_string(),
+        );
+
+        let events =
+            JsonlParser::parse_line(line, 1, &context, plugin).expect("Parsing should succeed");
+
+        assert_eq!(
+            events.len(),
+            expected_event_count,
+            "Expected {} events, got {}",
+            expected_event_count,
+            events.len()
+        );
+
+        assert_eq!(
+            events.is_empty(),
+            should_drop,
+            "Line should {} events, but it {}",
+            if should_drop {
+                "not produce"
+            } else {
+                "produce"
+            },
+            if should_drop {
+                "produced some"
+            } else {
+                "didn't produce"
+            }
+        );
+    }
+
+    /// Helper function to test a meta routing fixture
+    ///
+    /// Uses a fixture to validate meta routing behavior comprehensively.
+    ///
+    /// # Arguments
+    /// * `fixture` - The MetaRoutingTestFixture to validate
+    fn test_meta_routing_fixture(fixture: &MetaRoutingTestFixture) {
+        // Build type routing map with just this fixture's type
+        let mut type_routing = std::collections::HashMap::new();
+        type_routing.insert(
+            fixture.type_value.to_string(),
+            fixture.expected_routing.to_string(),
+        );
+
+        let plugin = create_meta_routing_plugin(type_routing);
+
+        assert_meta_routing_behavior(
+            &plugin,
+            fixture.sample_line,
+            fixture.expected_event_count,
+            fixture.should_drop,
+        );
+    }
+
+    /// Collection of standard meta routing fixtures
+    ///
+    /// Provides a set of commonly-used test scenarios for meta routing.
+    fn standard_meta_routing_fixtures() -> Vec<MetaRoutingTestFixture> {
+        vec![
+            // Skip-type fixtures
+            MetaRoutingTestFixture::skip_fixture(
+                "heartbeat type should be skipped",
+                "heartbeat",
+                r#"{"type": "heartbeat", "timestamp": "2026-03-16T12:00:00Z", "payload": {"status": "ok"}}"#,
+            ),
+            MetaRoutingTestFixture::skip_fixture(
+                "ping type should be skipped",
+                "ping",
+                r#"{"type": "ping", "timestamp": "2026-03-16T12:00:00Z", "payload": {"seq": 1}}"#,
+            ),
+            // Meta-type fixtures
+            MetaRoutingTestFixture::meta_fixture(
+                "session_start type should accumulate metadata",
+                "session_start",
+                r#"{"type": "session_start", "timestamp": "2026-03-16T12:00:00Z", "payload": {"session_id": "sess-001"}}"#,
+            ),
+            MetaRoutingTestFixture::meta_fixture(
+                "session_end type should accumulate metadata",
+                "session_end",
+                r#"{"type": "session_end", "timestamp": "2026-03-16T12:30:00Z", "payload": {"duration": 1800}}"#,
+            ),
+            MetaRoutingTestFixture::meta_fixture(
+                "compaction type should accumulate metadata",
+                "compaction",
+                r#"{"type": "compaction", "timestamp": "2026-03-16T12:05:00Z", "payload": {"files_compacted": 3}}"#,
+            ),
+            // Event-type fixtures
+            MetaRoutingTestFixture::event_fixture(
+                "message type should produce events",
+                "message",
+                r#"{"type": "message", "timestamp": "2026-03-16T12:00:00Z", "payload": {"role": "user", "content": "Hello"}}"#,
+            ),
+        ]
+    }
+
     fn create_test_plugin() -> Plugin {
         Plugin {
             plugin: PluginMeta {
@@ -1185,6 +1413,7 @@ mod tests {
         type_routing.insert("session_start".to_string(), "meta".to_string());
         type_routing.insert("session_end".to_string(), "meta".to_string());
         type_routing.insert("metrics".to_string(), "meta".to_string());
+        type_routing.insert("compaction".to_string(), "meta".to_string());
         // "unknown_event" is NOT in the routing map → defaults to skip
 
         Plugin {
@@ -1267,6 +1496,60 @@ mod tests {
         assert!(
             events.is_empty(),
             "session_start (meta) should produce zero events"
+        );
+    }
+
+    #[test]
+    fn test_meta_type_session_end_produces_zero_events() {
+        let plugin = create_skip_meta_unknown_plugin();
+        let context = ParseContext::new(
+            "test-session".to_string(),
+            "test".to_string(),
+            "/tmp/test.jsonl".to_string(),
+        );
+
+        let line = r#"{"type": "session_end", "timestamp": "2026-07-04T10:00:30Z", "payload": {"duration": 30}}"#;
+        let events = JsonlParser::parse_line(line, 1, &context, &plugin).unwrap();
+
+        assert!(
+            events.is_empty(),
+            "session_end (meta) should produce zero events"
+        );
+    }
+
+    #[test]
+    fn test_meta_type_metrics_produces_zero_events() {
+        let plugin = create_skip_meta_unknown_plugin();
+        let context = ParseContext::new(
+            "test-session".to_string(),
+            "test".to_string(),
+            "/tmp/test.jsonl".to_string(),
+        );
+
+        let line = r#"{"type": "metrics", "timestamp": "2026-07-04T10:00:35Z", "payload": {"events_processed": 5}}"#;
+        let events = JsonlParser::parse_line(line, 1, &context, &plugin).unwrap();
+
+        assert!(
+            events.is_empty(),
+            "metrics (meta) should produce zero events"
+        );
+    }
+
+    #[test]
+    fn test_meta_type_compaction_produces_zero_events() {
+        let plugin = create_skip_meta_unknown_plugin();
+        let context = ParseContext::new(
+            "test-session".to_string(),
+            "test".to_string(),
+            "/tmp/test.jsonl".to_string(),
+        );
+
+        let line = r#"{"type": "compaction", "timestamp": "2026-07-04T10:00:40Z", "payload": {"files_compacted": 3}}"#;
+        let events = JsonlParser::parse_line(line, 1, &context, &plugin).unwrap();
+
+        assert!(
+            events.is_empty(),
+            "compaction (meta) should produce zero events"
         );
     }
 
@@ -2930,5 +3213,117 @@ mod tests {
         assert!(events[3].content.contains("directory contains"));
 
         // Full pipeline works correctly
+    }
+
+    // ─── Meta Routing Test Infrastructure Tests ───
+
+    #[test]
+    fn test_meta_routing_infrastructure_standard_fixtures() {
+        // Test all standard meta routing fixtures using the new infrastructure
+        let fixtures = standard_meta_routing_fixtures();
+
+        for fixture in &fixtures {
+            test_meta_routing_fixture(fixture);
+        }
+
+        println!(
+            "✅ All {} standard meta routing fixtures passed",
+            fixtures.len()
+        );
+    }
+
+    #[test]
+    fn test_meta_routing_fixture_skip_types() {
+        // Test that skip-type fixtures all produce zero events
+        let fixtures = vec![
+            MetaRoutingTestFixture::skip_fixture(
+                "heartbeat skip",
+                "heartbeat",
+                r#"{"type": "heartbeat", "timestamp": "2026-03-16T12:00:00Z", "payload": {"status": "ok"}}"#,
+            ),
+            MetaRoutingTestFixture::skip_fixture(
+                "ping skip",
+                "ping",
+                r#"{"type": "ping", "timestamp": "2026-03-16T12:00:00Z", "payload": {"seq": 1}}"#,
+            ),
+        ];
+
+        for fixture in &fixtures {
+            test_meta_routing_fixture(fixture);
+        }
+    }
+
+    #[test]
+    fn test_meta_routing_fixture_meta_types() {
+        // Test that meta-type fixtures all accumulate metadata (produce 0 events)
+        let fixtures = vec![
+            MetaRoutingTestFixture::meta_fixture(
+                "session_start meta",
+                "session_start",
+                r#"{"type": "session_start", "timestamp": "2026-03-16T12:00:00Z", "payload": {"session_id": "sess-001"}}"#,
+            ),
+            MetaRoutingTestFixture::meta_fixture(
+                "session_end meta",
+                "session_end",
+                r#"{"type": "session_end", "timestamp": "2026-03-16T12:30:00Z", "payload": {"duration": 1800}}"#,
+            ),
+            MetaRoutingTestFixture::meta_fixture(
+                "compaction meta",
+                "compaction",
+                r#"{"type": "compaction", "timestamp": "2026-03-16T12:05:00Z", "payload": {"files_compacted": 3}}"#,
+            ),
+        ];
+
+        for fixture in &fixtures {
+            test_meta_routing_fixture(fixture);
+        }
+    }
+
+    #[test]
+    fn test_meta_routing_fixture_event_types() {
+        // Test that event-type fixtures produce events
+        let fixtures = vec![MetaRoutingTestFixture::event_fixture(
+            "message event",
+            "message",
+            r#"{"type": "message", "timestamp": "2026-03-16T12:00:00Z", "payload": {"role": "user", "content": "Hello"}}"#,
+        )];
+
+        for fixture in &fixtures {
+            test_meta_routing_fixture(fixture);
+        }
+    }
+
+    #[test]
+    fn test_meta_routing_helper_function() {
+        // Test the assert_meta_routing_behavior helper directly
+        let mut type_routing = std::collections::HashMap::new();
+        type_routing.insert("message".to_string(), "event".to_string());
+        type_routing.insert("heartbeat".to_string(), "skip".to_string());
+
+        let plugin = create_meta_routing_plugin(type_routing);
+
+        // Test event type produces 1 event
+        let event_line = r#"{"type": "message", "timestamp": "2026-03-16T12:00:00Z", "payload": {"role": "user", "content": "Hello"}}"#;
+        assert_meta_routing_behavior(&plugin, event_line, 1, false);
+
+        // Test skip type produces 0 events
+        let skip_line = r#"{"type": "heartbeat", "timestamp": "2026-03-16T12:00:00Z", "payload": {"status": "ok"}}"#;
+        assert_meta_routing_behavior(&plugin, skip_line, 0, true);
+    }
+
+    #[test]
+    fn test_meta_routing_plugin_helper() {
+        // Test the create_meta_routing_plugin helper
+        let mut type_routing = std::collections::HashMap::new();
+        type_routing.insert("test_event".to_string(), "event".to_string());
+
+        let plugin = create_meta_routing_plugin(type_routing);
+
+        // Verify plugin structure
+        assert_eq!(plugin.plugin.name, "test");
+        assert!(plugin.source.envelope.is_some());
+        let envelope = plugin.source.envelope.as_ref().unwrap();
+        assert_eq!(envelope.type_field, "type");
+        assert_eq!(envelope.payload_field, "payload");
     }
 }
