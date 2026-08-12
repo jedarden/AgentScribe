@@ -3,4 +3,5 @@
 {"type":"session_start","timestamp":"2026-07-04T10:00:00Z","payload":{"session_id":"sess-001"}}
 {"type":"session_end","timestamp":"2026-07-04T10:00:30Z","payload":{"duration":30}}
 {"type":"metrics","timestamp":"2026-07-04T10:00:35Z","payload":{"events_processed":5}}
+{"type":"compaction","timestamp":"2026-07-04T10:00:40Z","payload":{"files_compacted":3}}
 {"type":"unknown_event","timestamp":"2026-07-04T10:00:35Z","payload":{"data":"something"}}
