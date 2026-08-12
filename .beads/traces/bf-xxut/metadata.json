@@ -1,15 +1,15 @@
 {
   "bead_id": "bf-xxut",
   "agent": "claude-code-glm-4.7",
-  "provider": "zai",
+  "provider": "anthropic",
   "model": "glm-4.7",
   "exit_code": 0,
   "outcome": "success",
-  "duration_ms": 158221,
+  "duration_ms": 184187,
   "input_tokens": null,
   "output_tokens": null,
   "cost_usd": null,
-  "captured_at": "2026-07-24T21:58:56.818299606Z",
+  "captured_at": "2026-08-12T16:57:12.429211888Z",
   "trace_format": "claude_json",
   "pruned": false,
   "template_version": null
