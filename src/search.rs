@@ -182,7 +182,8 @@ pub fn execute_search(data_dir: &Path, opts: &SearchOptions) -> Result<SearchOut
                 "Semantic search (--semantic) is currently non-functional (stub mode). \
                  The turbovec dependency is disabled due to BLAS library linking issues. \
                  See src/vector.rs for restoration steps. \
-                 Use regular BM25 search instead (omit --semantic flag).".to_string()
+                 Use regular BM25 search instead (omit --semantic flag)."
+                    .to_string(),
             ));
         }
         return execute_semantic_search(data_dir, opts, &start, total_docs);
@@ -196,7 +197,8 @@ pub fn execute_search(data_dir: &Path, opts: &SearchOptions) -> Result<SearchOut
                 "Hybrid search (--hybrid) is currently non-functional (stub mode). \
                  The turbovec dependency is disabled due to BLAS library linking issues. \
                  See src/vector.rs for restoration steps. \
-                 Use regular BM25 search instead (omit --hybrid flag).".to_string()
+                 Use regular BM25 search instead (omit --hybrid flag)."
+                    .to_string(),
             ));
         }
         return execute_hybrid_search(data_dir, opts, &start, total_docs);

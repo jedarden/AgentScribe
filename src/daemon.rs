@@ -47,6 +47,12 @@ pub struct DaemonInfo {
     pub sessions_indexed: Option<u64>,
     pub last_scrape: Option<DateTime<Utc>>,
     pub started_at: Option<DateTime<Utc>>,
+    /// Health status: "healthy", "stale", "warning", "critical"
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub health: Option<String>,
+    /// Human-readable health message (e.g., "Last scrape was 26 days ago")
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub health_message: Option<String>,
 }
 
 /// Daemon state persisted to disk
@@ -252,7 +258,62 @@ pub fn status(data_dir: &Path) -> Result<DaemonInfo> {
         sessions_indexed: None,
         last_scrape: None,
         started_at: None,
+        health: None,
+        health_message: None,
     };
+
+    // Even if daemon is not running, check if last_scrape is stale
+    // This catches the case where daemon died long ago
+    if let Some(state) = load_state(&state_file) {
+        info.sessions_indexed = Some(state.sessions_indexed);
+        info.last_scrape = state.last_scrape;
+        info.started_at = state.started_at;
+
+        // Calculate staleness: use 1 hour as default threshold
+        // (could be made configurable via 2x debounce+rediscovery in the future)
+        let stale_threshold_secs = 3600; // 1 hour
+        let critical_threshold_secs = 86400; // 24 hours
+
+        if let Some(last_scrape_ts) = state.last_scrape {
+            let now = Utc::now();
+            let duration = now.signed_duration_since(last_scrape_ts);
+            let secs_since = duration.num_seconds();
+
+            if secs_since > critical_threshold_secs {
+                info.health = Some("critical".to_string());
+                let days = secs_since / 86400;
+                info.health_message = Some(format!(
+                    "CRITICAL: Daemon has not scraped in {} days (last: {})",
+                    days,
+                    last_scrape_ts.format("%Y-%m-%d %H:%M:%S UTC")
+                ));
+            } else if secs_since > stale_threshold_secs {
+                info.health = Some("stale".to_string());
+                let hours = secs_since / 3600;
+                info.health_message = Some(format!(
+                    "WARNING: Last scrape was {} hours ago (may indicate daemon failure)",
+                    hours
+                ));
+            } else {
+                if running {
+                    info.health = Some("healthy".to_string());
+                } else {
+                    info.health = Some("stopped".to_string());
+                }
+                info.health_message = None;
+            }
+        } else {
+            // No scrape ever recorded
+            if running {
+                info.health = Some("warning".to_string());
+                info.health_message =
+                    Some("WARNING: Daemon running but no scrapes recorded yet".to_string());
+            } else {
+                info.health = Some("stopped".to_string());
+                info.health_message = None;
+            }
+        }
+    }
 
     if !running {
         return Ok(info);
@@ -302,13 +363,6 @@ pub fn status(data_dir: &Path) -> Result<DaemonInfo> {
                 break;
             }
         }
-    }
-
-    // Load persisted state
-    if let Some(state) = load_state(&state_file) {
-        info.sessions_indexed = Some(state.sessions_indexed);
-        info.last_scrape = state.last_scrape;
-        info.started_at = state.started_at;
     }
 
     Ok(info)
@@ -1456,6 +1510,85 @@ mod tests {
         let info = status(dir.path()).unwrap();
         assert!(!info.running);
         assert!(info.pid.is_none());
+    }
+
+    #[test]
+    fn test_status_stale_last_scrape_critical() {
+        let dir = tempfile::tempdir().unwrap();
+        let state_file = dir.path().join(STATE_FILE);
+
+        // Create state with last scrape 2 days ago (critical threshold)
+        let old_state = PersistedState {
+            started_at: Some(Utc::now() - chrono::Duration::days(3)),
+            sessions_indexed: 100,
+            last_scrape: Some(Utc::now() - chrono::Duration::days(2)),
+        };
+        save_state(&state_file, &old_state).unwrap();
+
+        let info = status(dir.path()).unwrap();
+        assert!(!info.running); // No PID file, so not running
+        assert_eq!(info.health, Some("critical".to_string()));
+        assert!(info.health_message.is_some());
+        assert!(info.health_message.as_ref().unwrap().contains("2 days"));
+        assert_eq!(info.sessions_indexed, Some(100));
+    }
+
+    #[test]
+    fn test_status_stale_last_scrape_stale() {
+        let dir = tempfile::tempdir().unwrap();
+        let state_file = dir.path().join(STATE_FILE);
+
+        // Create state with last scrape 2 hours ago (stale threshold)
+        let old_state = PersistedState {
+            started_at: Some(Utc::now() - chrono::Duration::hours(3)),
+            sessions_indexed: 50,
+            last_scrape: Some(Utc::now() - chrono::Duration::hours(2)),
+        };
+        save_state(&state_file, &old_state).unwrap();
+
+        let info = status(dir.path()).unwrap();
+        assert!(!info.running);
+        assert_eq!(info.health, Some("stale".to_string()));
+        assert!(info.health_message.is_some());
+        assert!(info.health_message.as_ref().unwrap().contains("2 hours"));
+    }
+
+    #[test]
+    fn test_status_healthy_last_scrape_recent() {
+        let dir = tempfile::tempdir().unwrap();
+        let state_file = dir.path().join(STATE_FILE);
+
+        // Create state with last scrape 10 minutes ago (healthy)
+        let recent_state = PersistedState {
+            started_at: Some(Utc::now() - chrono::Duration::minutes(30)),
+            sessions_indexed: 25,
+            last_scrape: Some(Utc::now() - chrono::Duration::minutes(10)),
+        };
+        save_state(&state_file, &recent_state).unwrap();
+
+        let info = status(dir.path()).unwrap();
+        assert!(!info.running);
+        assert_eq!(info.health, Some("stopped".to_string()));
+        assert!(info.health_message.is_none());
+    }
+
+    #[test]
+    fn test_status_no_scrape_recorded() {
+        let dir = tempfile::tempdir().unwrap();
+        let state_file = dir.path().join(STATE_FILE);
+
+        // Create state with no last scrape
+        let empty_state = PersistedState {
+            started_at: Some(Utc::now() - chrono::Duration::minutes(5)),
+            sessions_indexed: 0,
+            last_scrape: None,
+        };
+        save_state(&state_file, &empty_state).unwrap();
+
+        let info = status(dir.path()).unwrap();
+        assert!(!info.running);
+        assert_eq!(info.health, Some("stopped".to_string()));
+        assert!(info.health_message.is_none());
     }
 
     // ── daemon logs ────────────────────────────────────────────────────
