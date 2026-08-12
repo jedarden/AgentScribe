@@ -2237,4 +2237,283 @@ mod tests {
             "Unknown type should default to skip behavior and produce 0 events"
         );
     }
+
+    // -- Type field extraction tests for string, number, bool, and missing --
+
+    #[test]
+    fn test_type_field_extraction_string_value() {
+        // Test that type field with string value is extracted correctly
+        let mut plugin = create_test_plugin();
+        let mut type_routing = std::collections::HashMap::new();
+        type_routing.insert("message".to_string(), "event".to_string());
+        plugin.source.envelope = Some(crate::plugin::Envelope {
+            payload_field: "payload".to_string(),
+            type_field: "type".to_string(),
+            type_routing,
+        });
+        plugin.parser.timestamp = Some("timestamp".to_string());
+        plugin.parser.role = Some("role".to_string());
+        plugin.parser.content = Some("content".to_string());
+
+        let context = ParseContext::new(
+            "test-session".to_string(),
+            "test".to_string(),
+            "/tmp/test.jsonl".to_string(),
+        );
+
+        // Type field is a string value "message"
+        let line = r#"{"type": "message", "timestamp": "2026-03-16T12:00:00Z", "payload": {"role": "user", "content": "Hello"}}"#;
+        let events = JsonlParser::parse_line(line, 1, &context, &plugin).unwrap();
+
+        // Should route to "event" and produce 1 event
+        assert_eq!(
+            events.len(),
+            1,
+            "String type value 'message' should route to event"
+        );
+        assert_eq!(events[0].role, Role::User);
+        assert_eq!(events[0].content, "Hello");
+    }
+
+    #[test]
+    fn test_type_field_extraction_number_value() {
+        // Test that type field with numeric value is converted to string and routed correctly
+        let mut plugin = create_test_plugin();
+        let mut type_routing = std::collections::HashMap::new();
+        // Type routing uses numeric value as string
+        type_routing.insert("1".to_string(), "event".to_string());
+        type_routing.insert("2".to_string(), "skip".to_string());
+        plugin.source.envelope = Some(crate::plugin::Envelope {
+            payload_field: "payload".to_string(),
+            type_field: "type".to_string(),
+            type_routing,
+        });
+        plugin.parser.timestamp = Some("timestamp".to_string());
+        plugin.parser.role = Some("role".to_string());
+        plugin.parser.content = Some("content".to_string());
+
+        let context = ParseContext::new(
+            "test-session".to_string(),
+            "test".to_string(),
+            "/tmp/test.jsonl".to_string(),
+        );
+
+        // Type field is a numeric value 1
+        let line = r#"{"type": 1, "timestamp": "2026-03-16T12:00:00Z", "payload": {"role": "user", "content": "Hello"}}"#;
+        let events = JsonlParser::parse_line(line, 1, &context, &plugin).unwrap();
+
+        // Should convert number to string "1" and route to "event"
+        assert_eq!(
+            events.len(),
+            1,
+            "Numeric type value 1 should be converted to '1' and route to event"
+        );
+        assert_eq!(events[0].content, "Hello");
+
+        // Test numeric value 2 routes to skip
+        let line2 = r#"{"type": 2, "timestamp": "2026-03-16T12:00:00Z", "payload": {"role": "user", "content": "Skipped"}}"#;
+        let events2 = JsonlParser::parse_line(line2, 1, &context, &plugin).unwrap();
+
+        // Should convert number to string "2" and route to "skip"
+        assert_eq!(
+            events2.len(),
+            0,
+            "Numeric type value 2 should be converted to '2' and route to skip"
+        );
+    }
+
+    #[test]
+    fn test_type_field_extraction_bool_value() {
+        // Test that type field with boolean value is converted to string and routed correctly
+        let mut plugin = create_test_plugin();
+        let mut type_routing = std::collections::HashMap::new();
+        // Type routing uses boolean values as strings
+        type_routing.insert("true".to_string(), "event".to_string());
+        type_routing.insert("false".to_string(), "skip".to_string());
+        plugin.source.envelope = Some(crate::plugin::Envelope {
+            payload_field: "payload".to_string(),
+            type_field: "type".to_string(),
+            type_routing,
+        });
+        plugin.parser.timestamp = Some("timestamp".to_string());
+        plugin.parser.role = Some("role".to_string());
+        plugin.parser.content = Some("content".to_string());
+
+        let context = ParseContext::new(
+            "test-session".to_string(),
+            "test".to_string(),
+            "/tmp/test.jsonl".to_string(),
+        );
+
+        // Type field is boolean true
+        let line = r#"{"type": true, "timestamp": "2026-03-16T12:00:00Z", "payload": {"role": "user", "content": "Hello"}}"#;
+        let events = JsonlParser::parse_line(line, 1, &context, &plugin).unwrap();
+
+        // Should convert bool to string "true" and route to "event"
+        assert_eq!(
+            events.len(),
+            1,
+            "Boolean type value true should be converted to 'true' and route to event"
+        );
+        assert_eq!(events[0].content, "Hello");
+
+        // Test boolean false routes to skip
+        let line2 = r#"{"type": false, "timestamp": "2026-03-16T12:00:00Z", "payload": {"role": "user", "content": "Skipped"}}"#;
+        let events2 = JsonlParser::parse_line(line2, 1, &context, &plugin).unwrap();
+
+        // Should convert bool to string "false" and route to "skip"
+        assert_eq!(
+            events2.len(),
+            0,
+            "Boolean type value false should be converted to 'false' and route to skip"
+        );
+    }
+
+    #[test]
+    fn test_type_field_extraction_missing_defaults_to_empty_string() {
+        // Test that missing type field defaults to empty string and routes to skip
+        let mut plugin = create_test_plugin();
+        let mut type_routing = std::collections::HashMap::new();
+        type_routing.insert("message".to_string(), "event".to_string());
+        // Empty string is NOT in routing map, so it should default to skip
+        plugin.source.envelope = Some(crate::plugin::Envelope {
+            payload_field: "payload".to_string(),
+            type_field: "type".to_string(),
+            type_routing,
+        });
+        plugin.parser.timestamp = Some("timestamp".to_string());
+        plugin.parser.role = Some("role".to_string());
+        plugin.parser.content = Some("content".to_string());
+
+        let context = ParseContext::new(
+            "test-session".to_string(),
+            "test".to_string(),
+            "/tmp/test.jsonl".to_string(),
+        );
+
+        // Type field is completely missing from the JSON line
+        let line = r#"{"timestamp": "2026-03-16T12:00:00Z", "payload": {"role": "user", "content": "Hello"}}"#;
+        let events = JsonlParser::parse_line(line, 1, &context, &plugin).unwrap();
+
+        // Missing type_field should default to empty string "", which routes to skip
+        assert_eq!(
+            events.len(),
+            0,
+            "Missing type field should default to empty string and route to skip"
+        );
+    }
+
+    #[test]
+    fn test_type_field_extraction_empty_string_value() {
+        // Test that type field with explicit empty string routes to skip
+        let mut plugin = create_test_plugin();
+        let mut type_routing = std::collections::HashMap::new();
+        type_routing.insert("message".to_string(), "event".to_string());
+        // Empty string is NOT in routing map, so it should default to skip
+        plugin.source.envelope = Some(crate::plugin::Envelope {
+            payload_field: "payload".to_string(),
+            type_field: "type".to_string(),
+            type_routing,
+        });
+        plugin.parser.timestamp = Some("timestamp".to_string());
+        plugin.parser.role = Some("role".to_string());
+        plugin.parser.content = Some("content".to_string());
+
+        let context = ParseContext::new(
+            "test-session".to_string(),
+            "test".to_string(),
+            "/tmp/test.jsonl".to_string(),
+        );
+
+        // Type field is explicitly an empty string
+        let line = r#"{"type": "", "timestamp": "2026-03-16T12:00:00Z", "payload": {"role": "user", "content": "Hello"}}"#;
+        let events = JsonlParser::parse_line(line, 1, &context, &plugin).unwrap();
+
+        // Empty string should default to skip behavior
+        assert_eq!(
+            events.len(),
+            0,
+            "Empty string type field should route to skip"
+        );
+    }
+
+    #[test]
+    fn test_type_field_extraction_null_value() {
+        // Test that type field with null value defaults to empty string and routes to skip
+        let mut plugin = create_test_plugin();
+        let mut type_routing = std::collections::HashMap::new();
+        type_routing.insert("message".to_string(), "event".to_string());
+        plugin.source.envelope = Some(crate::plugin::Envelope {
+            payload_field: "payload".to_string(),
+            type_field: "type".to_string(),
+            type_routing,
+        });
+        plugin.parser.timestamp = Some("timestamp".to_string());
+        plugin.parser.role = Some("role".to_string());
+        plugin.parser.content = Some("content".to_string());
+
+        let context = ParseContext::new(
+            "test-session".to_string(),
+            "test".to_string(),
+            "/tmp/test.jsonl".to_string(),
+        );
+
+        // Type field is explicitly null
+        let line = r#"{"type": null, "timestamp": "2026-03-16T12:00:00Z", "payload": {"role": "user", "content": "Hello"}}"#;
+        let events = JsonlParser::parse_line(line, 1, &context, &plugin).unwrap();
+
+        // Null type field should default to empty string and route to skip
+        assert_eq!(
+            events.len(),
+            0,
+            "Null type field should default to empty string and route to skip"
+        );
+    }
+
+    #[test]
+    fn test_envelope_get_routing_returns_correct_action() {
+        // Test that envelope.get_routing() returns the correct routing action for different type values
+        let mut type_routing = std::collections::HashMap::new();
+        type_routing.insert("message".to_string(), "event".to_string());
+        type_routing.insert("session".to_string(), "meta".to_string());
+        type_routing.insert("heartbeat".to_string(), "skip".to_string());
+
+        let envelope = crate::plugin::Envelope {
+            payload_field: "payload".to_string(),
+            type_field: "type".to_string(),
+            type_routing,
+        };
+
+        // Test each routing action
+        assert_eq!(envelope.get_routing("message"), "event");
+        assert_eq!(envelope.get_routing("session"), "meta");
+        assert_eq!(envelope.get_routing("heartbeat"), "skip");
+
+        // Test unknown type defaults to skip
+        assert_eq!(envelope.get_routing("unknown"), "skip");
+
+        // Test empty string defaults to skip
+        assert_eq!(envelope.get_routing(""), "skip");
+    }
+
+    #[test]
+    fn test_no_envelope_config_no_change_in_behavior() {
+        // Test that plugins without envelope config work as before (no behavior change)
+        let plugin = create_test_plugin(); // No envelope config
+        let context = ParseContext::new(
+            "test-session".to_string(),
+            "test".to_string(),
+            "/tmp/test.jsonl".to_string(),
+        );
+
+        let line = r#"{"ts": "2026-03-16T12:00:00Z", "role": "user", "content": "Hello"}"#;
+        let events = JsonlParser::parse_line(line, 1, &context, &plugin).unwrap();
+
+        // Should parse normally without envelope processing
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].role, Role::User);
+        assert_eq!(events[0].content, "Hello");
+        assert_eq!(events[0].session_id, "test-session");
+        assert_eq!(events[0].source_agent, "test");
+    }
 }
