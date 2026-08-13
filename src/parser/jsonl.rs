@@ -1170,6 +1170,35 @@ mod tests {
     }
 
     #[test]
+    fn test_skip_routing_returns_ok_empty_vec() {
+        // Test that skip routing explicitly returns Ok(Vec::new())
+        let mut plugin = create_test_plugin();
+        let mut type_routing = std::collections::HashMap::new();
+        type_routing.insert("heartbeat".to_string(), "skip".to_string());
+        plugin.source.envelope = Some(crate::plugin::Envelope {
+            payload_field: "payload".to_string(),
+            type_field: "type".to_string(),
+            type_routing,
+        });
+
+        let context = ParseContext::new(
+            "test-session".to_string(),
+            "test".to_string(),
+            "/tmp/test.jsonl".to_string(),
+        );
+
+        // Line with skip routing type
+        let line = r#"{"type": "heartbeat", "payload": {"ts": "2026-03-16T12:00:00Z", "role": "user", "content": "ping"}}"#;
+
+        // Verify return value is Ok(Vec::new())
+        let result = JsonlParser::parse_line(line, 1, &context, &plugin);
+        assert!(result.is_ok(), "Skip routing should return Ok");
+
+        let events = result.unwrap();
+        assert!(events.is_empty(), "Skip routing should return empty vector");
+    }
+
+    #[test]
     fn test_parse_line_envelope_meta_routing() {
         // Plugin with envelope config where type "meta_update" routes to meta
         let mut plugin = create_test_plugin();
