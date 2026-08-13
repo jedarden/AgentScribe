@@ -76,12 +76,14 @@ impl MockEventEmitter {
     }
 
     /// Set the timestamp increment between events
+    #[allow(dead_code)]
     pub fn with_timestamp_increment(mut self, increment_ms: i64) -> Self {
         self.timestamp_increment_ms = increment_ms;
         self
     }
 
     /// Set the starting timestamp
+    #[allow(dead_code)]
     pub fn with_start_time(mut self, start_time: chrono::DateTime<chrono::Utc>) -> Self {
         self.current_timestamp = start_time;
         self
@@ -156,6 +158,7 @@ impl MockEventEmitter {
     }
 
     /// Emit a system event
+    #[allow(dead_code)]
     pub fn emit_system_event(&mut self, content: &str) -> &Event {
         let event = Event::new(
             self.current_timestamp,
@@ -170,6 +173,7 @@ impl MockEventEmitter {
     }
 
     /// Emit a custom event with full control over all fields
+    #[allow(dead_code)]
     pub fn emit_custom_event(&mut self, event: Event) {
         self.events.push(event);
         self.advance_timestamp();
@@ -181,6 +185,7 @@ impl MockEventEmitter {
     }
 
     /// Get all emitted events
+    #[allow(dead_code)]
     pub fn events(&self) -> &[Event] {
         &self.events
     }
@@ -306,11 +311,13 @@ impl EventStreamTracker {
     }
 
     /// Get the next event (removes it from the stream)
+    #[allow(dead_code)]
     pub fn consume_next(&mut self) -> Option<Event> {
         self.events.pop_front()
     }
 
     /// Peek at the next event without removing it
+    #[allow(dead_code)]
     pub fn peek(&self) -> Option<&Event> {
         self.events.front()
     }
