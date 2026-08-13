@@ -302,6 +302,136 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    // Tests for Import and ImportType types
+
+    #[test]
+    fn test_import_type_creation() {
+        // Test creating all ImportType variants
+        let use_type = ImportType::Use;
+        let extern_crate_type = ImportType::ExternCrate;
+        let mod_type = ImportType::Mod;
+
+        // Verify they are different instances
+        assert_ne!(use_type, extern_crate_type);
+        assert_ne!(use_type, mod_type);
+        assert_ne!(extern_crate_type, mod_type);
+    }
+
+    #[test]
+    fn test_import_creation_with_all_fields() {
+        // Test creating Import struct with all fields populated
+        let import = Import::new(
+            "std::collections::HashMap".to_string(),
+            ImportType::Use,
+            42,
+        );
+
+        assert_eq!(import.name, "std::collections::HashMap");
+        assert_eq!(import.import_type, ImportType::Use);
+        assert_eq!(import.line_number, 42);
+    }
+
+    #[test]
+    fn test_import_debug_formatting() {
+        // Test Debug trait for Import
+        let import = Import::new(
+            "crate::module::Item".to_string(),
+            ImportType::ExternCrate,
+            15,
+        );
+
+        let debug_output = format!("{:?}", import);
+        assert!(debug_output.contains("crate::module::Item"));
+        assert!(debug_output.contains("ExternCrate"));
+        assert!(debug_output.contains("15"));
+    }
+
+    #[test]
+    fn test_import_equality_comparison() {
+        // Test PartialEq for Import
+        let import1 = Import::new(
+            "std::collections::HashMap".to_string(),
+            ImportType::Use,
+            10,
+        );
+
+        let import2 = Import::new(
+            "std::collections::HashMap".to_string(),
+            ImportType::Use,
+            10,
+        );
+
+        let import3 = Import::new(
+            "std::collections::HashMap".to_string(),
+            ImportType::Use,
+            20,
+        );
+
+        let import4 = Import::new(
+            "std::collections::HashSet".to_string(),
+            ImportType::Use,
+            10,
+        );
+
+        // Same fields = equal
+        assert_eq!(import1, import2);
+
+        // Different line number = not equal
+        assert_ne!(import1, import3);
+
+        // Different name = not equal
+        assert_ne!(import1, import4);
+    }
+
+    #[test]
+    fn test_import_clone() {
+        // Test Clone trait for Import
+        let original = Import::new(
+            "serde::Serialize".to_string(),
+            ImportType::Mod,
+            99,
+        );
+
+        let cloned = original.clone();
+
+        // Verify they are equal
+        assert_eq!(original, cloned);
+
+        // Verify they are independent (changes to one don't affect the other)
+        assert_eq!(cloned.name, "serde::Serialize");
+        assert_eq!(cloned.import_type, ImportType::Mod);
+        assert_eq!(cloned.line_number, 99);
+    }
+
+    #[test]
+    fn test_import_type_equality() {
+        // Test PartialEq for ImportType
+        assert_eq!(ImportType::Use, ImportType::Use);
+        assert_eq!(ImportType::ExternCrate, ImportType::ExternCrate);
+        assert_eq!(ImportType::Mod, ImportType::Mod);
+
+        assert_ne!(ImportType::Use, ImportType::ExternCrate);
+        assert_ne!(ImportType::Use, ImportType::Mod);
+        assert_ne!(ImportType::ExternCrate, ImportType::Mod);
+    }
+
+    #[test]
+    fn test_import_with_different_import_types() {
+        // Test Import with each ImportType variant
+        let use_import = Import::new("std::fs".to_string(), ImportType::Use, 1);
+        let extern_crate_import = Import::new("serde".to_string(), ImportType::ExternCrate, 2);
+        let mod_import = Import::new("my_module".to_string(), ImportType::Mod, 3);
+
+        assert_eq!(use_import.import_type, ImportType::Use);
+        assert_eq!(extern_crate_import.import_type, ImportType::ExternCrate);
+        assert_eq!(mod_import.import_type, ImportType::Mod);
+
+        // All have different import types
+        assert_ne!(use_import.import_type, extern_crate_import.import_type);
+        assert_ne!(use_import.import_type, mod_import.import_type);
+        assert_ne!(extern_crate_import.import_type, mod_import.import_type);
+    }
+
     #[test]
     fn test_extract_field_simple() {
         let value = json!({"name": "test", "count": 42});
