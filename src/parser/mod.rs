@@ -21,8 +21,8 @@ pub use sqlite::SqliteParser;
 /// Struct representing an import statement
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct Import {
-    /// The import path/name (e.g., "std::collections::HashMap", "crate::module::Item")
-    pub name: String,
+    /// The import path (e.g., "std::collections::HashMap", "crate::module::Item")
+    pub path: String,
     /// Type of import statement
     pub import_type: ImportType,
     /// Line number where the import appears (1-indexed)
@@ -31,9 +31,9 @@ pub struct Import {
 
 impl Import {
     /// Create a new import
-    pub fn new(name: String, import_type: ImportType, line_number: usize) -> Self {
+    pub fn new(path: String, import_type: ImportType, line_number: usize) -> Self {
         Self {
-            name,
+            path,
             import_type,
             line_number,
         }
@@ -320,13 +320,9 @@ mod tests {
     #[test]
     fn test_import_creation_with_all_fields() {
         // Test creating Import struct with all fields populated
-        let import = Import::new(
-            "std::collections::HashMap".to_string(),
-            ImportType::Use,
-            42,
-        );
+        let import = Import::new("std::collections::HashMap".to_string(), ImportType::Use, 42);
 
-        assert_eq!(import.name, "std::collections::HashMap");
+        assert_eq!(import.path, "std::collections::HashMap");
         assert_eq!(import.import_type, ImportType::Use);
         assert_eq!(import.line_number, 42);
     }
@@ -349,29 +345,13 @@ mod tests {
     #[test]
     fn test_import_equality_comparison() {
         // Test PartialEq for Import
-        let import1 = Import::new(
-            "std::collections::HashMap".to_string(),
-            ImportType::Use,
-            10,
-        );
+        let import1 = Import::new("std::collections::HashMap".to_string(), ImportType::Use, 10);
 
-        let import2 = Import::new(
-            "std::collections::HashMap".to_string(),
-            ImportType::Use,
-            10,
-        );
+        let import2 = Import::new("std::collections::HashMap".to_string(), ImportType::Use, 10);
 
-        let import3 = Import::new(
-            "std::collections::HashMap".to_string(),
-            ImportType::Use,
-            20,
-        );
+        let import3 = Import::new("std::collections::HashMap".to_string(), ImportType::Use, 20);
 
-        let import4 = Import::new(
-            "std::collections::HashSet".to_string(),
-            ImportType::Use,
-            10,
-        );
+        let import4 = Import::new("std::collections::HashSet".to_string(), ImportType::Use, 10);
 
         // Same fields = equal
         assert_eq!(import1, import2);
@@ -386,11 +366,7 @@ mod tests {
     #[test]
     fn test_import_clone() {
         // Test Clone trait for Import
-        let original = Import::new(
-            "serde::Serialize".to_string(),
-            ImportType::Mod,
-            99,
-        );
+        let original = Import::new("serde::Serialize".to_string(), ImportType::Mod, 99);
 
         let cloned = original.clone();
 
@@ -398,7 +374,7 @@ mod tests {
         assert_eq!(original, cloned);
 
         // Verify they are independent (changes to one don't affect the other)
-        assert_eq!(cloned.name, "serde::Serialize");
+        assert_eq!(cloned.path, "serde::Serialize");
         assert_eq!(cloned.import_type, ImportType::Mod);
         assert_eq!(cloned.line_number, 99);
     }
