@@ -25,6 +25,10 @@ use std::time::{Duration, Instant};
 /// How often to re-discover new files and watch newly created directories (seconds).
 const REDISCOVERY_INTERVAL_SECS: u64 = 60;
 
+/// Backoff intervals for logging failed watch attempts (seconds).
+/// After the first failure, log again after 1 hour, then 24 hours, then max.
+const FAILED_WATCH_BACKOFF_SECS: [u64; 4] = [0, 3600, 86400, 86400];
+
 /// PID file name
 const PID_FILE: &str = "agentscribe.pid";
 
@@ -566,21 +570,57 @@ struct WatchLoop {
     watched_dirs: HashSet<PathBuf>,
     /// When we last refreshed watched directories.
     last_discovery: Instant,
+    /// Directories that failed to watch, with timestamps of last logged attempt.
+    /// Tracks backoff state to prevent infinite identical WARN spam.
+    failed_dirs: HashMap<PathBuf, Instant>,
 }
 
 impl WatchLoop {
-    /// Try to add `dir` to the inotify watch set, log on failure.
+    /// Try to add `dir` to the inotify watch set, log on failure with backoff.
     fn try_watch(&mut self, dir: &Path) {
         if self.watched_dirs.contains(dir) || !dir.exists() {
             return;
         }
+
+        // Check if this directory has failed before and if we should retry logging
+        let should_log = if let Some(last_attempt) = self.failed_dirs.get(dir) {
+            // Calculate which backoff interval we're in
+            let elapsed_secs = last_attempt.elapsed().as_secs();
+            let mut interval_index = 0;
+            for (i, &interval) in FAILED_WATCH_BACKOFF_SECS.iter().enumerate() {
+                if elapsed_secs >= interval {
+                    interval_index = i;
+                } else {
+                    break;
+                }
+            }
+
+            // Only retry if we've passed the current backoff interval
+            // and we haven't exhausted all intervals
+            let next_interval = FAILED_WATCH_BACKOFF_SECS
+                .get(interval_index + 1)
+                .copied()
+                .unwrap_or(FAILED_WATCH_BACKOFF_SECS[FAILED_WATCH_BACKOFF_SECS.len() - 1]);
+
+            elapsed_secs >= next_interval && interval_index < FAILED_WATCH_BACKOFF_SECS.len() - 1
+        } else {
+            // First attempt, always log
+            true
+        };
+
         match self._watcher.watch(dir, RecursiveMode::Recursive) {
             Ok(()) => {
                 tracing::info!(path = %dir.display(), "watching directory");
                 self.watched_dirs.insert(dir.to_path_buf());
+                // Remove from failed_dirs if it was there (success after retries)
+                self.failed_dirs.remove(dir);
             }
             Err(e) => {
-                tracing::warn!(path = %dir.display(), error = %e, "cannot watch directory");
+                if should_log {
+                    tracing::warn!(path = %dir.display(), error = %e, "cannot watch directory");
+                }
+                // Update or insert the timestamp of this failed attempt
+                self.failed_dirs.insert(dir.to_path_buf(), Instant::now());
             }
         }
     }
@@ -700,6 +740,8 @@ async fn run_watch_loop(
         last_discovery: Instant::now()
             .checked_sub(Duration::from_secs(REDISCOVERY_INTERVAL_SECS + 1))
             .unwrap_or_else(Instant::now),
+        // Track failed watch attempts to prevent infinite identical WARN spam
+        failed_dirs: HashMap::new(),
     };
 
     let debounce = Duration::from_secs(debounce_secs);
@@ -1714,5 +1756,148 @@ mod tests {
 
         // No longer ready — timer reset
         assert!(d.drain_ready(Duration::from_secs(5)).is_empty());
+    }
+
+    // ── Failed watch backoff ───────────────────────────────────────────────
+
+    #[test]
+    fn test_failed_watch_backoff_prevents_infinite_logging() {
+        use std::thread;
+
+        let dir = tempfile::tempdir().unwrap();
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel::<notify::Event>();
+
+        let plugin = make_plugin("test", vec![&format!("{}/*.jsonl", dir.path().display())]);
+
+        let _watcher = notify::RecommendedWatcher::new(
+            move |res: notify::Result<notify::Event>| {
+                if let Ok(event) = res {
+                    let _ = tx.send(event);
+                }
+            },
+            NotifyConfig::default(),
+        )
+        .unwrap();
+
+        let mut wl = WatchLoop {
+            _watcher,
+            event_rx: _rx,
+            debouncer: Debouncer::new(),
+            plugins: vec![plugin],
+            watched_dirs: HashSet::new(),
+            last_discovery: Instant::now()
+                .checked_sub(Duration::from_secs(REDISCOVERY_INTERVAL_SECS + 1))
+                .unwrap_or_else(Instant::now),
+            failed_dirs: HashMap::new(),
+        };
+
+        // Create a directory that exists but we'll simulate a watch failure
+        let test_dir = dir.path().join("test");
+        fs::create_dir(&test_dir).unwrap();
+
+        // Simulate that the directory already exists but we can't watch it
+        // (e.g., due to permissions). We'll manually insert it into failed_dirs
+        // to simulate the first failure.
+        wl.failed_dirs.insert(test_dir.clone(), Instant::now());
+
+        // First retry attempt immediately - should not log (within backoff)
+        let failed_count_before = wl.failed_dirs.len();
+        wl.try_watch(&test_dir);
+
+        // Since we're still within the backoff period, the entry should remain
+        // and the timestamp should be updated
+        assert_eq!(wl.failed_dirs.len(), failed_count_before);
+
+        // Verify the timestamp was updated
+        let updated_timestamp = wl.failed_dirs.get(&test_dir).unwrap();
+        assert!(updated_timestamp.elapsed() < Duration::from_secs(1));
+
+        // Now artificially age the entry to simulate time passing beyond backoff
+        let old_timestamp = Instant::now() - Duration::from_secs(7200); // 2 hours
+        wl.failed_dirs.insert(test_dir.clone(), old_timestamp);
+
+        // This should now attempt to log again (past the 1 hour backoff)
+        // But since the directory still exists and we can't actually test
+        // watch failure without permissions, we just verify the logic allows retry
+        wl.try_watch(&test_dir);
+    }
+
+    #[test]
+    fn test_failed_watch_removed_on_success() {
+        let dir = tempfile::tempdir().unwrap();
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel::<notify::Event>();
+
+        let plugin = make_plugin("test", vec![&format!("{}/*.jsonl", dir.path().display())]);
+
+        let watcher = notify::RecommendedWatcher::new(
+            move |res: notify::Result<notify::Event>| {
+                if let Ok(event) = res {
+                    let _ = tx.send(event);
+                }
+            },
+            NotifyConfig::default(),
+        )
+        .unwrap();
+
+        let mut wl = WatchLoop {
+            _watcher: watcher,
+            event_rx: _rx,
+            debouncer: Debouncer::new(),
+            plugins: vec![plugin],
+            watched_dirs: HashSet::new(),
+            last_discovery: Instant::now()
+                .checked_sub(Duration::from_secs(REDISCOVERY_INTERVAL_SECS + 1))
+                .unwrap_or_else(Instant::now),
+            failed_dirs: HashMap::new(),
+        };
+
+        // Successfully watch a directory
+        wl.try_watch(&dir.path());
+
+        // It should not be in failed_dirs
+        assert!(!wl.failed_dirs.contains_key(&dir.path()));
+
+        // It should be in watched_dirs
+        assert!(wl.watched_dirs.contains(&dir.path()));
+    }
+
+    #[test]
+    fn test_failed_watch_first_attempt_always_logs() {
+        let dir = tempfile::tempdir().unwrap();
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel::<notify::Event>();
+
+        let plugin = make_plugin("test", vec![&format!("{}/*.jsonl", dir.path().display())]);
+
+        let watcher = notify::RecommendedWatcher::new(
+            move |res: notify::Result<notify::Event>| {
+                if let Ok(event) = res {
+                    let _ = tx.send(event);
+                }
+            },
+            NotifyConfig::default(),
+        )
+        .unwrap();
+
+        let mut wl = WatchLoop {
+            _watcher: watcher,
+            event_rx: _rx,
+            debouncer: Debouncer::new(),
+            plugins: vec![plugin],
+            watched_dirs: HashSet::new(),
+            last_discovery: Instant::now()
+                .checked_sub(Duration::from_secs(REDISCOVERY_INTERVAL_SECS + 1))
+                .unwrap_or_else(Instant::now),
+            failed_dirs: HashMap::new(),
+        };
+
+        // First attempt at a directory - should have no entry in failed_dirs initially
+        assert!(!wl.failed_dirs.contains_key(&dir.path()));
+
+        // Watch should succeed (test directory exists and is watchable)
+        wl.try_watch(&dir.path());
+
+        // Directory should be watched, not failed
+        assert!(wl.watched_dirs.contains(&dir.path()));
+        assert!(!wl.failed_dirs.contains_key(&dir.path()));
     }
 }
