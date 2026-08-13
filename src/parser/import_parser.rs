@@ -1,19 +1,66 @@
 //! Import statement parser for Rust source files
 //!
-//! Extracts and categorizes import statements from Rust files with metadata.
-//! Supports `use`, `extern crate`, and `mod` statements with line tracking.
+//! This module provides functionality for extracting and categorizing import statements
+//! from Rust source files. It supports three types of import statements:
+//!
+//! - **`use` statements**: Import items from crates, modules, or other scopes
+//!   (e.g., `use std::collections::HashMap;`)
+//! - **`extern crate` statements**: Declare external crate dependencies
+//!   (e.g., `extern crate serde;`)
+//! - **`mod` statements**: Declare modules, either inline or from separate files
+//!   (e.g., `mod foo;` or `mod bar { ... }`)
+//!
+//! # Examples
+//!
+//! ```
+//! use agentscribe::parser::ImportParser;
+//!
+//! let parser = ImportParser::new();
+//! let result = parser.parse_content("use std::collections::HashMap;");
+//! assert_eq!(result.imports.len(), 1);
+//! assert_eq!(result.imports[0].path, "std::collections::HashMap");
+//! ```
+//!
+//! # Features
+//!
+//! - Extracts import paths with support for complex paths (e.g., `use crate::module::Item;`)
+//! - Handles multi-line import statements with parentheses
+//! - Tracks line numbers for each import
+//! - Preserves original raw lines for reference
+//! - Distinguishes between different import types
+//! - Includes imports from test modules (`#[cfg(test)]`)
 
 use crate::error::{AgentScribeError, Result};
 use std::path::Path;
 
 /// Type of import statement
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+///
+/// Represents the three kinds of import statements in Rust:
+///
+/// - **Use**: The standard `use` statement for importing items from crates, modules, or other scopes.
+///   This is the most common import type and includes both simple imports (`use std::collections::HashMap;`)
+///   and complex imports with braces (`use std::collections::{HashMap, HashSet};`).
+///
+/// - **ExternCrate**: The `extern crate` statement declares an external crate dependency. This was required
+///   in Rust 2015 edition but is largely obsolete in Rust 2018+ where crate declarations in `Cargo.toml`
+///   suffice. Still used in some contexts for explicitly loading external crates.
+///
+/// - **Mod**: The `mod` statement declares a module, either inline (`mod foo { ... }`) or as a file
+///   (`mod bar;` which loads `bar.rs` or `bar/mod.rs`). This helps define the module structure of
+///   a crate.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ImportType {
     /// `use` statement - imports from crates, modules, or items
+    ///
+    /// Example: `use std::collections::HashMap;` or `use crate::module::Item;`
     Use,
     /// `extern crate` statement - declares an external crate dependency
+    ///
+    /// Example: `extern crate serde;` or `extern crate tokio as tok;`
     ExternCrate,
     /// `mod` statement - declares a module
+    ///
+    /// Example: `mod foo;` (file-based) or `mod bar { ... }` (inline)
     Mod,
 }
 
@@ -29,7 +76,17 @@ impl ImportType {
 }
 
 /// Structured representation of an import statement
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+///
+/// Contains the complete information about a single import statement found in Rust source code,
+/// including the import path, type, location, and original text.
+///
+/// # Fields
+///
+/// - **`path`**: The full import path, such as `std::collections::HashMap` or `crate::module::Item`
+/// - **`import_type`**: The type of import (Use, ExternCrate, or Mod)
+/// - **`line_number`**: 1-indexed line number where the import appears in the source file
+/// - **`raw_line`**: The original text of the import line as it appears in the source
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ImportStatement {
     /// The import path (e.g., `std::collections::HashMap`, `crate::module::Item`)
     pub path: String,
@@ -74,7 +131,18 @@ impl ImportStatement {
 }
 
 /// Result of parsing a single file
-#[derive(Debug, Clone, Default, serde::Serialize)]
+///
+/// Contains all import statements found in a Rust source file, organized by type.
+/// Provides convenience methods for querying imports by type and checking if the
+/// file contains any imports.
+///
+/// # Fields
+///
+/// - **`imports`**: All import statements found in the file
+/// - **`use_count`**: Total number of `use` statements
+/// - **`extern_crate_count`**: Total number of `extern crate` statements
+/// - **`mod_count`**: Total number of `mod` statements
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct ImportParseResult {
     /// All import statements found in the file
     pub imports: Vec<ImportStatement>,
