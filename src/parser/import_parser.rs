@@ -10,15 +10,61 @@
 //! - **`mod` statements**: Declare modules, either inline or from separate files
 //!   (e.g., `mod foo;` or `mod bar { ... }`)
 //!
-//! # Examples
+//! # Module Overview
+//!
+//! The import parser module provides three main types for working with Rust imports:
+//!
+//! - **[`ImportType`]**: Enum representing the three kinds of import statements in Rust
+//! - **[`ImportStatement`]**: Struct containing complete information about a single import
+//! - **[`ImportParseResult`]**: Container for all imports found in a file with convenience methods
+//!
+//! # Common Use Cases
+//!
+//! ## Parse a single file
+//!
+//! ```no_run
+//! use agentscribe::parser::ImportParser;
+//! use std::path::Path;
+//!
+//! let parser = ImportParser::new();
+//! let result = parser.parse_file(Path::new("src/main.rs")).unwrap();
+//! println!("Found {} imports", result.total_count());
+//! ```
+//!
+//! ## Parse from string content
 //!
 //! ```
 //! use agentscribe::parser::ImportParser;
 //!
+//! let content = r#"
+//! use std::collections::HashMap;
+//! use crate::module::Item;
+//! "#;
+//!
 //! let parser = ImportParser::new();
-//! let result = parser.parse_content("use std::collections::HashMap;");
-//! assert_eq!(result.imports.len(), 1);
-//! assert_eq!(result.imports[0].path, "std::collections::HashMap");
+//! let result = parser.parse_content(content);
+//! assert_eq!(result.use_count, 2);
+//! ```
+//!
+//! ## Filter imports by type
+//!
+//! ```
+//! use agentscribe::parser::{ImportParser, ImportType};
+//!
+//! let content = r#"
+//! use std::collections::HashMap;
+//! extern crate serde;
+//! mod foo;
+//! "#;
+//!
+//! let parser = ImportParser::new();
+//! let result = parser.parse_content(content);
+//!
+//! let use_imports = result.imports_by_type(ImportType::Use);
+//! assert_eq!(use_imports.len(), 1);
+//!
+//! let extern_imports = result.imports_by_type(ImportType::ExternCrate);
+//! assert_eq!(extern_imports.len(), 1);
 //! ```
 //!
 //! # Features
@@ -29,11 +75,12 @@
 //! - Preserves original raw lines for reference
 //! - Distinguishes between different import types
 //! - Includes imports from test modules (`#[cfg(test)]`)
+//! - Provides convenience methods for filtering and counting imports
 
 use crate::error::{AgentScribeError, Result};
 use std::path::Path;
 
-/// Type of import statement
+/// Type of import statement in Rust source code
 ///
 /// Represents the three kinds of import statements in Rust:
 ///
@@ -48,19 +95,103 @@ use std::path::Path;
 /// - **Mod**: The `mod` statement declares a module, either inline (`mod foo { ... }`) or as a file
 ///   (`mod bar;` which loads `bar.rs` or `bar/mod.rs`). This helps define the module structure of
 ///   a crate.
+///
+/// # Examples
+///
+/// ```
+/// use agentscribe::parser::import_parser::ImportType;
+///
+/// // Working with import types
+/// let import_type = ImportType::Use;
+/// assert_eq!(import_type.as_str(), "use");
+///
+/// // Matching on import types
+/// fn describe_import(import_type: &ImportType) -> &'static str {
+///     match import_type {
+///         ImportType::Use => "Standard use import",
+///         ImportType::ExternCrate => "External crate declaration",
+///         ImportType::Mod => "Module declaration",
+///     }
+/// }
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ImportType {
     /// `use` statement - imports from crates, modules, or items
     ///
-    /// Example: `use std::collections::HashMap;` or `use crate::module::Item;`
+    /// The most common import type in Rust. Used to bring items from other modules,
+    /// crates, or scopes into the current scope.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// // Simple import
+    /// use std::collections::HashMap;
+    ///
+    /// // Complex import with multiple items
+    /// use std::collections::{HashMap, HashSet, BTreeMap};
+    ///
+    /// // Import with renaming
+    /// use std::collections::HashMap as Map;
+    ///
+    /// // Import from crate
+    /// use crate::module::Item;
+    ///
+    /// // Import from parent module
+    /// use super::ParentModule;
+    ///
+    /// // Self import
+    /// use crate::module::self;
+    /// ```
     Use,
+
     /// `extern crate` statement - declares an external crate dependency
     ///
-    /// Example: `extern crate serde;` or `extern crate tokio as tok;`
+    /// This statement was required in Rust 2015 edition to explicitly declare external
+    /// crates. In Rust 2018+, this is usually unnecessary as crates listed in `Cargo.toml`
+    /// are automatically available. However, it's still useful in some cases like:
+    ///
+    /// - Loading crates with specific attributes
+    /// - Explicitly renaming crates
+    /// - Conditional compilation scenarios
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// // Basic extern crate declaration
+    /// extern crate serde;
+    ///
+    /// // With renaming
+    /// extern crate tokio as tok;
+    ///
+    /// // With macro attributes
+    /// #[macro_use]
+    /// extern crate lazy_static;
+    /// ```
     ExternCrate,
+
     /// `mod` statement - declares a module
     ///
-    /// Example: `mod foo;` (file-based) or `mod bar { ... }` (inline)
+    /// Modules organize Rust code into separate files or inline blocks. This import type
+    /// represents module declarations that define the structure of a crate.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// // File-based module (loads foo.rs or foo/mod.rs)
+    /// mod foo;
+    ///
+    /// // File-based with path
+    /// mod bar;
+    /// // loads: bar.rs or bar/mod.rs
+    ///
+    /// // Inline module definition
+    /// mod baz {
+    ///     // module contents here
+    /// }
+    ///
+    /// // Private module (not accessible from outside)
+    /// mod private_impl;
+    /// ```
     Mod,
 }
 
@@ -75,26 +206,158 @@ impl ImportType {
     }
 }
 
-/// Structured representation of an import statement
+/// Structured representation of an import statement in Rust source code
 ///
 /// Contains the complete information about a single import statement found in Rust source code,
-/// including the import path, type, location, and original text.
+/// including the import path, type, location, and original text. This struct provides a structured
+/// way to work with import statements programmatically.
 ///
-/// # Fields
+/// # Field Documentation
 ///
-/// - **`path`**: The full import path, such as `std::collections::HashMap` or `crate::module::Item`
-/// - **`import_type`**: The type of import (Use, ExternCrate, or Mod)
-/// - **`line_number`**: 1-indexed line number where the import appears in the source file
-/// - **`raw_line`**: The original text of the import line as it appears in the source
+/// ## `path: String`
+/// The full import path extracted from the import statement. This includes:
+/// - For `use` statements: the full module path (e.g., `std::collections`, `crate::module::Item`)
+/// - For `extern crate`: the crate name (e.g., `serde`, `tokio`)
+/// - For `mod`: the module name (e.g., `foo`, `bar`)
+///
+/// ## `import_type: ImportType`
+/// The type of import statement (Use, ExternCrate, or Mod). This distinguishes between
+/// the three kinds of import statements in Rust.
+///
+/// ## `line_number: usize`
+/// 1-indexed line number where the import appears in the source file. Useful for:
+/// - Locating imports in the original source
+/// - Reporting positions in error messages
+/// - Creating line-aware tools
+///
+/// ## `raw_line: String`
+/// The original text of the import line as it appears in the source, including all formatting,
+/// comments, and whitespace. Useful for:
+/// - Preserving original formatting
+/// - Displaying imports to users
+/// - Diffing or comparing import statements
+///
+/// # Examples
+///
+/// ```
+/// use agentscribe::parser::import_parser::{ImportStatement, ImportType};
+///
+/// // Creating a use statement
+/// let use_stmt = ImportStatement::use_statement(
+///     "std::collections::HashMap".to_string(),
+///     5,
+///     "use std::collections::HashMap;".to_string()
+/// );
+///
+/// assert_eq!(use_stmt.path, "std::collections::HashMap");
+/// assert_eq!(use_stmt.import_type, ImportType::Use);
+/// assert_eq!(use_stmt.line_number, 5);
+///
+/// // Creating an extern crate statement
+/// let extern_stmt = ImportStatement::extern_crate(
+///     "serde".to_string(),
+///     1,
+///     "extern crate serde;".to_string()
+/// );
+///
+/// assert_eq!(extern_stmt.import_type, ImportType::ExternCrate);
+///
+/// // Creating a mod statement
+/// let mod_stmt = ImportStatement::mod_statement(
+///     "foo".to_string(),
+///     10,
+///     "mod foo;".to_string()
+/// );
+///
+/// assert_eq!(mod_stmt.import_type, ImportType::Mod);
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ImportStatement {
     /// The import path (e.g., `std::collections::HashMap`, `crate::module::Item`)
+    ///
+    /// For `use` statements: contains the full module path being imported
+    /// For `extern crate`: contains the crate name
+    /// For `mod`: contains the module name
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use agentscribe::parser::import_parser::ImportStatement;
+    ///
+    /// let stmt = ImportStatement::use_statement(
+    ///     "std::collections::HashMap".to_string(),
+    ///     1,
+    ///     "use std::collections::HashMap;".to_string()
+    /// );
+    ///
+    /// assert_eq!(stmt.path, "std::collections::HashMap");
+    /// ```
     pub path: String,
-    /// Type of import statement
+
+    /// Type of import statement (Use, ExternCrate, or Mod)
+    ///
+    /// Distinguishes between the three kinds of import statements in Rust:
+    /// - `ImportType::Use`: standard `use` statements
+    /// - `ImportType::ExternCrate`: external crate declarations
+    /// - `ImportType::Mod`: module declarations
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use agentscribe::parser::import_parser::{ImportStatement, ImportType};
+    ///
+    /// let use_stmt = ImportStatement::use_statement(
+    ///     "std::collections::HashMap".to_string(),
+    ///     1,
+    ///     "use std::collections::HashMap;".to_string()
+    /// );
+    ///
+    /// assert_eq!(use_stmt.import_type, ImportType::Use);
+    /// assert_eq!(use_stmt.import_type.as_str(), "use");
+    /// ```
     pub import_type: ImportType,
+
     /// Line number where the import appears (1-indexed)
+    ///
+    /// Useful for locating imports in the original source code and for
+    /// creating tools that need to report specific line positions.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use agentscribe::parser::import_parser::ImportStatement;
+    ///
+    /// let stmt = ImportStatement::use_statement(
+    ///     "std::collections::HashMap".to_string(),
+    ///     42,
+    ///     "use std::collections::HashMap;".to_string()
+    /// );
+    ///
+    /// assert_eq!(stmt.line_number, 42);
+    /// // Line numbers are 1-indexed, matching typical editor line numbering
+    /// ```
     pub line_number: usize,
+
     /// Original raw line from the source file
+    ///
+    /// Preserves the exact formatting of the import as it appears in source code,
+    /// including whitespace, comments, and line endings. Useful for display,
+    /// diffing, or when you need to show the original import to users.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use agentscribe::parser::import_parser::ImportStatement;
+    ///
+    /// let stmt = ImportStatement::use_statement(
+    ///     "std::collections::HashMap".to_string(),
+    ///     1,
+    ///     "use std::collections::HashMap;".to_string()
+    /// );
+    ///
+    /// assert_eq!(stmt.raw_line, "use std::collections::HashMap;");
+    /// // The raw line preserves original formatting
+    /// ```
     pub raw_line: String,
 }
 
@@ -130,27 +393,157 @@ impl ImportStatement {
     }
 }
 
-/// Result of parsing a single file
+/// Result of parsing a Rust source file for import statements
 ///
 /// Contains all import statements found in a Rust source file, organized by type.
 /// Provides convenience methods for querying imports by type and checking if the
 /// file contains any imports.
 ///
-/// # Fields
+/// # Field Documentation
 ///
-/// - **`imports`**: All import statements found in the file
-/// - **`use_count`**: Total number of `use` statements
-/// - **`extern_crate_count`**: Total number of `extern crate` statements
-/// - **`mod_count`**: Total number of `mod` statements
+/// ## `imports: Vec<ImportStatement>`
+/// All import statements found in the file, in the order they appear. This includes
+/// `use`, `extern crate`, and `mod` statements from both the main code and test modules.
+///
+/// ## `use_count: usize`
+/// Total number of `use` statements found in the file. This is a pre-computed count
+/// for quick access without needing to filter the `imports` vector.
+///
+/// ## `extern_crate_count: usize`
+/// Total number of `extern crate` statements found in the file. This is typically 0
+/// for Rust 2018+ code where extern crate declarations are not required.
+///
+/// ## `mod_count: usize`
+/// Total number of `mod` statements found in the file. Includes both file-based
+/// modules (`mod foo;`) and inline module definitions (`mod bar { ... }`).
+///
+/// # Examples
+///
+/// ```
+/// use agentscribe::parser::{ImportParser, ImportType};
+///
+/// let content = r#"
+/// use std::collections::HashMap;
+/// extern crate serde;
+/// mod foo;
+/// use crate::module::Item;
+/// "#;
+///
+/// let parser = ImportParser::new();
+/// let result = parser.parse_content(content);
+///
+/// // Access counts directly
+/// assert_eq!(result.use_count, 2);
+/// assert_eq!(result.extern_crate_count, 1);
+/// assert_eq!(result.mod_count, 1);
+///
+/// // Get total count
+/// assert_eq!(result.total_count(), 4);
+///
+/// // Check if empty
+/// assert!(!result.is_empty());
+///
+/// // Filter by type
+/// let use_imports = result.imports_by_type(ImportType::Use);
+/// assert_eq!(use_imports.len(), 2);
+///
+/// // Access individual imports
+/// assert_eq!(result.imports[0].path, "std::collections::HashMap");
+/// assert_eq!(result.imports[1].path, "serde");
+/// ```
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct ImportParseResult {
     /// All import statements found in the file
+    ///
+    /// Contains every import statement (`use`, `extern crate`, `mod`) in the order
+    /// they appear in the source file, including those from test modules.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use agentscribe::parser::ImportParser;
+    ///
+    /// let content = r#"
+    /// use std::collections::HashMap;
+    /// extern crate serde;
+    /// mod foo;
+    /// "#;
+    ///
+    /// let parser = ImportParser::new();
+    /// let result = parser.parse_content(content);
+    ///
+    /// assert_eq!(result.imports.len(), 3);
+    /// assert_eq!(result.imports[0].path, "std::collections::HashMap");
+    /// ```
     pub imports: Vec<ImportStatement>,
+
     /// Total number of use statements
+    ///
+    /// Pre-computed count for quick access. Use this when you only need to know
+    /// how many `use` statements exist without iterating through the imports vector.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use agentscribe::parser::ImportParser;
+    ///
+    /// let content = r#"
+    /// use std::collections::HashMap;
+    /// use crate::module::Item;
+    /// extern crate serde;
+    /// "#;
+    ///
+    /// let parser = ImportParser::new();
+    /// let result = parser.parse_content(content);
+    ///
+    /// assert_eq!(result.use_count, 2);
+    /// ```
     pub use_count: usize,
+
     /// Total number of extern crate statements
+    ///
+    /// Pre-computed count of `extern crate` declarations. In Rust 2018+ code,
+    /// this is often 0 since extern crate declarations are no longer required.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use agentscribe::parser::ImportParser;
+    ///
+    /// let content = r#"
+    /// extern crate serde;
+    /// extern crate tokio;
+    /// use std::collections::HashMap;
+    /// "#;
+    ///
+    /// let parser = ImportParser::new();
+    /// let result = parser.parse_content(content);
+    ///
+    /// assert_eq!(result.extern_crate_count, 2);
+    /// ```
     pub extern_crate_count: usize,
+
     /// Total number of mod statements
+    ///
+    /// Pre-computed count of module declarations. Includes both file-based
+    /// modules (`mod foo;`) and inline definitions (`mod bar { ... }`).
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use agentscribe::parser::ImportParser;
+    ///
+    /// let content = r#"
+    /// mod foo;
+    /// mod bar;
+    /// use std::collections::HashMap;
+    /// "#;
+    ///
+    /// let parser = ImportParser::new();
+    /// let result = parser.parse_content(content);
+    ///
+    /// assert_eq!(result.mod_count, 2);
+    /// ```
     pub mod_count: usize,
 }
 
