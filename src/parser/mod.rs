@@ -18,6 +18,28 @@ pub use jsonl::JsonlParser;
 pub use markdown::MarkdownParser;
 pub use sqlite::SqliteParser;
 
+/// Struct representing an import statement
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct Import {
+    /// The import path/name (e.g., "std::collections::HashMap", "crate::module::Item")
+    pub name: String,
+    /// Type of import statement
+    pub import_type: ImportType,
+    /// Line number where the import appears (1-indexed)
+    pub line_number: usize,
+}
+
+impl Import {
+    /// Create a new import
+    pub fn new(name: String, import_type: ImportType, line_number: usize) -> Self {
+        Self {
+            name,
+            import_type,
+            line_number,
+        }
+    }
+}
+
 use crate::error::{AgentScribeError, Result};
 use crate::event::Event;
 use crate::plugin::Plugin;
