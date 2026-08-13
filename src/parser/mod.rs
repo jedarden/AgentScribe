@@ -1,6 +1,43 @@
 //! Parser implementations for different log formats
 //!
 //! Each format has a dedicated parser that normalizes events to the canonical schema.
+//!
+//! # Import Types
+//!
+//! This module provides types for working with Rust import statements:
+//!
+//! - **[`Import`]**: Lightweight struct representing a single import statement with path,
+//!   type, and line number information
+//! - **[`ImportType`]**: Enum representing the three kinds of Rust import statements
+//!   (`use`, `extern crate`, and `mod`)
+//!
+//! ## When to Use These Types
+//!
+//! Use these types when you need to:
+//! - Parse and analyze Rust source files for their import dependencies
+//! - Categorize imports by type (standard `use` statements vs extern crates vs modules)
+//! - Track the location of imports within source files
+//! - Build tools that work with Rust module structures
+//!
+//! ## Example
+//!
+//! ```
+//! use agentscribe::parser::{Import, ImportType};
+//!
+//! // Create an import representing: use std::collections::HashMap;
+//! let import = Import::new(
+//!     "std::collections::HashMap".to_string(),
+//!     ImportType::Use,
+//!     42  // line number
+//! );
+//!
+//! assert_eq!(import.path, "std::collections::HashMap");
+//! assert_eq!(import.import_type, ImportType::Use);
+//! ```
+//!
+//! For full parsing functionality including multi-file import extraction,
+//! see the [`import_parser`](import_parser) module which provides `ImportParser`
+//! for parsing complete Rust source files.
 
 mod aider_input;
 mod import_parser;
