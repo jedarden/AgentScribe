@@ -1,0 +1,403 @@
+{
+  "catalog_generated_at": "2026-08-13T00:00:00Z",
+  "project": "AgentScribe",
+  "summary": {
+    "total_standalone_test_files": 19,
+    "total_source_files_with_test_modules": 47,
+    "total_test_containing_files": 66
+  },
+  "standalone_test_files": [
+    {
+      "path": "tests/integration_tests.rs",
+      "size_bytes": 69000,
+      "size_human": "69K",
+      "module": "integration_tests"
+    },
+    {
+      "path": "tests/main_session_parent_tests.rs",
+      "size_bytes": 14000,
+      "size_human": "14K",
+      "module": "main_session_parent_tests"
+    },
+    {
+      "path": "tests/parent_session_tests.rs",
+      "size_bytes": 26000,
+      "size_human": "26K",
+      "module": "parent_session_tests"
+    },
+    {
+      "path": "tests/subagent_spawning_integration_tests.rs",
+      "size_bytes": 23000,
+      "size_human": "23K",
+      "module": "subagent_spawning_integration_tests"
+    },
+    {
+      "path": "tests/subagent_parent_session_unit_tests.rs",
+      "size_bytes": 21000,
+      "size_human": "21K",
+      "module": "subagent_parent_session_unit_tests"
+    },
+    {
+      "path": "tests/phase6_tests.rs",
+      "size_bytes": 38000,
+      "size_human": "38K",
+      "module": "phase6_tests"
+    },
+    {
+      "path": "tests/pulse_report_tests.rs",
+      "size_bytes": 24000,
+      "size_human": "24K",
+      "module": "pulse_report_tests"
+    },
+    {
+      "path": "tests/test_helpers.rs",
+      "size_bytes": 19000,
+      "size_human": "19K",
+      "module": "test_helpers"
+    },
+    {
+      "path": "tests/context_tests.rs",
+      "size_bytes": 9800,
+      "size_human": "9.8K",
+      "module": "context_tests"
+    },
+    {
+      "path": "tests/daemon_mcp.rs",
+      "size_bytes": 21000,
+      "size_human": "21K",
+      "module": "daemon_mcp"
+    },
+    {
+      "path": "tests/transcription_tests.rs",
+      "size_bytes": 21000,
+      "size_human": "21K",
+      "module": "transcription_tests"
+    },
+    {
+      "path": "tests/aider_input_scrape_test.rs",
+      "size_bytes": 7200,
+      "size_human": "7.2K",
+      "module": "aider_input_scrape_test"
+    },
+    {
+      "path": "tests/aider_toml_glob_validation_test.rs",
+      "size_bytes": 7400,
+      "size_human": "7.4K",
+      "module": "aider_toml_glob_validation_test"
+    },
+    {
+      "path": "tests/aider_glob_discovery_test.rs",
+      "size_bytes": 4300,
+      "size_human": "4.3K",
+      "module": "aider_glob_discovery_test"
+    },
+    {
+      "path": "tests/render_tests.rs",
+      "size_bytes": 4500,
+      "size_human": "4.5K",
+      "module": "render_tests"
+    },
+    {
+      "path": "tests/subagent_integration_test.rs",
+      "size_bytes": 6300,
+      "size_human": "6.3K",
+      "module": "subagent_integration_test"
+    },
+    {
+      "path": "tests/zero_write_tests.rs",
+      "size_bytes": 6000,
+      "size_human": "6.0K",
+      "module": "zero_write_tests"
+    },
+    {
+      "path": "test_timestamps.rs",
+      "size_bytes": 2100,
+      "size_human": "2.1K",
+      "module": "test_timestamps"
+    },
+    {
+      "path": "src/parser/jsonl/jsonl_subagent_test.rs",
+      "size_bytes": 15000,
+      "size_human": "15K",
+      "module": "jsonl_subagent_test"
+    }
+  ],
+  "source_files_with_test_modules": [
+    {
+      "path": "src/search.rs",
+      "size_bytes": 216000,
+      "size_human": "216K",
+      "module": "search"
+    },
+    {
+      "path": "src/daemon.rs",
+      "size_bytes": 61000,
+      "size_human": "61K",
+      "module": "daemon"
+    },
+    {
+      "path": "src/pulse_report.rs",
+      "size_bytes": 60000,
+      "size_human": "60K",
+      "module": "pulse_report"
+    },
+    {
+      "path": "src/index.rs",
+      "size_bytes": 60000,
+      "size_human": "60K",
+      "module": "index"
+    },
+    {
+      "path": "src/capacity.rs",
+      "size_bytes": 57000,
+      "size_human": "57K",
+      "module": "capacity"
+    },
+    {
+      "path": "src/scraper/mod.rs",
+      "size_bytes": 54000,
+      "size_human": "54K",
+      "module": "scraper"
+    },
+    {
+      "path": "src/analytics.rs",
+      "size_bytes": 44000,
+      "size_human": "44K",
+      "module": "analytics"
+    },
+    {
+      "path": "src/parser/jsonl.rs",
+      "size_bytes": 153000,
+      "size_human": "153K",
+      "module": "parser::jsonl"
+    },
+    {
+      "path": "src/parser/mod.rs",
+      "size_bytes": 39000,
+      "size_human": "39K",
+      "module": "parser"
+    },
+    {
+      "path": "src/parser/sqlite.rs",
+      "size_bytes": 33000,
+      "size_human": "33K",
+      "module": "parser::sqlite"
+    },
+    {
+      "path": "src/vector.rs",
+      "size_bytes": 33000,
+      "size_human": "33K",
+      "module": "vector"
+    },
+    {
+      "path": "src/mcp.rs",
+      "size_bytes": 34000,
+      "size_human": "34K",
+      "module": "mcp"
+    },
+    {
+      "path": "src/transcription.rs",
+      "size_bytes": 34000,
+      "size_human": "34K",
+      "module": "transcription"
+    },
+    {
+      "path": "src/rules.rs",
+      "size_bytes": 29000,
+      "size_human": "29K",
+      "module": "rules"
+    },
+    {
+      "path": "src/reflect.rs",
+      "size_bytes": 28000,
+      "size_human": "28K",
+      "module": "reflect"
+    },
+    {
+      "path": "src/redaction.rs",
+      "size_bytes": 28000,
+      "size_human": "28K",
+      "module": "redaction"
+    },
+    {
+      "path": "src/parser/json_array.rs",
+      "size_bytes": 26000,
+      "size_human": "26K",
+      "module": "parser::json_array"
+    },
+    {
+      "path": "src/recurring.rs",
+      "size_bytes": 25000,
+      "size_human": "25K",
+      "module": "recurring"
+    },
+    {
+      "path": "src/file_knowledge.rs",
+      "size_bytes": 24000,
+      "size_human": "24K",
+      "module": "file_knowledge"
+    },
+    {
+      "path": "src/tags.rs",
+      "size_bytes": 22000,
+      "size_human": "22K",
+      "module": "tags"
+    },
+    {
+      "path": "src/parser/markdown.rs",
+      "size_bytes": 23000,
+      "size_human": "23K",
+      "module": "parser::markdown"
+    },
+    {
+      "path": "src/digest.rs",
+      "size_bytes": 21000,
+      "size_human": "21K",
+      "module": "digest"
+    },
+    {
+      "path": "src/plugin.rs",
+      "size_bytes": 21000,
+      "size_human": "21K",
+      "module": "plugin"
+    },
+    {
+      "path": "src/projects.rs",
+      "size_bytes": 21000,
+      "size_human": "21K",
+      "module": "projects"
+    },
+    {
+      "path": "src/config.rs",
+      "size_bytes": 18000,
+      "size_human": "18K",
+      "module": "config"
+    },
+    {
+      "path": "src/enrichment/errors.rs",
+      "size_bytes": 15000,
+      "size_human": "15K",
+      "module": "enrichment::errors"
+    },
+    {
+      "path": "src/enrichment/antipatterns.rs",
+      "size_bytes": 15000,
+      "size_human": "15K",
+      "module": "enrichment::antipatterns"
+    },
+    {
+      "path": "src/annotations.rs",
+      "size_bytes": 15000,
+      "size_human": "15K",
+      "module": "annotations"
+    },
+    {
+      "path": "src/render.rs",
+      "size_bytes": 17000,
+      "size_human": "17K",
+      "module": "render"
+    },
+    {
+      "path": "src/enrichment/behavioral_signals.rs",
+      "size_bytes": 16000,
+      "size_human": "16K",
+      "module": "enrichment::behavioral_signals"
+    },
+    {
+      "path": "src/enrichment/config_change_tracker.rs",
+      "size_bytes": 16000,
+      "size_human": "16K",
+      "module": "enrichment::config_change_tracker"
+    },
+    {
+      "path": "src/enrichment/outcome.rs",
+      "size_bytes": 15000,
+      "size_human": "15K",
+      "module": "enrichment::outcome"
+    },
+    {
+      "path": "src/scraper/state.rs",
+      "size_bytes": 19000,
+      "size_human": "19K",
+      "module": "scraper::state"
+    },
+    {
+      "path": "src/parser/json_tree.rs",
+      "size_bytes": 13000,
+      "size_human": "13K",
+      "module": "parser::json_tree"
+    },
+    {
+      "path": "src/embedding.rs",
+      "size_bytes": 12000,
+      "size_human": "12K",
+      "module": "embedding"
+    },
+    {
+      "path": "src/shell_hook.rs",
+      "size_bytes": 9200,
+      "size_human": "9.2K",
+      "module": "shell_hook"
+    },
+    {
+      "path": "src/event.rs",
+      "size_bytes": 8800,
+      "size_human": "8.8K",
+      "module": "event"
+    },
+    {
+      "path": "src/enrichment/git.rs",
+      "size_bytes": 8800,
+      "size_human": "8.8K",
+      "module": "enrichment::git"
+    },
+    {
+      "path": "src/gc.rs",
+      "size_bytes": 9600,
+      "size_human": "9.6K",
+      "module": "gc"
+    },
+    {
+      "path": "src/parser/aider_input.rs",
+      "size_bytes": 9300,
+      "size_human": "9.3K",
+      "module": "parser::aider_input"
+    },
+    {
+      "path": "src/enrichment/code_artifacts.rs",
+      "size_bytes": 6900,
+      "size_human": "6.9K",
+      "module": "enrichment::code_artifacts"
+    },
+    {
+      "path": "src/enrichment/solution.rs",
+      "size_bytes": 6900,
+      "size_human": "6.9K",
+      "module": "enrichment::solution"
+    },
+    {
+      "path": "src/enrichment/summary.rs",
+      "size_bytes": 6800,
+      "size_human": "6.8K",
+      "module": "enrichment::summary"
+    },
+    {
+      "path": "src/scraper/file_path_extractor.rs",
+      "size_bytes": 11000,
+      "size_human": "11K",
+      "module": "scraper::file_path_extractor"
+    },
+    {
+      "path": "src/scraper/companion.rs",
+      "size_bytes": 10000,
+      "size_human": "10K",
+      "module": "scraper::companion"
+    },
+    {
+      "path": "src/write_guard.rs",
+      "size_bytes": 5000,
+      "size_human": "5.0K",
+      "module": "write_guard"
+    }
+  ]
+}
