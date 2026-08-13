@@ -55,14 +55,325 @@ pub use jsonl::JsonlParser;
 pub use markdown::MarkdownParser;
 pub use sqlite::SqliteParser;
 
-/// Struct representing an import statement
+/// Lightweight representation of a Rust import statement
+///
+/// A simplified struct containing the essential information about a single import statement
+/// found in Rust source code. This struct focuses on the core attributes needed for import
+/// analysis and categorization.
+///
+/// # When to Use Import vs ImportStatement
+///
+/// The [`Import`] struct is a lightweight alternative to [`ImportStatement`] from the
+/// [`import_parser`](import_parser) module:
+///
+/// - **Use [`Import`]** when you need basic import information without the overhead of
+///   storing the original source line. Ideal for:
+///   - Import categorization and counting
+///   - Dependency analysis
+///   - Module structure mapping
+///   - Lightweight tooling
+///
+/// - **Use [`ImportStatement`]** when you need the complete original text including:
+///   - Exact formatting and whitespace
+///   - Comments in import statements
+///   - Multi-line import blocks
+///   - Source reconstruction
+///
+/// # Field Documentation
+///
+/// ## `path: String`
+///
+/// The import path extracted from the import statement. The format varies by import type:
+///
+/// - **For `use` statements**: Full module path being imported (e.g., `"std::collections::HashMap"`,
+///   `"crate::module::Item"`, `"super::ParentModule"`)
+/// - **For `extern crate`**: The crate name (e.g., `"serde"`, `"tokio"`)
+/// - **For `mod`**: The module name (e.g., `"foo"`, `"bar"`)
+///
+/// **Constraints:**
+/// - Non-empty string (cannot be `""`)
+/// - Contains only valid Rust identifier characters and path separators (`::`)
+/// - Case-sensitive (matches Rust's rules)
+///
+/// **Usage in practice:**
+/// ```rust
+/// use agentscribe::parser::{Import, ImportType};
+///
+/// // Standard library import
+/// let std_import = Import::new("std::collections::HashMap".to_string(), ImportType::Use, 5);
+///
+/// // Crate-relative import
+/// let crate_import = Import::new("crate::module::Item".to_string(), ImportType::Use, 10);
+///
+/// // External crate
+/// let extern_import = Import::new("serde".to_string(), ImportType::ExternCrate, 1);
+/// ```
+///
+/// ## `import_type: ImportType`
+///
+/// The type classification of the import statement. This field distinguishes between the three
+/// fundamental kinds of import statements in Rust:
+///
+/// - **[`ImportType::Use`]**: Standard `use` statements (most common)
+/// - **[`ImportType::ExternCrate`]**: External crate declarations
+/// - **[`ImportType::Mod`]**: Module declarations
+///
+/// **Valid values:** Only the three variants defined in [`ImportType`]
+///
+/// **Usage in practice:**
+/// ```rust
+/// use agentscribe::parser::{Import, ImportType};
+///
+/// // Categorize imports by type
+/// fn is_standard_library(import: &Import) -> bool {
+///     match import.import_type {
+///         ImportType::Use => import.path.starts_with("std::") || import.path.starts_with("core::"),
+///         _ => false,
+///     }
+/// }
+///
+/// let std_import = Import::new("std::collections::HashMap".to_string(), ImportType::Use, 5);
+/// assert!(is_standard_library(&std_import));
+/// ```
+///
+/// ## `line_number: usize`
+///
+/// The 1-indexed line number where the import statement appears in the source file.
+///
+/// **Constraints:**
+/// - Must be ≥ 1 (1-indexed, not 0-indexed)
+/// - Should be ≤ total lines in the source file
+/// - Used for source location and error reporting
+///
+/// **Usage in practice:**
+/// ```rust
+/// use agentscribe::parser::{Import, ImportType};
+///
+/// // Track import location for error reporting
+/// let import = Import::new("std::collections::HashMap".to_string(), ImportType::Use, 42);
+///
+/// println!("Import found at line {}", import.line_number);
+/// // Output: Import found at line 42
+///
+/// // Compare import locations
+/// let import1 = Import::new("foo".to_string(), ImportType::Use, 10);
+/// let import2 = Import::new("bar".to_string(), ImportType::Use, 20);
+///
+/// assert!(import1.line_number < import2.line_number);
+/// ```
+///
+/// # Examples
+///
+/// ## Creating different import types
+///
+/// ```rust
+/// use agentscribe::parser::{Import, ImportType};
+///
+/// // Create a standard library use import
+/// let std_import = Import::new(
+///     "std::collections::HashMap".to_string(),
+///     ImportType::Use,
+///     15
+/// );
+///
+/// // Create an external crate import
+/// let extern_import = Import::new(
+///     "serde".to_string(),
+///     ImportType::ExternCrate,
+///     3
+/// );
+///
+/// // Create a module declaration
+/// let mod_import = Import::new(
+///     "my_module".to_string(),
+///     ImportType::Mod,
+///     8
+/// );
+///
+/// assert_eq!(std_import.import_type, ImportType::Use);
+/// assert_eq!(extern_import.import_type, ImportType::ExternCrate);
+/// assert_eq!(mod_import.import_type, ImportType::Mod);
+/// ```
+///
+/// ## Working with imports programmatically
+///
+/// ```rust
+/// use agentscribe::parser::{Import, ImportType};
+///
+/// let imports = vec![
+///     Import::new("std::collections::HashMap".to_string(), ImportType::Use, 5),
+///     Import::new("serde".to_string(), ImportType::ExternCrate, 1),
+///     Import::new("crate::module::Item".to_string(), ImportType::Use, 10),
+/// ];
+///
+/// // Count imports by type
+/// let use_count = imports.iter()
+///     .filter(|i| i.import_type == ImportType::Use)
+///     .count();
+///
+/// assert_eq!(use_count, 2);
+///
+/// // Find standard library imports
+/// let std_libs: Vec<_> = imports.iter()
+///     .filter(|i| i.path.starts_with("std::"))
+///     .collect();
+///
+/// assert_eq!(std_libs.len(), 1);
+/// ```
+///
+/// ## Import equality and comparison
+///
+/// ```rust
+/// use agentscribe::parser::{Import, ImportType};
+///
+/// let import1 = Import::new("std::fs".to_string(), ImportType::Use, 5);
+/// let import2 = Import::new("std::fs".to_string(), ImportType::Use, 5);
+/// let import3 = Import::new("std::fs".to_string(), ImportType::Use, 10);
+///
+/// // Same path, type, and line number are equal
+/// assert_eq!(import1, import2);
+///
+/// // Different line numbers are not equal
+/// assert_ne!(import1, import3);
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct Import {
-    /// The import path (e.g., "std::collections::HashMap", "crate::module::Item")
+    /// The import path (e.g., `"std::collections::HashMap"`, `"crate::module::Item"`)
+    ///
+    /// Contains the full module path being imported. The format varies by import type:
+    ///
+    /// - **For `use` statements**: Full module path (e.g., `"std::collections::HashMap"`,
+    ///   `"crate::module::Item"`, `"super::ParentModule"`)
+    /// - **For `extern crate`**: The crate name (e.g., `"serde"`, `"tokio"`)
+    /// - **For `mod`**: The module name (e.g., `"foo"`, `"bar"`)
+    ///
+    /// # Valid Values
+    ///
+    /// - Non-empty string (cannot be `""`)
+    /// - Contains only valid Rust identifier characters and path separators (`::`)
+    /// - Case-sensitive (matches Rust's naming rules)
+    /// - May include standard library prefixes (`std::`, `core::`, `alloc::`)
+    /// - May include crate-relative paths (`crate::`, `super::`, `self`)
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use agentscribe::parser::{Import, ImportType};
+    ///
+    /// // Standard library import
+    /// let std_import = Import::new("std::collections::HashMap".to_string(), ImportType::Use, 5);
+    /// assert_eq!(std_import.path, "std::collections::HashMap");
+    ///
+    /// // External crate import
+    /// let extern_import = Import::new("serde".to_string(), ImportType::ExternCrate, 1);
+    /// assert_eq!(extern_import.path, "serde");
+    ///
+    /// // Crate-relative import
+    /// let crate_import = Import::new("crate::module::Item".to_string(), ImportType::Use, 10);
+    /// assert_eq!(crate_import.path, "crate::module::Item");
+    /// ```
     pub path: String,
-    /// Type of import statement
+
+    /// Type of import statement ([`ImportType::Use`], [`ImportType::ExternCrate`], or [`ImportType::Mod`])
+    ///
+    /// Distinguishes between the three fundamental kinds of import statements in Rust.
+    /// This classification is essential for categorizing imports and understanding their
+    /// role in the module structure.
+    ///
+    /// # Valid Values
+    ///
+    /// Only the three variants defined in [`ImportType`]:
+    ///
+    /// - **[`ImportType::Use`]**: Standard `use` statements for importing items from modules,
+    ///   crates, or other scopes. Most common import type.
+    ///
+    /// - **[`ImportType::ExternCrate`]**: External crate declarations. Required in Rust 2015
+    ///   edition, largely obsolete in Rust 2018+ but still used in specific contexts.
+    ///
+    /// - **[`ImportType::Mod`]**: Module declarations that define the module structure,
+    ///   either file-based (`mod foo;`) or inline (`mod bar { ... }`).
+    ///
+    /// # Usage in Practice
+    ///
+    /// ```rust
+    /// use agentscribe::parser::{Import, ImportType};
+    ///
+    /// // Filter imports by type
+    /// fn is_standard_library(import: &Import) -> bool {
+    ///     match import.import_type {
+    ///         ImportType::Use => import.path.starts_with("std::") || import.path.starts_with("core::"),
+    ///         ImportType::ExternCrate => false,  // External crates are not std lib
+    ///         ImportType::Mod => false,  // Module declarations are not std lib imports
+    ///     }
+    /// }
+    ///
+    /// let std_import = Import::new("std::collections::HashMap".to_string(), ImportType::Use, 5);
+    /// assert!(is_standard_library(&std_import));
+    ///
+    /// let extern_import = Import::new("serde".to_string(), ImportType::ExternCrate, 1);
+    /// assert!(!is_standard_library(&extern_import));
+    /// ```
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use agentscribe::parser::{Import, ImportType};
+    ///
+    /// let use_import = Import::new("std::fs".to_string(), ImportType::Use, 5);
+    /// assert_eq!(use_import.import_type, ImportType::Use);
+    ///
+    /// let extern_import = Import::new("tokio".to_string(), ImportType::ExternCrate, 1);
+    /// assert_eq!(extern_import.import_type, ImportType::ExternCrate);
+    ///
+    /// let mod_import = Import::new("my_module".to_string(), ImportType::Mod, 10);
+    /// assert_eq!(mod_import.import_type, ImportType::Mod);
+    /// ```
     pub import_type: ImportType,
+
     /// Line number where the import appears (1-indexed)
+    ///
+    /// Represents the position in the source file where this import statement is located.
+    /// Line numbers start at 1 (not 0) to match standard text editor and compiler line numbering.
+    ///
+    /// # Valid Values
+    ///
+    /// - Must be ≥ 1 (1-indexed, not 0-indexed)
+    /// - Should be ≤ total lines in the source file
+    /// - Used for source location, error reporting, and tool positioning
+    ///
+    /// # Usage in Practice
+    ///
+    /// This field is particularly useful for:
+    ///
+    /// - **Error reporting**: Point users to the exact location of problematic imports
+    /// - **Import organization**: Sort or group imports by their position in the file
+    /// - **Tool integration**: IDE features, linters, and code analysis tools
+    /// - **Diffs and patches**: Track import location changes between file versions
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use agentscribe::parser::{Import, ImportType};
+    ///
+    /// // Track import location for error reporting
+    /// let import = Import::new("std::collections::HashMap".to_string(), ImportType::Use, 42);
+    ///
+    /// println!("Import found at line {}", import.line_number);
+    /// // Output: Import found at line 42
+    ///
+    /// // Sort imports by line number
+    /// let mut imports = vec![
+    ///     Import::new("crate::b".to_string(), ImportType::Use, 20),
+    ///     Import::new("crate::a".to_string(), ImportType::Use, 10),
+    ///     Import::new("std::fs".to_string(), ImportType::Use, 5),
+    /// ];
+    ///
+    /// imports.sort_by(|a, b| a.line_number.cmp(&b.line_number));
+    ///
+    /// assert_eq!(imports[0].line_number, 5);
+    /// assert_eq!(imports[1].line_number, 10);
+    /// assert_eq!(imports[2].line_number, 20);
+    /// ```
     pub line_number: usize,
 }
 
