@@ -1,8 +1,85 @@
-//! Search command implementation
+//! Search implementation with multiple query modes and filtering options.
 //!
-//! Provides full-text BM25 search, fuzzy search, error lookup, code search,
-//! and various filter/output modes against the Tantivy index.
-
+//! This module implements AgentScribe's primary search interface, supporting BM25 full-text
+//! search, error-specific lookup, code artifact search, and "more like this" similarity queries.
+//! Search results are ranked by relevance and can be filtered by agent, project, date range,
+//! outcome, and many other facets.
+//!
+//! # Search Modes
+//!
+//! ## Full-text Search (default)
+//! Keyword-based BM25 search across session content, summaries, and metadata. Supports
+//! fuzzy matching with configurable edit distance and phrase queries.
+//!
+//! ```bash
+//! agentscribe search "database connection timeout"
+//! ```
+//!
+//! ## Error Lookup (`--error`)
+//! Search for sessions that encountered a specific error. The query is normalized through
+//! the error fingerprinting pipeline (stripping variable parts like paths, UUIDs, timestamps)
+//! before matching indexed fingerprints.
+//!
+//! ```bash
+//! agentscribe search --error "ENOSPC: no space left on device"
+//! ```
+//!
+//! ## Code Search (`--code`)
+//! Search extracted code artifacts by content and language. Returns matching code blocks
+//! with file paths, session context, and whether the code was the final applied version.
+//!
+//! ```bash
+//! agentscribe search --code "connection pool" --lang rust
+//! ```
+//!
+//! ## Anti-Pattern Search (`--anti-patterns`)
+//! Find approaches that failed for a given problem. Searches through anti-pattern content
+//! extracted from failed/abandoned sessions to surface known-bad approaches.
+//!
+//! ```bash
+//! agentscribe search --anti-patterns "mock database"
+//! ```
+//!
+//! ## Similar Sessions (`--like`)
+//! Find sessions with similar content using Tantivy's MoreLikeThis query. Extracts
+//! significant terms from a reference session and finds related conversations across
+//! all agents and projects.
+//!
+//! ```bash
+//! agentscribe search --like claude-code/abc123
+//! ```
+//!
+//! # Filtering Options
+//!
+//! All search modes support these filters:
+//!
+//! - `--agent <name>`: Filter by source agent (repeatable)
+//! - `--project <path>`: Filter by project directory
+//! - `--since <date>` / `--before <date>`: Date range filtering
+//! - `--tag <tag>`: Filter by tags (repeatable, AND logic)
+//! - `--outcome <value>`: Filter by outcome (success, failure, abandoned, unknown)
+//! - `--model <name>`: Filter by LLM model name
+//! - `--type <type>`: Filter by session type (debug, feature, refactor, etc.)
+//! - `--file <path>`: Filter to sessions that touched a specific file
+//! - `--commit <hash>`: Filter to sessions associated with a git commit
+//!
+//! # Output Modes
+//!
+//! ## Human Readable (default)
+//! Formatted table with session ID, agent, project, timestamp, summary, and snippet.
+//!
+//! ## JSON (`--json`)
+//! Structured output for agent consumption. Returns same schema as MCP tool.
+//!
+/// # Context Budgeting
+///
+/// `--token-budget <n>` replaces `--max-results` + `--snippet-length` with a single
+/// constraint. Uses greedy knapsack algorithm to pack results optimally within the
+/// specified token budget, maximizing information density.
+///
+/// ```bash
+/// agentscribe search "redis caching" --token-budget 4000 --json
+/// ```
 use crate::error::{AgentScribeError, Result};
 use crate::index::{build_schema, IndexFields};
 use crate::scraper::load_session_content;
@@ -27,22 +104,74 @@ const SNIPPET_MARGIN: usize = 100;
 /// Approximate chars per token for knapsack estimation
 const CHARS_PER_TOKEN: usize = 4;
 
-/// A single search result
+/// A single search result with metadata and relevance scoring.
+///
+/// [`SearchResult`] represents one matching session or code artifact returned by a search query.
+/// Results are ranked by relevance score (BM25 for keyword search, custom scoring for other modes)
+/// and include enough metadata for the user to decide whether to inspect the full session.
+///
+/// # Field Availability
+///
+/// Some fields are optional because they depend on:
+/// - The search mode (code artifacts vs. sessions)
+/// - The enrichment stage (outcome detection, summarization)
+/// - The source agent's logging capabilities
+///
+/// # JSON Output
+///
+/// When using `--json`, results are serialized as JSON with the same field names for
+/// agent consumption. This schema is considered stable (see Phase 9 agent-facing contract).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SearchResult {
+    /// Unique session identifier in format `<agent>/<id>`
     pub session_id: String,
+
+    /// Source agent that produced this session
     pub source_agent: String,
+
+    /// Project directory path, if available
     pub project: Option<String>,
+
+    /// Session timestamp (ISO 8601 string for JSON compatibility)
     pub timestamp: Option<String>,
+
+    /// Number of conversational turns in the session
     pub turns: Option<u64>,
+
+    /// Detected outcome (success, failure, abandoned, unknown)
     pub outcome: Option<String>,
+
+    /// Relevance score (higher is more relevant)
+    ///
+    /// BM25 score for keyword search, custom scoring for other modes. Scores are
+    /// comparable within the same result set but not across different queries.
     pub score: f32,
+
+    /// One-line summary of what the session accomplished
     pub summary: Option<String>,
+
+    /// Text snippet showing matched content with context
+    ///
+    /// Extracted from the session content around the best matching terms. Length
+    /// is controlled by `--snippet-length` (default 200 chars).
     pub snippet: Option<String>,
+
+    /// Tags extracted from the session content and tool usage
     pub tags: Vec<String>,
+
+    /// Document type (session or code_artifact)
+    ///
+    /// Present for faceted search results. Used internally to distinguish session
+    /// results from code artifact results.
     pub doc_type: Option<String>,
+
+    /// LLM model used, if available in source data
     pub model: Option<String>,
-    /// Estimated token count for this result (ceil of snippet+summary chars / 4)
+
+    /// Estimated token count for this result
+    ///
+    /// Used for context budget packing (`--token-budget`). Calculated as
+    /// `ceil((snippet.chars().count() + summary.chars().count()) / 4)`.
     pub token_count: usize,
 }
 
@@ -1902,7 +2031,7 @@ pub fn collect_all_file_paths(data_dir: &Path) -> Result<std::collections::HashS
 /// Takes a glob pattern (e.g., "src/auth/**", "src/**/*.rs") and returns
 /// all file paths in the index that match the pattern.
 ///
-/// If the pattern contains no glob metacharacters (*, ?, [, ]), it's treated
+/// If the pattern contains no glob metacharacters (*, ?, \[, \]), it's treated
 /// as an exact path and returned in a singleton set if it exists in the index.
 ///
 /// Returns an empty set if:

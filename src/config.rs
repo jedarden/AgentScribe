@@ -1,6 +1,68 @@
-//! Configuration management
+//! Configuration management for AgentScribe.
 //!
-//! Handles global configuration and data directory initialization.
+//! This module handles loading, validating, and providing access to AgentScribe's global
+//! configuration. Configuration is stored in `~/.agentscribe/config.toml` and controls
+//! all aspects of AgentScribe's behavior: data directories, scraping behavior, indexing
+//! parameters, feature flags, and enrichment settings.
+//!
+//! # Configuration File
+//!
+//! The config file is TOML-formatted with sections for each component:
+//!
+//! ```toml
+//! [general]
+//! data_dir = "~/.agentscribe"
+//! log_level = "info"
+//!
+//! [scrape]
+//! debounce_seconds = 5
+//! max_session_age_days = 0
+//!
+//! [index]
+//! tantivy_heap_size_mb = 50
+//!
+//! [search]
+//! default_max_results = 10
+//! default_snippet_length = 200
+//!
+//! [daemon]
+//! mcp_enabled = false
+//! pid_file = "~/.agentscribe/agentscribe.pid"
+//!
+//! [outcome.weights]
+//! success_confirmation = 3
+//! success_clean_exit = 2
+//! # ... other weights
+//!
+//! [cost.models]
+//! "claude-sonnet-4-20250514" = { input = 3.0, output = 15.0 }
+//! # ... other models
+//! ```
+//!
+//! # Data Directory
+//!
+//! The data directory (`~/.agentscribe` by default) contains:
+//! - `config.toml` - Global configuration
+//! - `plugins/` - Scraper plugin definitions
+//! - `sessions/` - Normalized conversation logs (JSONL)
+//! - `index/` - Tantivy search index and vector index
+//! - `state/` - Scrape state and daemon state
+//!
+//! # Environment Variables
+//!
+//! Configuration can be overridden via environment variables:
+//! - `AGENTSCRIBE_DATA_DIR` - Override data directory location
+//! - `AGENTSCRIBE_LOG_LEVEL` - Override logging level
+//!
+//! # Defaults
+//!
+//! Most configuration has sensible defaults. Only create a config file if you need to
+//! customize behavior. The daemon and CLI use the same configuration source.
+//!
+//! # Validation
+//!
+//! Configuration is validated at load time. Invalid values (negative heap sizes, unknown
+//! log levels, malformed paths) cause startup errors with clear messages.
 
 use crate::enrichment::outcome::OutcomeConfig;
 use crate::error::{AgentScribeError, Result};
@@ -295,7 +357,7 @@ pub struct RedactionConfig {
     #[serde(default = "default_true")]
     pub redact_ssn: bool,
 
-    /// Additional user-defined regex patterns to redact (replaced with [REDACTED]).
+    /// Additional user-defined regex patterns to redact (replaced with \[REDACTED\]).
     #[serde(default)]
     pub custom_patterns: Vec<String>,
 }

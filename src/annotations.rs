@@ -63,7 +63,7 @@ pub fn new_annotation(tag: String, note: Option<String>, created_by: Option<Stri
 ///
 /// # Arguments
 /// * `sessions_dir` - Path to the sessions directory (e.g., ~/.agentscribe/sessions)
-/// * `session_id` - Session ID in format "<agent>/<id>"
+/// * `session_id` - Session ID in format "\<agent\>/\<id\>"
 ///
 /// # Returns
 /// Path to the annotation sidecar file
@@ -89,7 +89,7 @@ use std::path::PathBuf;
 ///
 /// # Arguments
 /// * `sessions_dir` - Path to the sessions directory (e.g., ~/.agentscribe/sessions)
-/// * `session_id` - Session ID in format "<agent>/<id>"
+/// * `session_id` - Session ID in format "\<agent\>/\<id\>"
 ///
 /// # Returns
 /// Vector of annotations for the session, or an empty vector if the sidecar doesn't exist
@@ -128,7 +128,7 @@ pub fn load_annotations(sessions_dir: &Path, session_id: &str) -> Result<Vec<Ann
 ///
 /// # Arguments
 /// * `sessions_dir` - Path to the sessions directory (e.g., ~/.agentscribe/sessions)
-/// * `session_id` - Session ID in format "<agent>/<id>"
+/// * `session_id` - Session ID in format "\<agent\>/\<id\>"
 /// * `annotation` - The annotation to add
 ///
 /// # Returns
@@ -193,7 +193,7 @@ pub fn add_annotation(sessions_dir: &Path, session_id: &str, annotation: Annotat
 ///
 /// # Arguments
 /// * `sessions_dir` - Path to the sessions directory (e.g., ~/.agentscribe/sessions)
-/// * `session_id` - Session ID in format "<agent>/<id>"
+/// * `session_id` - Session ID in format "\<agent\>/\<id\>"
 /// * `tag` - The tag of the annotation to remove
 ///
 /// # Returns
