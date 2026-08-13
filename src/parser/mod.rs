@@ -3,6 +3,7 @@
 //! Each format has a dedicated parser that normalizes events to the canonical schema.
 
 mod aider_input;
+mod import_parser;
 mod json_array;
 mod json_tree;
 mod jsonl;
@@ -10,6 +11,7 @@ mod markdown;
 mod sqlite;
 
 pub use aider_input::{AiderInputEntry, AiderInputHistory};
+pub use import_parser::{ImportParseResult, ImportParser, ImportStatement, ImportType};
 pub use json_array::JsonArrayParser;
 pub use json_tree::JsonTreeParser;
 pub use jsonl::JsonlParser;
