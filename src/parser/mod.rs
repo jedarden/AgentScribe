@@ -36,8 +36,7 @@
 //! ```
 //!
 //! For full parsing functionality including multi-file import extraction,
-//! see the [`import_parser`](import_parser) module which provides `ImportParser`
-//! for parsing complete Rust source files.
+//! see the `ImportParser` type which provides parsing of complete Rust source files.
 
 mod aider_input;
 mod import_parser;
@@ -63,8 +62,7 @@ pub use sqlite::SqliteParser;
 ///
 /// # When to Use Import vs ImportStatement
 ///
-/// The [`Import`] struct is a lightweight alternative to [`ImportStatement`] from the
-/// [`import_parser`](import_parser) module:
+/// The [`Import`] struct is a lightweight alternative to [`ImportStatement`]:
 ///
 /// - **Use [`Import`]** when you need basic import information without the overhead of
 ///   storing the original source line. Ideal for:
@@ -578,6 +576,30 @@ pub fn extract_string_with_envelope(
         Value::Number(n) => Some(n.to_string()),
         Value::Bool(b) => Some(b.to_string()),
         Value::Null => Some(String::new()),
+        Value::Array(arr) => {
+            // Handle content arrays (e.g., Claude Code format with text blocks and tool calls)
+            // Extract text from all text blocks in the array
+            let text_parts: Vec<String> = arr
+                .iter()
+                .filter_map(|item| {
+                    if let Some(obj) = item.as_object() {
+                        // Check for text blocks: {"type":"text","text":"..."}
+                        if obj.get("type").and_then(|t| t.as_str()) == Some("text") {
+                            return obj
+                                .get("text")
+                                .and_then(|t| t.as_str())
+                                .map(|s| s.to_string());
+                        }
+                    }
+                    None
+                })
+                .collect();
+            if text_parts.is_empty() {
+                None
+            } else {
+                Some(text_parts.join(" "))
+            }
+        }
         _ => None,
     }
 }
