@@ -1,7 +1,59 @@
-//! Plugin system for scraper definitions
+//! Plugin system for extensible scraper definitions.
 //!
-//! Plugins are TOML files that define how to find, parse, and normalize
-//! conversation logs from different agent types.
+//! AgentScribe's plugin system enables adding support for new AI coding agents without modifying
+//! the core codebase. Each agent type is defined by a declarative TOML plugin that specifies:
+//!
+//! - **Discovery**: Where to find log files (glob patterns, paths, exclude patterns)
+//! - **Format**: Log file format (JSONL, Markdown, JSON-tree, SQLite, JSON-array)
+//! - **Field mapping**: How to map source fields to the canonical event schema
+//! - **Session detection**: How to identify individual sessions within log files
+//! - **Enrichment**: Metadata extraction (model names, project paths, tokens)
+//!
+//! # Plugin Structure
+//!
+//! Plugins are TOML files stored in `~/.agentscribe/plugins/` with the `.toml` extension.
+//! Each plugin defines a [`Plugin`] struct with three main sections:
+//!
+//! ```toml
+//! [plugin]
+//! name = "claude-code"
+//! version = "1.0"
+//!
+//! [source]
+//! paths = ["~/.claude/projects/**/*.jsonl"]
+//! format = "jsonl"
+//!
+//! [parser]
+//! timestamp = "timestamp"
+//! role = "message.role"
+//! content = "message.content"
+//! ```
+//!
+//! # Bundled Plugins
+//!
+//! AgentScribe ships with plugins for:
+//! - **Claude Code** (`claude-code.toml`) - JSONL format with session metadata files
+//! - **Aider** (`aider.toml`) - Markdown format with delimiter-based session detection
+//! - **OpenCode** (`opencode.toml`) - SQLite format with JSON tree extraction
+//! - **Codex** (`codex.toml`) - JSONL format with envelope unwrapping
+//! - **Cursor** (`cursor.toml`) - SQLite format with KV store extraction
+//! - **Windsurf** (`windsurf.toml`) - SQLite format similar to Cursor
+//!
+//! # Custom Plugins
+//!
+//! Users can add custom plugins by dropping TOML files in `~/.agentscribe/plugins/`.
+//! See `plugins/BUILDING_PLUGINS.md` for the complete plugin authoring guide.
+//!
+//! # Validation
+//!
+//! Plugins are validated at load time for:
+//! - Required fields (name, version, paths, format)
+//! - Valid format values (jsonl, markdown, json-tree, sqlite, json-array)
+//! - Valid session detection methods for the chosen format
+//! - Valid envelope routing actions (event, meta, skip)
+//! - Path expansion and accessibility
+//!
+//! Invalid plugins are skipped with a warning rather than blocking the entire scrape.
 
 use crate::error::{AgentScribeError, Result};
 use serde::{Deserialize, Serialize};
@@ -9,21 +61,76 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use tracing::warn;
 
-/// Plugin definition from TOML
+/// Complete plugin definition loaded from TOML.
+///
+/// A [`Plugin`] contains all configuration needed to scrape one agent type. Plugins are
+/// loaded from TOML files in `~/.agentscribe/plugins/` at startup and when the daemon
+/// detects new plugin files.
+///
+/// # Structure
+///
+/// Each plugin has four main components:
+///
+/// * **PluginMeta** - Identity (name, version) for display and validation
+/// * **Source** - Where to find logs and how to detect sessions
+/// * **Parser** - How to map source fields to canonical schema
+/// * **Metadata** (optional) - Additional metadata sources (session-meta files, facets)
+///
+/// # Validation
+///
+/// Plugins are validated at load time. Invalid plugins (missing required fields, invalid
+/// format values, malformed paths) are skipped with a warning rather than blocking scraping.
+///
+/// # Examples
+///
+/// ```toml
+/// [plugin]
+/// name = "claude-code"
+/// version = "1.0"
+///
+/// [source]
+/// paths = ["~/.claude/projects/**/*.jsonl"]
+/// format = "jsonl"
+///
+/// [parser]
+/// timestamp = "timestamp"
+/// role = "message.role"
+/// content = "message.content"
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Plugin {
+    /// Plugin identity (name and version)
     pub plugin: PluginMeta,
+
+    /// Log source configuration (paths, format, session detection)
     pub source: Source,
+
+    /// Field mapping and parsing configuration
     #[serde(default)]
     pub parser: Parser,
+
+    /// Optional metadata extraction configuration
     #[serde(default)]
     pub metadata: Option<Metadata>,
 }
 
-/// Plugin identity
+/// Plugin identity metadata.
+///
+/// Stores the plugin's name and version for display, validation, and compatibility checking.
+/// The version field is not currently used for compatibility enforcement, but provides a
+/// mechanism for future plugin evolution.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PluginMeta {
+    /// Unique plugin identifier (e.g., "claude-code", "aider", "opencode")
+    ///
+    /// Used as the `source_agent` value in canonical events and for plugin selection
+    /// via CLI flags (`--agent claude-code`).
     pub name: String,
+
+    /// Plugin version string (e.g., "1.0", "2.1.3")
+    ///
+    /// Currently informational only. Future versions may use this for compatibility
+    /// checking and plugin migration.
     pub version: String,
 }
 
@@ -112,14 +219,79 @@ pub struct Source {
     pub array: Option<JsonArraySourceConfig>,
 }
 
-/// Supported log formats
+/// Supported log file formats.
+///
+/// Each agent stores conversation logs in a different format. [`LogFormat`] specifies which
+/// parser to use for a given plugin. The format determines:
+///
+/// - How the file is read (streaming vs. random access)
+/// - How sessions are detected (one-file-per-session vs. delimiters vs. queries)
+/// - What fields are available for mapping
+/// - Whether incremental scraping is supported
+///
+/// # Format Variants
+///
+/// ## Jsonl
+/// **Best for**: Claude Code, Codex, OpenCode (legacy), Pi, Goose
+///
+/// JSONL (JSON Lines) format: one JSON object per line. Supports incremental scraping via
+/// byte offset tracking. Each line can represent an event, session metadata, or noise.
+/// Requires envelope unwrapping for formats like Codex where lines are wrapped in
+/// `{timestamp, type, payload}` structures.
+///
+/// ## Markdown
+/// **Best for**: Aider
+///
+/// Plain text Markdown with delimiter-based session detection. Sessions are separated by
+/// marker lines (e.g., `# aider chat started at YYYY-MM-DD HH:MM:SS`). Incremental
+/// scraping tracks the last delimiter position to handle partially-written sessions.
+///
+/// ## JsonTree
+/// **Best for**: OpenCode (current), some legacy Codex formats
+///
+/// Hierarchical JSON files where sessions, messages, and parts are stored in separate
+/// files or database tables. Requires tree traversal and re-assembly to extract events
+/// in conversation order.
+///
+/// ## Sqlite
+/// **Best for**: Cursor, Windsurf
+///
+/// SQLite databases where sessions and messages are stored in tables. Requires SQL
+/// queries with row ordering to extract events. Supports incremental scraping via
+/// time-based filtering (`time_updated > last_scraped`).
+///
+/// ## JsonArray
+/// **Best for**: Gemini CLI
+///
+/// Single JSON file containing an array of message objects. The entire file is read
+/// into memory and parsed as an array. Does not support incremental scraping via byte
+/// offsets (the array is rewritten in place), so falls back to mtime-based full rescans.
+///
+/// # Choosing a Format
+///
+/// When authoring custom plugins, choose the format that matches the agent's native storage:
+///
+/// - Agent writes line-by-line to a file → `Jsonl` (most common)
+/// - Agent appends to a text file with separators → `Markdown`
+/// - Agent stores conversations in a database → `Sqlite`
+/// - Agent writes complete arrays in one file → `JsonArray`
+/// - Agent uses complex nested JSON structures → `JsonTree`
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum LogFormat {
+    /// JSON Lines format (one JSON object per line)
     Jsonl,
+
+    /// Plain text Markdown with delimiter-based session detection
     Markdown,
+
+    /// Hierarchical JSON structures requiring tree traversal
     JsonTree,
+
+    /// SQLite database with query-based session extraction
     Sqlite,
+
+    /// Single JSON file containing an array of objects
     JsonArray,
 }
 
