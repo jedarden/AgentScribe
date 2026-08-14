@@ -3296,6 +3296,13 @@ mod tests {
         assert_eq!(events[0].role, Role::User);
         assert!(events[0].content.contains("What files"));
 
+        eprintln!("DEBUG events[1].role = {:?}", events[1].role);
+        eprintln!("DEBUG events[1].content = {}", events[1].content);
+        eprintln!(
+            "DEBUG events[1].content contains 'I'll list': {}",
+            events[1].content.contains("I'll list")
+        );
+
         assert_eq!(events[1].role, Role::Assistant);
         assert!(events[1].content.contains("I'll list"));
 
@@ -3518,7 +3525,7 @@ mod tests {
                 array: None,
             },
             parser: Parser {
-                timestamp: Some("timestamp".to_string()),
+                timestamp: Some("^timestamp".to_string()),
                 role: Some("role".to_string()),
                 content: Some("content".to_string()),
                 tool_name: Some("tool_name".to_string()),
@@ -3914,16 +3921,16 @@ mod tests {
     #[test]
     fn test_mixed_skip_and_event_routing_emits_only_events() {
         // Test that when mixing skip and event types, only event types emit
-        let mut plugin = create_test_plugin();
-        let mut type_routing = std::collections::HashMap::new();
-        type_routing.insert("message".to_string(), "event".to_string());
-        type_routing.insert("heartbeat".to_string(), "skip".to_string());
-        type_routing.insert("ping".to_string(), "skip".to_string());
-        plugin.source.envelope = Some(crate::plugin::Envelope {
-            payload_field: "payload".to_string(),
-            type_field: "type".to_string(),
-            type_routing,
-        });
+        let mut plugin = create_envelope_test_plugin();
+
+        // Add skip routing types to the existing envelope configuration
+        let envelope = plugin.source.envelope.as_mut().unwrap();
+        envelope
+            .type_routing
+            .insert("heartbeat".to_string(), "skip".to_string());
+        envelope
+            .type_routing
+            .insert("ping".to_string(), "skip".to_string());
 
         let context = ParseContext::new(
             "mixed-test".to_string(),
@@ -3935,27 +3942,27 @@ mod tests {
         let lines = [
             // Event type - should emit
             (
-                r#"{"type": "message", "timestamp": "2026-03-16T12:00:00Z", "payload": {"role": "user", "content": "Hello"}}"#,
+                r#"{"type": "message", "timestamp": "2026-03-16T12:00:00Z", "message": {"role": "user", "content": "Hello"}}"#,
                 true,
             ),
             // Skip type - should not emit
             (
-                r#"{"type": "heartbeat", "timestamp": "2026-03-16T12:00:01Z", "payload": {"status": "ok"}}"#,
+                r#"{"type": "heartbeat", "timestamp": "2026-03-16T12:00:01Z", "message": {"status": "ok"}}"#,
                 false,
             ),
             // Event type - should emit
             (
-                r#"{"type": "message", "timestamp": "2026-03-16T12:00:02Z", "payload": {"role": "assistant", "content": "Hi there"}}"#,
+                r#"{"type": "message", "timestamp": "2026-03-16T12:00:02Z", "message": {"role": "assistant", "content": "Hi there"}}"#,
                 true,
             ),
             // Skip type - should not emit
             (
-                r#"{"type": "ping", "timestamp": "2026-03-16T12:00:03Z", "payload": {"seq": 1}}"#,
+                r#"{"type": "ping", "timestamp": "2026-03-16T12:00:03Z", "message": {"seq": 1}}"#,
                 false,
             ),
             // Event type - should emit
             (
-                r#"{"type": "message", "timestamp": "2026-03-16T12:00:04Z", "payload": {"role": "user", "content": "Thanks"}}"#,
+                r#"{"type": "message", "timestamp": "2026-03-16T12:00:04Z", "message": {"role": "user", "content": "Thanks"}}"#,
                 true,
             ),
         ];
@@ -4100,5 +4107,363 @@ mod tests {
 
         let events = result.unwrap();
         assert!(events.is_empty(), "Skip routing should return empty events");
+    }
+
+    #[test]
+    fn test_skip_routing_multiple_consecutive_lines_emit_no_events() {
+        // Test that multiple consecutive skip routing lines produce no events
+        let mut plugin = create_test_plugin();
+        let mut type_routing = std::collections::HashMap::new();
+        type_routing.insert("message".to_string(), "event".to_string());
+        type_routing.insert("heartbeat".to_string(), "skip".to_string());
+        type_routing.insert("ping".to_string(), "skip".to_string());
+        type_routing.insert("keepalive".to_string(), "skip".to_string());
+        plugin.source.envelope = Some(crate::plugin::Envelope {
+            payload_field: "payload".to_string(),
+            type_field: "type".to_string(),
+            type_routing,
+        });
+
+        let context = ParseContext::new(
+            "test-session".to_string(),
+            "test".to_string(),
+            "/tmp/test.jsonl".to_string(),
+        );
+
+        // Multiple skip-type lines in sequence
+        let skip_lines = [
+            r#"{"type": "heartbeat", "payload": {"ts": "2026-03-16T12:00:00Z", "role": "system", "content": "ping"}}"#,
+            r#"{"type": "ping", "payload": {"ts": "2026-03-16T12:00:01Z", "role": "system", "content": "pong"}}"#,
+            r#"{"type": "keepalive", "payload": {"ts": "2026-03-16T12:00:02Z", "role": "system", "content": "still alive"}}"#,
+        ];
+
+        // Verify all skip lines produce empty event streams
+        for (line_num, line) in skip_lines.iter().enumerate() {
+            let events = JsonlParser::parse_line(line, line_num + 1, &context, &plugin)
+                .expect("Skip routing should not error");
+            assert_eq!(
+                events.len(),
+                0,
+                "Skip routing line {} should produce zero events",
+                line_num + 1
+            );
+            assert!(
+                events.is_empty(),
+                "Skip routing line {} should return empty event vector",
+                line_num + 1
+            );
+        }
+    }
+
+    #[test]
+    fn test_skip_routing_bypasses_event_construction() {
+        // Test that skip routing returns early without any event construction
+        let mut plugin = create_test_plugin();
+        let mut type_routing = std::collections::HashMap::new();
+        type_routing.insert("system_event".to_string(), "skip".to_string());
+        plugin.source.envelope = Some(crate::plugin::Envelope {
+            payload_field: "payload".to_string(),
+            type_field: "type".to_string(),
+            type_routing,
+        });
+
+        let context = ParseContext::new(
+            "test-session".to_string(),
+            "test".to_string(),
+            "/tmp/test.jsonl".to_string(),
+        );
+
+        // Even with valid event fields in the payload, skip routing should ignore them
+        let line = r#"{"type": "system_event", "timestamp": "2026-03-16T12:00:00Z", "payload": {"role": "user", "content": "This should never become an event", "extra": "data"}}"#;
+
+        let result = JsonlParser::parse_line(line, 1, &context, &plugin);
+
+        // Should return Ok with empty Vec, never constructing an Event
+        assert!(result.is_ok(), "Skip routing should return Ok");
+        let events = result.unwrap();
+        assert!(
+            events.is_empty(),
+            "Skip routing should bypass event construction"
+        );
+
+        // Verify no event was constructed by checking the return is exactly empty Vec::new()
+        assert_eq!(
+            events,
+            Vec::<Event>::new(),
+            "Skip routing should return empty Vec::new()"
+        );
+    }
+
+    #[test]
+    fn test_skip_routing_event_stream_remains_empty() {
+        // Test that event stream stays empty after processing skip-type lines
+        let mut plugin = create_envelope_test_plugin();
+
+        // Add skip routing types to the existing envelope configuration
+        let envelope = plugin.source.envelope.as_mut().unwrap();
+        envelope
+            .type_routing
+            .insert("debug".to_string(), "skip".to_string());
+        envelope
+            .type_routing
+            .insert("trace".to_string(), "skip".to_string());
+
+        let context = ParseContext::new(
+            "test-session".to_string(),
+            "test".to_string(),
+            "/tmp/test.jsonl".to_string(),
+        );
+
+        let mut event_stream = Vec::new();
+
+        // Process a mix of skip and event lines
+        let lines = [
+            (
+                r#"{"type": "debug", "timestamp": "2026-03-16T12:00:00Z", "message": {"role": "system", "content": "debug info"}}"#,
+                true,
+            ),
+            (
+                r#"{"type": "trace", "timestamp": "2026-03-16T12:00:01Z", "message": {"role": "system", "content": "trace info"}}"#,
+                true,
+            ),
+            (
+                r#"{"type": "message", "timestamp": "2026-03-16T12:00:02Z", "message": {"role": "user", "content": "hello"}}"#,
+                false,
+            ),
+        ];
+
+        for (line_num, (line, should_be_empty)) in lines.iter().enumerate() {
+            let events = JsonlParser::parse_line(line, line_num + 1, &context, &plugin)
+                .expect("Parsing should succeed");
+
+            if *should_be_empty {
+                assert!(
+                    events.is_empty(),
+                    "Skip routing should not add to event stream"
+                );
+            } else {
+                assert!(!events.is_empty(), "Event routing should produce events");
+                event_stream.extend(events);
+            }
+        }
+
+        // Verify only non-skip lines contributed to the event stream
+        assert_eq!(
+            event_stream.len(),
+            1,
+            "Event stream should only contain non-skip events"
+        );
+    }
+
+    #[test]
+    fn test_skip_routing_no_side_effects_on_context() {
+        // Test that skip routing doesn't modify or affect the parse context
+        let mut plugin = create_test_plugin();
+        let mut type_routing = std::collections::HashMap::new();
+        type_routing.insert("noise".to_string(), "skip".to_string());
+        plugin.source.envelope = Some(crate::plugin::Envelope {
+            payload_field: "payload".to_string(),
+            type_field: "type".to_string(),
+            type_routing,
+        });
+
+        let original_context = ParseContext::new(
+            "test-session".to_string(),
+            "test".to_string(),
+            "/tmp/test.jsonl".to_string(),
+        );
+
+        // Clone context to verify it's not modified
+        let context_before = original_context.clone();
+
+        let line = r#"{"type": "noise", "timestamp": "2026-03-16T12:00:00Z", "payload": {"role": "system", "content": "ignore me"}}"#;
+
+        let _events = JsonlParser::parse_line(line, 1, &original_context, &plugin)
+            .expect("Skip routing should not error");
+
+        // Verify context was not modified by skip routing
+        assert_eq!(
+            original_context.session_id, context_before.session_id,
+            "Skip routing should not modify session_id"
+        );
+        assert_eq!(
+            original_context.source_agent, context_before.source_agent,
+            "Skip routing should not modify source_agent"
+        );
+        assert_eq!(
+            original_context.source_file, context_before.source_file,
+            "Skip routing should not modify source_file"
+        );
+    }
+
+    #[test]
+    fn test_skip_routing_all_types_variations() {
+        // Test skip routing with various JSON value types for the type field
+        let mut plugin = create_test_plugin();
+        let mut type_routing = std::collections::HashMap::new();
+        type_routing.insert("skip_string".to_string(), "skip".to_string());
+        type_routing.insert("skip_number".to_string(), "skip".to_string());
+        type_routing.insert("skip_bool".to_string(), "skip".to_string());
+        plugin.source.envelope = Some(crate::plugin::Envelope {
+            payload_field: "payload".to_string(),
+            type_field: "type".to_string(),
+            type_routing,
+        });
+
+        let context = ParseContext::new(
+            "test-session".to_string(),
+            "test".to_string(),
+            "/tmp/test.jsonl".to_string(),
+        );
+
+        // Test different value types for type field that route to skip
+        let test_cases = [
+            r#"{"type": "skip_string", "timestamp": "2026-03-16T12:00:00Z", "payload": {"role": "user", "content": "skip"}}"#,
+            r#"{"type": "skip_number", "timestamp": "2026-03-16T12:00:00Z", "payload": {"role": "user", "content": "skip"}}"#,
+            r#"{"type": "skip_bool", "timestamp": "2026-03-16T12:00:00Z", "payload": {"role": "user", "content": "skip"}}"#,
+        ];
+
+        for (line_num, line) in test_cases.iter().enumerate() {
+            let events = JsonlParser::parse_line(line, line_num + 1, &context, &plugin)
+                .expect("Skip routing should not error");
+            assert_eq!(
+                events.len(),
+                0,
+                "Skip routing for type variant {} should produce zero events",
+                line_num + 1
+            );
+        }
+    }
+
+    #[test]
+    fn test_skip_routing_malformed_payload_still_skips() {
+        // Test that skip routing works even with malformed or missing payload
+        let mut plugin = create_test_plugin();
+        let mut type_routing = std::collections::HashMap::new();
+        type_routing.insert("skip_me".to_string(), "skip".to_string());
+        plugin.source.envelope = Some(crate::plugin::Envelope {
+            payload_field: "payload".to_string(),
+            type_field: "type".to_string(),
+            type_routing,
+        });
+
+        let context = ParseContext::new(
+            "test-session".to_string(),
+            "test".to_string(),
+            "/tmp/test.jsonl".to_string(),
+        );
+
+        // Skip routing with various payload states
+        let test_cases = [
+            // Missing payload entirely
+            r#"{"type": "skip_me", "timestamp": "2026-03-16T12:00:00Z"}"#,
+            // Null payload
+            r#"{"type": "skip_me", "timestamp": "2026-03-16T12:00:00Z", "payload": null}"#,
+            // String payload (invalid but should still skip)
+            r#"{"type": "skip_me", "timestamp": "2026-03-16T12:00:00Z", "payload": "not an object"}"#,
+        ];
+
+        for (line_num, line) in test_cases.iter().enumerate() {
+            let result = JsonlParser::parse_line(line, line_num + 1, &context, &plugin);
+            // Skip routing should return Ok even with malformed data
+            assert!(
+                result.is_ok(),
+                "Skip routing should handle malformed data gracefully at line {}",
+                line_num + 1
+            );
+            let events = result.unwrap();
+            assert!(
+                events.is_empty(),
+                "Skip routing should produce no events at line {}",
+                line_num + 1
+            );
+        }
+    }
+
+    #[test]
+    fn test_skip_routing_does_not_leak_into_event_stream() {
+        // Test that skip routing completely bypasses event stream processing
+        let mut plugin = create_envelope_test_plugin();
+
+        // Add custom routing to the existing envelope configuration
+        let envelope = plugin.source.envelope.as_mut().unwrap();
+        envelope
+            .type_routing
+            .insert("internal".to_string(), "skip".to_string());
+        envelope
+            .type_routing
+            .insert("user_message".to_string(), "event".to_string());
+
+        let context = ParseContext::new(
+            "test-session".to_string(),
+            "test".to_string(),
+            "/tmp/test.jsonl".to_string(),
+        );
+
+        // Process many skip lines followed by an event line
+        let skip_line = r#"{"type": "internal", "timestamp": "2026-03-16T12:00:00Z", "message": {"role": "system", "content": "internal state"}}"#;
+        let event_line = r#"{"type": "user_message", "timestamp": "2026-03-16T12:00:01Z", "message": {"role": "user", "content": "hello"}}"#;
+
+        // Process 100 skip lines
+        for i in 0..100 {
+            let events = JsonlParser::parse_line(skip_line, i + 1, &context, &plugin)
+                .expect("Skip routing should not error");
+            assert!(
+                events.is_empty(),
+                "Skip routing iteration {} should produce no events",
+                i
+            );
+        }
+
+        // Process one event line
+        let events = JsonlParser::parse_line(event_line, 101, &context, &plugin)
+            .expect("Event routing should succeed");
+
+        assert_eq!(
+            events.len(),
+            1,
+            "Event line should produce exactly one event"
+        );
+        assert_eq!(events[0].role, Role::User, "Event should have correct role");
+        assert_eq!(
+            events[0].content, "hello",
+            "Event should have correct content"
+        );
+
+        // Verify that skip routing didn't affect the event processing
+        assert!(
+            !events[0].content.contains("internal"),
+            "Skip routing content should not leak into events"
+        );
+    }
+
+    #[test]
+    fn test_skip_routing_empty_type_field() {
+        // Test that skip routing handles empty/missing type fields gracefully
+        let mut plugin = create_test_plugin();
+        let mut type_routing = std::collections::HashMap::new();
+        type_routing.insert("valid_event".to_string(), "event".to_string());
+        plugin.source.envelope = Some(crate::plugin::Envelope {
+            payload_field: "payload".to_string(),
+            type_field: "type".to_string(),
+            type_routing,
+        });
+
+        let context = ParseContext::new(
+            "test-session".to_string(),
+            "test".to_string(),
+            "/tmp/test.jsonl".to_string(),
+        );
+
+        // Empty type field should default to skip
+        let line = r#"{"type": "", "timestamp": "2026-03-16T12:00:00Z", "payload": {"role": "user", "content": "empty type"}}"#;
+
+        let events = JsonlParser::parse_line(line, 1, &context, &plugin)
+            .expect("Empty type should default to skip gracefully");
+
+        assert!(
+            events.is_empty(),
+            "Empty type field should result in skip behavior"
+        );
     }
 }

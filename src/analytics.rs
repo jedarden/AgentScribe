@@ -1,8 +1,40 @@
-//! Agent effectiveness analytics
+//! Cross-agent effectiveness analytics and performance comparison.
 //!
-//! Cross-agent performance comparison and analytics. Computes success rates,
-//! turn/token efficiency, problem type classification, specialization, trends,
-//! and cost efficiency.
+//! This module implements Phase 6 analytics that measure and compare agent performance
+//! across multiple dimensions:
+//!
+//! - **Success rates** - Percentage of sessions that succeeded by agent and problem type
+//! - **Turn/token efficiency** - Average turns and tokens per successful outcome
+//! - **Problem type classification** - Categorize sessions as debug, feature, refactor, etc.
+//! - **Specialization** - Which agents excel at which problem types
+//! - **Trends** - Performance changes over time (model updates, prompt improvements)
+//! - **Cost efficiency** - Outcome quality per dollar of token spend
+//!
+//! # Problem Type Classification
+//!
+//! Sessions are automatically classified into problem types using a rule-based system that
+//! analyzes content, tools used, and files touched. The classification drives agent
+//! specialization analytics and helps users understand which agents are best for which tasks.
+//!
+//! # Cost Estimation
+//!
+//! Token-based cost estimation uses model pricing data from `[cost.models]` in config.toml.
+//! Costs are approximate and depend on the model actually being logged in source data.
+//! Agents that don't log model names (Aider) are excluded from cost calculations but
+//! included in all other metrics.
+//!
+//! # Examples
+//!
+//! ```bash
+//! # Compare agent performance
+//! agentscribe analytics
+//!
+//! # Filter to specific agent or project
+//! agentscribe analytics --agent claude-code --project /home/user/myapp
+//!
+//! # Analyze recent activity
+//! agentscribe analytics --since 7d
+//! ```
 
 use crate::config::Config;
 use crate::error::{AgentScribeError, Result};
@@ -23,15 +55,83 @@ use tantivy::{DocAddress, Searcher, TantivyDocument};
 /// Approximate chars per token for estimation
 const CHARS_PER_TOKEN: f64 = 4.0;
 
-/// Problem types for session classification
+/// Problem type classification for sessions.
+///
+/// [`ProblemType`] categorizes sessions by the type of work being performed. This classification
+/// enables agent specialization analytics (which agents are best at which tasks) and helps users
+/// find relevant past solutions for specific problem types.
+///
+/// # Classification Logic
+///
+/// Classification is rule-based and uses signal detection:
+/// - **Keyword matching** - Content contains task-specific phrases (fix, add, refactor, etc.)
+/// - **Tool usage patterns** - Ratio of Read to Edit calls, types of tools invoked
+/// - **File analysis** - File extensions and paths indicate work type (docs, config, source)
+/// - **Priority order** - First matching type wins (debug > feature > refactor > etc.)
+///
+/// # Type Definitions
+///
+/// ## Debug
+/// Sessions focused on fixing errors, bugs, or crashes. Signals:
+/// - Content matches: fix, bug, error, crash, broken, fault, regression
+/// - Contains error fingerprints
+/// - Test failures or panics
+///
+/// ## Feature
+/// Sessions adding new functionality or capabilities. Signals:
+/// - Content matches: add, implement, create, build, new, support, integrate, enable
+/// - Creates new files via Write tool
+/// - No bug-fixing keywords present
+///
+/// ## Refactor
+/// Sessions restructuring existing code without changing behavior. Signals:
+/// - Content matches: refactor, rename, move, extract, clean up, restructure, simplify
+/// - No new files created (distinguishes from feature work)
+/// - No bug-fixing keywords present
+///
+/// ## Investigation
+/// Sessions focused on understanding or exploring codebases. Signals:
+/// - Content matches: explain, how does, what is, why, understand, investigate, explore
+/// - High Read-to-Edit ratio (>3:1)
+/// - No file modifications
+///
+/// ## Configuration
+/// Sessions modifying project configuration or deployment setup. Signals:
+/// - Files touched include: .toml, .yaml, .json, .env, Dockerfile, Makefile
+/// - Config filenames: docker-compose.yml, .env
+/// - No source code modifications
+///
+/// ## Documentation
+/// Sessions creating or modifying documentation. Signals:
+/// - Files touched include: .md, .rst, .txt, .adoc
+/// - Content matches: document, readme, changelog, docstring, comment, docs
+/// - No code modifications
+///
+/// # Usage
+///
+/// Problem types are stored as tags on sessions and used for:
+/// - Filtering analytics by problem type (`agentscribe analytics --type debug`)
+/// - Understanding agent specialization (success rates by problem type)
+/// - Finding relevant past solutions (search by problem type tag)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ProblemType {
+    /// Bug fixing, error resolution, crash diagnosis
     Debug,
+
+    /// New feature implementation, capability additions
     Feature,
+
+    /// Code restructuring without behavior changes
     Refactor,
+
+    /// Code understanding, exploration, explanation
     Investigation,
+
+    /// Configuration changes, deployment setup
     Configuration,
+
+    /// Documentation creation or modification
     Documentation,
 }
 

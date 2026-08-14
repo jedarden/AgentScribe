@@ -486,7 +486,7 @@ enum PluginsAction {
     },
 }
 
-/// Daemon subcommands
+/// Index subcommands
 #[derive(Subcommand, Debug)]
 enum IndexAction {
     /// Drop and rebuild the index from session files
