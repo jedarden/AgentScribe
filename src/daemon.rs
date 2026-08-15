@@ -23,7 +23,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 /// How often to re-discover new files and watch newly created directories (seconds).
-const REDISCOVERY_INTERVAL_SECS: u64 = 60;
+pub const REDISCOVERY_INTERVAL_SECS: u64 = 60;
 
 /// Backoff intervals for logging failed watch attempts (seconds).
 /// After the first failure, log again after 1 hour, then 24 hours, then max.

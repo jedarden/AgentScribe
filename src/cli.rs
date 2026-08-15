@@ -438,6 +438,12 @@ enum Commands {
         #[arg(long)]
         created_by: Option<String>,
     },
+    /// Self-diagnose AgentScribe failure modes
+    Doctor {
+        /// JSON structured output
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 /// Config subcommands
@@ -773,6 +779,7 @@ pub fn run() -> Result<()> {
             note,
             created_by,
         } => run_annotate(session_id, tag, note, created_by),
+        Commands::Doctor { json } => run_doctor(json),
         Commands::Completions { shell } => {
             let mut cmd = Args::command();
             generate(shell, &mut cmd, "agentscribe", &mut io::stdout());
@@ -3615,4 +3622,528 @@ fn run_reflect_sessions(
     }
 
     Ok(())
+}
+
+/// Run doctor command: self-diagnose AgentScribe failure modes
+fn run_doctor(json: bool) -> Result<()> {
+    let config = load_config()?;
+    let data_dir = config.data_dir()?;
+
+    if !data_dir.exists() {
+        eprintln!("AgentScribe not initialized. Run 'agentscribe config init' to set up.");
+        std::process::exit(1);
+    }
+
+    let mut checks = Vec::new();
+
+    // Check 1: Daemon process alive
+    let daemon_check = check_daemon_alive(&data_dir);
+    checks.push(daemon_check);
+
+    // Check 2: Recent scrape
+    let scrape_check = check_recent_scrape(&data_dir, &config);
+    checks.push(scrape_check);
+
+    // Check 3: State file integrity
+    let state_check = check_state_file_integrity(&data_dir);
+    checks.push(state_check);
+
+    // Check 4: Index consistency
+    let index_check = check_index_consistency(&data_dir);
+    checks.push(index_check);
+
+    // Check 5: MCP status
+    let mcp_check = check_mcp_status(&config);
+    checks.push(mcp_check);
+
+    if json {
+        use serde_json::json;
+        let output: Vec<serde_json::Value> = checks
+            .into_iter()
+            .map(|c| {
+                json!({
+                    "name": c.name,
+                    "status": c.status,
+                    "message": c.message,
+                })
+            })
+            .collect();
+        println!("{}", serde_json::to_string_pretty(&output).unwrap());
+    } else {
+        // Human-readable output
+        println!("AgentScribe Health Check");
+        println!();
+
+        for check in &checks {
+            let status_symbol = match check.status.as_str() {
+                "pass" => "✓",
+                "fail" => "✗",
+                "warn" => "⚠",
+                _ => "?",
+            };
+            println!("{} {}: {}", status_symbol, check.name, check.message);
+        }
+
+        println!();
+
+        // Summary
+        let pass_count = checks.iter().filter(|c| c.status == "pass").count();
+        let fail_count = checks.iter().filter(|c| c.status == "fail").count();
+        let warn_count = checks.iter().filter(|c| c.status == "warn").count();
+
+        if fail_count == 0 && warn_count == 0 {
+            println!("All checks passed ({}/{}).", pass_count, checks.len());
+        } else {
+            println!(
+                "Summary: {} pass, {} warn, {} fail",
+                pass_count, warn_count, fail_count
+            );
+        }
+
+        // Suggest remedies for failures
+        for check in &checks {
+            if check.status == "fail" {
+                if let Some(remedy) = &check.remedy {
+                    println!();
+                    println!("Remedy for {}:", check.name);
+                    println!("  {}", remedy);
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Doctor check result
+struct DoctorCheck {
+    name: String,
+    status: String, // "pass", "fail", "warn"
+    message: String,
+    remedy: Option<String>,
+}
+
+/// Check 1: Daemon process alive (PID file vs actual process)
+fn check_daemon_alive(data_dir: &std::path::Path) -> DoctorCheck {
+    let pid_file = data_dir.join("agentscribe.pid");
+
+    if !pid_file.exists() {
+        return DoctorCheck {
+            name: "Daemon process".to_string(),
+            status: "warn".to_string(),
+            message: "No PID file found (daemon not started)".to_string(),
+            remedy: Some("Run 'agentscribe daemon start' to start the daemon".to_string()),
+        };
+    }
+
+    match std::fs::read_to_string(&pid_file) {
+        Ok(content) => {
+            match content.trim().parse::<u32>() {
+                Ok(pid) => {
+                    // Check if process is actually running
+                    unsafe {
+                        if libc::kill(pid as i32, 0) == 0 {
+                            DoctorCheck {
+                                name: "Daemon process".to_string(),
+                                status: "pass".to_string(),
+                                message: format!("Daemon running (PID {})", pid),
+                                remedy: None,
+                            }
+                        } else {
+                            DoctorCheck {
+                                name: "Daemon process".to_string(),
+                                status: "fail".to_string(),
+                                message: format!("Stale PID file (PID {} not running)", pid),
+                                remedy: Some(
+                                    "Run 'agentscribe daemon start' to start the daemon"
+                                        .to_string(),
+                                ),
+                            }
+                        }
+                    }
+                }
+                Err(_) => DoctorCheck {
+                    name: "Daemon process".to_string(),
+                    status: "fail".to_string(),
+                    message: "Invalid PID file contents".to_string(),
+                    remedy: Some("Run 'agentscribe daemon start' to start the daemon".to_string()),
+                },
+            }
+        }
+        Err(_) => DoctorCheck {
+            name: "Daemon process".to_string(),
+            status: "fail".to_string(),
+            message: "Cannot read PID file".to_string(),
+            remedy: Some(
+                "Check file permissions or reinitialize: 'agentscribe config init --force'"
+                    .to_string(),
+            ),
+        },
+    }
+}
+
+/// Check 2: Recent scrape (last_scrape relative to debounce/rediscovery config)
+fn check_recent_scrape(data_dir: &std::path::Path, config: &crate::config::Config) -> DoctorCheck {
+    let state_file = data_dir.join("daemon_state.json");
+
+    if !state_file.exists() {
+        return DoctorCheck {
+            name: "Scrape recency".to_string(),
+            status: "warn".to_string(),
+            message: "No daemon state found (daemon never started)".to_string(),
+            remedy: Some("Run 'agentscribe daemon start' to start the daemon".to_string()),
+        };
+    }
+
+    match std::fs::read_to_string(&state_file) {
+        Ok(content) => {
+            match serde_json::from_str::<serde_json::Value>(&content) {
+                Ok(state) => {
+                    if let Some(last_scrape_str) = state.get("last_scrape").and_then(|v| v.as_str())
+                    {
+                        match chrono::DateTime::parse_from_rfc3339(last_scrape_str) {
+                            Ok(last_scrape) => {
+                                let now = chrono::Utc::now();
+                                let duration = now
+                                    .signed_duration_since(last_scrape.with_timezone(&chrono::Utc));
+                                let secs_since = duration.num_seconds();
+
+                                // Use 2x (debounce + rediscovery) as threshold
+                                let threshold_secs = (config.scrape.debounce_seconds as i64)
+                                    + (crate::daemon::REDISCOVERY_INTERVAL_SECS as i64) * 2;
+
+                                if secs_since > threshold_secs * 10 {
+                                    // More than 10x the expected interval -> critical
+                                    let days = secs_since / 86400;
+                                    DoctorCheck {
+                                        name: "Scrape recency".to_string(),
+                                        status: "fail".to_string(),
+                                        message: format!("CRITICAL: No scrape for {} days (last: {})", days, last_scrape_str),
+                                        remedy: Some("Run 'agentscribe daemon restart' or check daemon.log for errors".to_string()),
+                                    }
+                                } else if secs_since > threshold_secs {
+                                    // More than expected but not critical
+                                    DoctorCheck {
+                                        name: "Scrape recency".to_string(),
+                                        status: "warn".to_string(),
+                                        message: format!("Last scrape {} hours ago (may indicate slow file watching)", secs_since / 3600),
+                                        remedy: Some("Check if agent logs are being updated; consider restarting daemon".to_string()),
+                                    }
+                                } else {
+                                    DoctorCheck {
+                                        name: "Scrape recency".to_string(),
+                                        status: "pass".to_string(),
+                                        message: format!(
+                                            "Last scrape {} minutes ago",
+                                            secs_since / 60
+                                        ),
+                                        remedy: None,
+                                    }
+                                }
+                            }
+                            Err(_) => DoctorCheck {
+                                name: "Scrape recency".to_string(),
+                                status: "fail".to_string(),
+                                message: format!(
+                                    "Invalid timestamp in daemon_state: {}",
+                                    last_scrape_str
+                                ),
+                                remedy: Some(
+                                    "Run 'agentscribe daemon start' to reset daemon state"
+                                        .to_string(),
+                                ),
+                            },
+                        }
+                    } else {
+                        DoctorCheck {
+                            name: "Scrape recency".to_string(),
+                            status: "warn".to_string(),
+                            message: "Daemon has no recorded scrapes yet".to_string(),
+                            remedy: Some("Wait for daemon to detect file changes or run 'agentscribe scrape' manually".to_string()),
+                        }
+                    }
+                }
+                Err(_) => DoctorCheck {
+                    name: "Scrape recency".to_string(),
+                    status: "fail".to_string(),
+                    message: "daemon_state.json is corrupt".to_string(),
+                    remedy: Some(
+                        "Run 'agentscribe daemon start' to reset daemon state".to_string(),
+                    ),
+                },
+            }
+        }
+        Err(_) => DoctorCheck {
+            name: "Scrape recency".to_string(),
+            status: "fail".to_string(),
+            message: "Cannot read daemon_state.json".to_string(),
+            remedy: Some(
+                "Check file permissions or reinitialize: 'agentscribe config init --force'"
+                    .to_string(),
+            ),
+        },
+    }
+}
+
+/// Check 3: State file integrity (scrape-state.json parses cleanly)
+fn check_state_file_integrity(data_dir: &std::path::Path) -> DoctorCheck {
+    let state_file = data_dir.join("state").join("scrape-state.json");
+
+    if !state_file.exists() {
+        return DoctorCheck {
+            name: "State file integrity".to_string(),
+            status: "warn".to_string(),
+            message: "scrape-state.json not found (no scrapes yet)".to_string(),
+            remedy: Some("Run 'agentscribe scrape' to create initial state".to_string()),
+        };
+    }
+
+    // Try to parse the state file
+    match std::fs::read_to_string(&state_file) {
+        Ok(content) => {
+            match serde_json::from_str::<crate::event::ScrapeState>(&content) {
+                Ok(state) => {
+                    let source_count = state.sources.len();
+                    DoctorCheck {
+                        name: "State file integrity".to_string(),
+                        status: "pass".to_string(),
+                        message: format!(
+                            "State file valid (tracking {} source files)",
+                            source_count
+                        ),
+                        remedy: None,
+                    }
+                }
+                Err(_e) => {
+                    // Check if there's a quarantined corrupt file
+                    let corrupt_files = std::fs::read_dir(data_dir.join("state"))
+                        .ok()
+                        .map(|entries| {
+                            entries
+                                .filter_map(|e| e.ok())
+                                .filter(|e| {
+                                    e.path()
+                                        .file_name()
+                                        .and_then(|n| n.to_str())
+                                        .map(|n| n.starts_with("scrape-state.json.corrupt-"))
+                                        .unwrap_or(false)
+                                })
+                                .count()
+                        })
+                        .unwrap_or(0);
+
+                    if corrupt_files > 0 {
+                        DoctorCheck {
+                            name: "State file integrity".to_string(),
+                            status: "fail".to_string(),
+                            message: format!("State file corrupt ({} quarantined corrupt file(s) present)", corrupt_files),
+                            remedy: Some("State auto-recovered from empty. Previous corrupt file quarantined as scrape-state.json.corrupt-*".to_string()),
+                        }
+                    } else {
+                        DoctorCheck {
+                            name: "State file integrity".to_string(),
+                            status: "fail".to_string(),
+                            message: "State file corrupt".to_string(),
+                            remedy: Some(
+                                "Run 'agentscribe scrape' to rebuild state from scratch"
+                                    .to_string(),
+                            ),
+                        }
+                    }
+                }
+            }
+        }
+        Err(_) => DoctorCheck {
+            name: "State file integrity".to_string(),
+            status: "fail".to_string(),
+            message: "Cannot read scrape-state.json".to_string(),
+            remedy: Some(
+                "Check file permissions or reinitialize: 'agentscribe config init --force'"
+                    .to_string(),
+            ),
+        },
+    }
+}
+
+/// Check 4: Index consistency (index/tantivy/ exists and doc count matches sessions)
+fn check_index_consistency(data_dir: &std::path::Path) -> DoctorCheck {
+    let index_dir = data_dir.join("index").join("tantivy");
+    let sessions_dir = data_dir.join("sessions");
+
+    // Count session files
+    let session_count = if sessions_dir.exists() {
+        std::fs::read_dir(&sessions_dir)
+            .ok()
+            .map(|entries| {
+                entries
+                    .flatten()
+                    .filter(|e| e.path().is_dir())
+                    .map(|agent_dir| {
+                        std::fs::read_dir(agent_dir.path())
+                            .ok()
+                            .map(|session_entries| {
+                                session_entries
+                                    .flatten()
+                                    .filter(|e| {
+                                        e.path().extension().and_then(|ext| ext.to_str())
+                                            == Some("jsonl")
+                                    })
+                                    .count()
+                            })
+                            .unwrap_or(0)
+                    })
+                    .sum::<usize>()
+            })
+            .unwrap_or(0)
+    } else {
+        0
+    };
+
+    if !index_dir.exists() {
+        if session_count > 0 {
+            DoctorCheck {
+                name: "Index consistency".to_string(),
+                status: "fail".to_string(),
+                message: format!(
+                    "Index missing ({} sessions exist but no index)",
+                    session_count
+                ),
+                remedy: Some(
+                    "Run 'agentscribe index rebuild' to build index from sessions".to_string(),
+                ),
+            }
+        } else {
+            DoctorCheck {
+                name: "Index consistency".to_string(),
+                status: "warn".to_string(),
+                message: "No index found (no sessions either)".to_string(),
+                remedy: Some("Run 'agentscribe scrape' to create sessions and index".to_string()),
+            }
+        }
+    } else {
+        // Check index document count
+        match tantivy::Index::open_in_dir(&index_dir) {
+            Ok(index) => {
+                match index.reader() {
+                    Ok(reader) => {
+                        let doc_count = reader.searcher().num_docs() as usize;
+
+                        // Allow 10% tolerance for index vs session count
+                        // (some sessions may not be indexed yet after a scrape)
+                        let tolerance = (session_count as f64) * 0.1;
+                        let diff = if doc_count > session_count {
+                            (doc_count - session_count) as f64
+                        } else {
+                            (session_count - doc_count) as f64
+                        };
+
+                        if session_count == 0 && doc_count == 0 {
+                            DoctorCheck {
+                                name: "Index consistency".to_string(),
+                                status: "warn".to_string(),
+                                message: "Index empty (no sessions)".to_string(),
+                                remedy: Some(
+                                    "Run 'agentscribe scrape' to create sessions and index"
+                                        .to_string(),
+                                ),
+                            }
+                        } else if diff <= tolerance {
+                            DoctorCheck {
+                                name: "Index consistency".to_string(),
+                                status: "pass".to_string(),
+                                message: format!(
+                                    "Index consistent ({} docs, {} sessions)",
+                                    doc_count, session_count
+                                ),
+                                remedy: None,
+                            }
+                        } else {
+                            DoctorCheck {
+                                name: "Index consistency".to_string(),
+                                status: "warn".to_string(),
+                                message: format!(
+                                    "Index mismatch ({} docs, {} sessions)",
+                                    doc_count, session_count
+                                ),
+                                remedy: Some(
+                                    "Run 'agentscribe index rebuild' to rebuild index".to_string(),
+                                ),
+                            }
+                        }
+                    }
+                    Err(_) => DoctorCheck {
+                        name: "Index consistency".to_string(),
+                        status: "fail".to_string(),
+                        message: "Cannot create index reader".to_string(),
+                        remedy: Some(
+                            "Run 'agentscribe index rebuild' to rebuild index".to_string(),
+                        ),
+                    },
+                }
+            }
+            Err(_) => DoctorCheck {
+                name: "Index consistency".to_string(),
+                status: "fail".to_string(),
+                message: "Cannot open Tantivy index".to_string(),
+                remedy: Some("Run 'agentscribe index rebuild' to rebuild index".to_string()),
+            },
+        }
+    }
+}
+
+/// Check 5: MCP status (mcp_enabled and socket path reachable)
+fn check_mcp_status(config: &crate::config::Config) -> DoctorCheck {
+    if !config.daemon.mcp_enabled {
+        DoctorCheck {
+            name: "MCP server".to_string(),
+            status: "warn".to_string(),
+            message: "MCP server disabled (set daemon.mcp_enabled = true in config.toml to enable)"
+                .to_string(),
+            remedy: None,
+        }
+    } else {
+        // Check if socket path exists
+        match config.mcp_socket_path() {
+            Ok(socket_path) => {
+                if socket_path.exists() {
+                    // Try to connect to the socket to verify it's reachable
+                    match std::os::unix::net::UnixStream::connect(&socket_path) {
+                        Ok(_) => DoctorCheck {
+                            name: "MCP server".to_string(),
+                            status: "pass".to_string(),
+                            message: format!("MCP socket reachable at {}", socket_path.display()),
+                            remedy: None,
+                        },
+                        Err(_) => DoctorCheck {
+                            name: "MCP server".to_string(),
+                            status: "fail".to_string(),
+                            message: format!(
+                                "MCP socket exists but not reachable: {}",
+                                socket_path.display()
+                            ),
+                            remedy: Some(
+                                "Restart daemon: 'agentscribe daemon restart'".to_string(),
+                            ),
+                        },
+                    }
+                } else {
+                    DoctorCheck {
+                        name: "MCP server".to_string(),
+                        status: "fail".to_string(),
+                        message: format!(
+                            "MCP enabled but socket not found: {}",
+                            socket_path.display()
+                        ),
+                        remedy: Some("Restart daemon: 'agentscribe daemon restart'".to_string()),
+                    }
+                }
+            }
+            Err(_) => DoctorCheck {
+                name: "MCP server".to_string(),
+                status: "fail".to_string(),
+                message: "MCP enabled but socket path is invalid".to_string(),
+                remedy: Some("Set daemon.mcp_socket_path in config.toml".to_string()),
+            },
+        }
+    }
 }
