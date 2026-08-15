@@ -1,5 +1,5 @@
 # Goose plugin for AgentScribe
-# Goose stores conversations as JSONL files with session metadata on the first line
+# Goose stores conversations as JSONL files with session metadata on line 1
 
 [plugin]
 name = "goose"
@@ -17,6 +17,9 @@ method = "one-file-per-session"
 session_id_from = "filename"
 
 [parser]
+# Goose format: line 1 is session metadata, subsequent lines are messages
+# First line: {working_dir, description, ...}
+# Message lines: {role, content[]}
 timestamp = "timestamp"
 role = "role"
 content = "content"
@@ -25,11 +28,14 @@ content = "content"
 source_agent = "goose"
 
 [parser.project]
+# Extract project path from first-line metadata's working_dir field
 method = "field"
 field = "working_dir"
 
 [parser.model]
+# Model information not available in Goose logs - set to none
 source = "none"
 
 [parser.file_paths]
+# Extract file paths from content via regex
 content_regex = true
