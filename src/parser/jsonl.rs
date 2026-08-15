@@ -2101,7 +2101,10 @@ mod tests {
 
         // TODO: Add specific assertions about event counts and content
         // For now, just verify the test compiles and basic parsing works
-        eprintln!("DEBUG: Parsed {} events from envelope_test.jsonl", events.len());
+        eprintln!(
+            "DEBUG: Parsed {} events from envelope_test.jsonl",
+            events.len()
+        );
     }
 
     #[test]
