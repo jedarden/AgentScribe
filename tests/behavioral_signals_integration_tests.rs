@@ -177,7 +177,7 @@ fn test_realistic_session_behavioral_signals() {
         make_user_event(base_time + Duration::seconds(17), "Thanks, that works!"),
     ];
 
-    let signals = compute_behavioral_signals(&events);
+    let signals = compute_behavioral_signals(&events, None);
 
     // Verify tool call counts
     assert_eq!(signals.tool_call_count, 12); // All tool calls
@@ -446,7 +446,7 @@ fn test_behavioral_signals_all_fields_populated() {
         ),
     ];
 
-    let signals = compute_behavioral_signals(&events);
+    let signals = compute_behavioral_signals(&events, None);
 
     // Verify ALL fields are populated
     assert_ne!(
@@ -508,7 +508,7 @@ fn test_behavioral_signals_all_fields_populated() {
 
 #[test]
 fn test_empty_session_behavioral_signals() {
-    let signals = compute_behavioral_signals(&[]);
+    let signals = compute_behavioral_signals(&[], None);
 
     // All fields should be at sensible defaults for empty session
     assert_eq!(signals.tool_call_count, 0);
@@ -572,7 +572,7 @@ fn test_config_file_detection_various_patterns() {
         ), // Not a config file
     ];
 
-    let signals = compute_behavioral_signals(&events);
+    let signals = compute_behavioral_signals(&events, None);
 
     // Should detect all config files except src/main.rs
     assert_eq!(signals.read_config_files.len(), 7);
