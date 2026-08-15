@@ -7,8 +7,9 @@ use crate::event::{Event, Role};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-/// Config/memory file glob patterns used for detection.
-static CONFIG_FILE_PATTERNS: &[&str] = &[
+/// Default config/memory file glob patterns used for detection.
+/// Can be overridden via config.toml [behavioral_signals.config_patterns]
+static DEFAULT_CONFIG_FILE_PATTERNS: &[&str] = &[
     "CLAUDE.md",
     "AGENTS.md",
     ".claude/",
@@ -17,6 +18,17 @@ static CONFIG_FILE_PATTERNS: &[&str] = &[
     "docs/notes/",
     "MEMORY.md",
 ];
+
+/// A single config file write event with metadata.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConfigWriteEvent {
+    /// Path to the config file that was written
+    pub path: String,
+    /// Timestamp when the write occurred
+    pub timestamp: i64,
+    /// Tool type that performed the write ("Write" or "Edit")
+    pub tool_type: String,
+}
 
 /// Quantitative behavioral metrics for a session.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -43,15 +55,39 @@ pub struct BehavioralSignals {
     pub modified_config_files: Vec<String>,
     /// Number of times agent switched working directory (cwd changes in events)
     pub cwd_switch_count: u32,
+    /// Individual config file write events with timestamps and tool types
+    pub config_writes: Vec<ConfigWriteEvent>,
 }
 
 /// Compute behavioral signals from a session's events.
-pub fn compute_behavioral_signals(events: &[Event]) -> BehavioralSignals {
+///
+/// # Arguments
+///
+/// * `events` - Session events to analyze
+/// * `config_patterns` - Optional config file patterns from config.toml.
+///   If None, uses the default patterns.
+pub fn compute_behavioral_signals(
+    events: &[Event],
+    config_patterns: Option<&[String]>,
+) -> BehavioralSignals {
     let mut signals = BehavioralSignals::default();
 
     if events.is_empty() {
         return signals;
     }
+
+    // Use provided patterns or defaults
+    let patterns = config_patterns.map(|ps| {
+        ps.as_ref()
+            .into_iter()
+            .map(|s| s.as_str())
+            .collect::<Vec<_>>()
+    });
+    let default_patterns: Vec<&str> = DEFAULT_CONFIG_FILE_PATTERNS.to_vec();
+    let effective_patterns = patterns
+        .as_ref()
+        .map(|p| p.as_slice())
+        .unwrap_or(&default_patterns);
 
     // Track reads, writes, edits per file
     let mut file_reads: HashMap<&str, u32> = HashMap::new();
@@ -61,6 +97,7 @@ pub fn compute_behavioral_signals(events: &[Event]) -> BehavioralSignals {
     let mut config_read_seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut config_modify_seen: std::collections::HashSet<String> =
         std::collections::HashSet::new();
+    let mut config_writes: Vec<ConfigWriteEvent> = Vec::new();
     let mut total_turns: u32 = 0;
     let mut assistant_turns: u32 = 0;
     let mut last_cwd: Option<String> = None;
@@ -92,7 +129,9 @@ pub fn compute_behavioral_signals(events: &[Event]) -> BehavioralSignals {
                 if let Some(ref fp) = extract_file_path_from_params(event) {
                     *file_reads.entry(fp).or_insert(0) += 1;
 
-                    if is_config_file(fp) && config_read_seen.insert(fp.to_string()) {
+                    if is_config_file(fp, effective_patterns)
+                        && config_read_seen.insert(fp.to_string())
+                    {
                         config_reads.push(fp.to_string());
                     }
                 }
@@ -103,8 +142,16 @@ pub fn compute_behavioral_signals(events: &[Event]) -> BehavioralSignals {
                 if let Some(ref fp) = extract_file_path_from_params(event) {
                     *file_writes_edits.entry(fp).or_insert(0) += 1;
 
-                    if is_config_file(fp) && config_modify_seen.insert(fp.to_string()) {
-                        config_modifies.push(fp.to_string());
+                    if is_config_file(fp, effective_patterns) {
+                        if config_modify_seen.insert(fp.to_string()) {
+                            config_modifies.push(fp.to_string());
+                        }
+                        // Track individual config write event
+                        config_writes.push(ConfigWriteEvent {
+                            path: fp.to_string(),
+                            timestamp: event.ts.timestamp(),
+                            tool_type: "Write".to_string(),
+                        });
                     }
                 }
             }
@@ -114,8 +161,16 @@ pub fn compute_behavioral_signals(events: &[Event]) -> BehavioralSignals {
                 if let Some(ref fp) = extract_file_path_from_params(event) {
                     *file_writes_edits.entry(fp).or_insert(0) += 1;
 
-                    if is_config_file(fp) && config_modify_seen.insert(fp.to_string()) {
-                        config_modifies.push(fp.to_string());
+                    if is_config_file(fp, effective_patterns) {
+                        if config_modify_seen.insert(fp.to_string()) {
+                            config_modifies.push(fp.to_string());
+                        }
+                        // Track individual config write event
+                        config_writes.push(ConfigWriteEvent {
+                            path: fp.to_string(),
+                            timestamp: event.ts.timestamp(),
+                            tool_type: "Edit".to_string(),
+                        });
                     }
                 }
             }
@@ -163,6 +218,7 @@ pub fn compute_behavioral_signals(events: &[Event]) -> BehavioralSignals {
     // Config files
     signals.read_config_files = config_reads;
     signals.modified_config_files = config_modifies;
+    signals.config_writes = config_writes;
 
     // Duration
     let first_ts = events.first().map(|e| e.ts).unwrap();
@@ -187,9 +243,9 @@ fn extract_file_path_from_params(event: &Event) -> Option<&str> {
 }
 
 /// Check if a file path matches any config/memory file pattern.
-fn is_config_file(path: &str) -> bool {
+fn is_config_file(path: &str, patterns: &[&str]) -> bool {
     let path_normalized = path.replace('\\', "/");
-    for pattern in CONFIG_FILE_PATTERNS {
+    for pattern in patterns {
         // Check as exact suffix match or contains match
         let segments: Vec<&str> = path_normalized.split('/').collect();
         for segment in &segments {
@@ -317,11 +373,12 @@ mod tests {
 
     #[test]
     fn test_empty_events() {
-        let signals = compute_behavioral_signals(&[]);
+        let signals = compute_behavioral_signals(&[], None);
         assert_eq!(signals.tool_call_count, 0);
         assert_eq!(signals.bash_failure_count, 0);
         assert_eq!(signals.duration_secs, 0);
         assert_eq!(signals.assistant_turn_ratio, 0.0);
+        assert_eq!(signals.config_writes.len(), 0);
     }
 
     #[test]
@@ -331,7 +388,7 @@ mod tests {
             make_tool_call("Read", json!({"file_path": "src/main.rs"})),
             make_tool_call("Bash", json!({"command": "cargo test"})),
         ];
-        let signals = compute_behavioral_signals(&events);
+        let signals = compute_behavioral_signals(&events, None);
         assert_eq!(signals.tool_call_count, 3);
         assert_eq!(*signals.tool_call_counts_by_name.get("Bash").unwrap(), 2);
         assert_eq!(*signals.tool_call_counts_by_name.get("Read").unwrap(), 1);
@@ -345,7 +402,7 @@ mod tests {
             make_tool_call("Read", json!({"file_path": "/project/src/main.rs"})),
             make_tool_call("Read", json!({"file_path": "/project/src/lib.rs"})),
         ];
-        let signals = compute_behavioral_signals(&events);
+        let signals = compute_behavioral_signals(&events, None);
         assert_eq!(signals.re_read_count, 2); // 3 reads - 1 = 2 re-reads
         assert_eq!(signals.re_read_files, vec!["/project/src/main.rs"]);
     }
@@ -360,7 +417,7 @@ mod tests {
             make_tool_call("Bash", json!({"command": "cargo clippy"})),
             make_tool_result("Bash", json!({"exit_code": 101})),
         ];
-        let signals = compute_behavioral_signals(&events);
+        let signals = compute_behavioral_signals(&events, None);
         assert_eq!(signals.bash_failure_count, 2);
     }
 
@@ -372,7 +429,7 @@ mod tests {
             make_tool_call("Write", json!({"file_path": "/project/src/main.rs"})),
             make_tool_call("Edit", json!({"file_path": "/project/src/lib.rs"})),
         ];
-        let signals = compute_behavioral_signals(&events);
+        let signals = compute_behavioral_signals(&events, None);
         assert!(signals
             .multi_edit_files
             .contains(&"/project/src/main.rs".to_string()));
@@ -392,7 +449,7 @@ mod tests {
             ),
             make_tool_call("Read", json!({"file_path": "/project/memory/team.md"})),
         ];
-        let signals = compute_behavioral_signals(&events);
+        let signals = compute_behavioral_signals(&events, None);
         assert!(signals
             .read_config_files
             .contains(&"/project/CLAUDE.md".to_string()));
@@ -415,7 +472,7 @@ mod tests {
             make_tool_call("Write", json!({"file_path": "/project/AGENTS.md"})),
             make_tool_call("Edit", json!({"file_path": "/project/CLAUDE.md"})),
         ];
-        let signals = compute_behavioral_signals(&events);
+        let signals = compute_behavioral_signals(&events, None);
         assert!(signals
             .modified_config_files
             .contains(&"/project/AGENTS.md".to_string()));
@@ -435,7 +492,7 @@ mod tests {
             make_event(Role::Assistant, None, "Done"),
         ];
 
-        let signals = compute_behavioral_signals(&events);
+        let signals = compute_behavioral_signals(&events, None);
         // 3 assistant / 4 total = 0.75
         assert!((signals.assistant_turn_ratio - 0.75).abs() < 0.01);
     }
@@ -449,7 +506,7 @@ mod tests {
             make_tool_call("Bash", json!({"command": "ls"})),
             make_tool_call("Bash", json!({"command": "cd /home/user/project"})), // back to original
         ];
-        let signals = compute_behavioral_signals(&events);
+        let signals = compute_behavioral_signals(&events, None);
         // First cd: no previous cwd → counts as switch
         // cd /tmp: switch
         // cd /home/user/project: switch (different from /tmp)
@@ -458,18 +515,22 @@ mod tests {
 
     #[test]
     fn test_is_config_file_patterns() {
-        assert!(is_config_file("/project/CLAUDE.md"));
-        assert!(is_config_file("/project/AGENTS.md"));
-        assert!(is_config_file("/project/.claude/settings.json"));
-        assert!(is_config_file("/project/.needle/config.toml"));
-        assert!(is_config_file("/project/memory/team.md"));
-        assert!(is_config_file("/project/docs/notes/architecture.md"));
-        assert!(is_config_file("/project/MEMORY.md"));
+        let patterns: Vec<&str> = DEFAULT_CONFIG_FILE_PATTERNS.to_vec();
+        assert!(is_config_file("/project/CLAUDE.md", &patterns));
+        assert!(is_config_file("/project/AGENTS.md", &patterns));
+        assert!(is_config_file("/project/.claude/settings.json", &patterns));
+        assert!(is_config_file("/project/.needle/config.toml", &patterns));
+        assert!(is_config_file("/project/memory/team.md", &patterns));
+        assert!(is_config_file(
+            "/project/docs/notes/architecture.md",
+            &patterns
+        ));
+        assert!(is_config_file("/project/MEMORY.md", &patterns));
 
         // NOT config files
-        assert!(!is_config_file("/project/src/main.rs"));
-        assert!(!is_config_file("/project/README.md"));
-        assert!(!is_config_file("/project/Cargo.toml"));
+        assert!(!is_config_file("/project/src/main.rs", &patterns));
+        assert!(!is_config_file("/project/README.md", &patterns));
+        assert!(!is_config_file("/project/Cargo.toml", &patterns));
     }
 
     #[test]
@@ -478,12 +539,55 @@ mod tests {
             make_tool_call("Bash", json!({"command": "cargo test"})),
             make_tool_result("Bash", json!({"exit_code": 1})),
         ];
-        let signals = compute_behavioral_signals(&events);
+        let signals = compute_behavioral_signals(&events, None);
 
         let json = serde_json::to_string(&signals).unwrap();
         let deser: BehavioralSignals = serde_json::from_str(&json).unwrap();
 
         assert_eq!(deser.tool_call_count, signals.tool_call_count);
         assert_eq!(deser.bash_failure_count, signals.bash_failure_count);
+    }
+
+    #[test]
+    fn test_config_writes_tracking() {
+        let events = vec![
+            make_tool_call("Write", json!({"file_path": "/project/CLAUDE.md"})),
+            make_tool_call("Edit", json!({"file_path": "/project/CLAUDE.md"})),
+            make_tool_call("Write", json!({"file_path": "/project/AGENTS.md"})),
+            make_tool_call("Edit", json!({"file_path": "/project/src/main.rs"})), // NOT a config file
+        ];
+
+        let signals = compute_behavioral_signals(&events, None);
+
+        // Should have 3 config writes (2 to CLAUDE.md, 1 to AGENTS.md)
+        assert_eq!(signals.config_writes.len(), 3);
+
+        // Check first write to CLAUDE.md
+        assert_eq!(signals.config_writes[0].path, "/project/CLAUDE.md");
+        assert_eq!(signals.config_writes[0].tool_type, "Write");
+
+        // Check second write to CLAUDE.md
+        assert_eq!(signals.config_writes[1].path, "/project/CLAUDE.md");
+        assert_eq!(signals.config_writes[1].tool_type, "Edit");
+
+        // Check write to AGENTS.md
+        assert_eq!(signals.config_writes[2].path, "/project/AGENTS.md");
+        assert_eq!(signals.config_writes[2].tool_type, "Write");
+    }
+
+    #[test]
+    fn test_custom_config_patterns() {
+        let events = vec![
+            make_tool_call("Write", json!({"file_path": "/project/CONFIG.yaml"})),
+            make_tool_call("Edit", json!({"file_path": "/project/.env"})),
+        ];
+
+        let custom_patterns = vec!["CONFIG.yaml".to_string(), ".env".to_string()];
+        let signals = compute_behavioral_signals(&events, Some(&custom_patterns));
+
+        // Both should be detected as config writes
+        assert_eq!(signals.config_writes.len(), 2);
+        assert_eq!(signals.config_writes[0].path, "/project/CONFIG.yaml");
+        assert_eq!(signals.config_writes[1].path, "/project/.env");
     }
 }
