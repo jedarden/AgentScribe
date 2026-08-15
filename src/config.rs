@@ -237,6 +237,39 @@ impl Default for WhisperConfig {
     }
 }
 
+/// Behavioral signals configuration.
+///
+/// Maps to `[behavioral_signals]` in `config.toml`. Controls what patterns
+/// are recognized as config/memory files for write detection.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BehavioralSignalsConfig {
+    /// File glob patterns that identify config/memory files.
+    /// Matches filenames (e.g., "CLAUDE.md"), directory prefixes (e.g., ".claude/"),
+    /// or directory paths (e.g., "memory/", "docs/notes/").
+    #[serde(default = "default_config_patterns")]
+    pub config_patterns: Vec<String>,
+}
+
+fn default_config_patterns() -> Vec<String> {
+    vec![
+        "CLAUDE.md".to_string(),
+        "AGENTS.md".to_string(),
+        ".claude/".to_string(),
+        ".needle/".to_string(),
+        "memory/".to_string(),
+        "docs/notes/".to_string(),
+        "MEMORY.md".to_string(),
+    ]
+}
+
+impl Default for BehavioralSignalsConfig {
+    fn default() -> Self {
+        BehavioralSignalsConfig {
+            config_patterns: default_config_patterns(),
+        }
+    }
+}
+
 /// Vector index configuration.
 ///
 /// Maps to `[vector]` in `config.toml`. Controls semantic search using
@@ -397,6 +430,8 @@ pub struct Config {
     pub redaction: RedactionConfig,
     #[serde(default)]
     pub vector: VectorConfig,
+    #[serde(default)]
+    pub behavioral_signals: BehavioralSignalsConfig,
 }
 
 /// General configuration
@@ -474,6 +509,7 @@ impl Default for Config {
             whisper: WhisperConfig::default(),
             redaction: RedactionConfig::default(),
             vector: VectorConfig::default(),
+            behavioral_signals: BehavioralSignalsConfig::default(),
         }
     }
 }

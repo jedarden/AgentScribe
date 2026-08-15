@@ -10,6 +10,8 @@ pub use companion::{CompanionCache, CompanionIndex};
 pub use file_path_extractor::FilePathExtractor;
 pub use state::StateManager;
 
+use crate::enrichment::ConfigChangeTracker;
+
 use crate::error::{AgentScribeError, Result};
 use crate::event::Event;
 use crate::index::{build_content, build_manifest_from_events, IndexManager};
@@ -59,6 +61,8 @@ pub struct Scraper {
     index_manager: Option<IndexManager>,
     index_write_depth: usize,
     companion_cache: CompanionCache,
+    /// Config change tracker for correlating file modifications with sessions
+    config_tracker: ConfigChangeTracker,
 }
 
 impl Scraper {
@@ -98,6 +102,9 @@ impl Scraper {
             }
         };
 
+        // Initialize config change tracker
+        let config_tracker = ConfigChangeTracker::new(data_dir.clone());
+
         Ok(Scraper {
             plugin_manager,
             data_dir,
@@ -106,6 +113,7 @@ impl Scraper {
             index_manager,
             index_write_depth: 0,
             companion_cache: CompanionCache::new(),
+            config_tracker,
         })
     }
 
@@ -262,7 +270,26 @@ impl Scraper {
                         Ok(expanded) => expanded.into_owned(),
                         Err(_) => exclude_pattern.clone(),
                     };
-                    if let Ok(pat) = glob::Pattern::new(&exclude_expanded) {
+
+                    // Normalize relative patterns to work with absolute paths.
+                    // If the pattern doesn't start with '/' or '**', prepend '**/' so it
+                    // matches anywhere in the path. This converts "*/subagents/*" to
+                    // "**/subagents/*", which correctly matches absolute paths like
+                    // "/home/user/logs/project/subagents/file.jsonl".
+                    let normalized_pattern = if !exclude_expanded.starts_with('/')
+                        && !exclude_expanded.starts_with("**")
+                    {
+                        let stripped = if exclude_expanded.starts_with("./") {
+                            &exclude_expanded[2..]
+                        } else {
+                            &exclude_expanded
+                        };
+                        format!("**/{}", stripped)
+                    } else {
+                        exclude_expanded
+                    };
+
+                    if let Ok(pat) = glob::Pattern::new(&normalized_pattern) {
                         if pat.matches_path(path) {
                             excluded = true;
                             debug!(exclude_pattern = %exclude_pattern, path = %path.display(), "file excluded by pattern");
@@ -1451,5 +1478,577 @@ mod tests {
         let result = scraper.load_companion_metadata("any-session", &plugin);
         assert!(result.is_ok());
         assert!(result.unwrap().is_none());
+    }
+
+    /// Test that exclude patterns work correctly with absolute paths from glob expansion.
+    ///
+    /// This test verifies the fix for a bug where relative exclude patterns (e.g., `*/subagents/*`)
+    /// would fail to match absolute paths returned by glob after shellexpand expansion.
+    ///
+    /// The bug occurs because:
+    /// 1. Source pattern `~/foo/**/*.jsonl` expands to absolute `/home/user/foo/**/*.jsonl`
+    /// 2. Glob returns absolute paths like `/home/user/foo/bar/subagents/file.jsonl`
+    /// 3. Exclude pattern `*/subagents/*` stays relative (no leading slash)
+    /// 4. glob::Pattern::new("*/subagents/*") expects to match against paths from cwd
+    /// 5. Matching relative pattern against absolute path fails
+    #[test]
+    fn test_exclude_patterns_with_absolute_paths() {
+        use crate::plugin::{Parser, PluginMeta, SessionDetection, SessionIdSource, Source};
+
+        let temp = tempfile::tempdir().unwrap();
+        let data_dir = temp.path().join(".agentscribe");
+        std::fs::create_dir_all(data_dir.join("sessions")).unwrap();
+
+        // Create directory structure:
+        // temp/
+        //   logs/
+        //     session-1.jsonl         <- should be included
+        //     project/
+        //       session-2.jsonl       <- should be included
+        //       subagents/
+        //         agent-123.jsonl      <- should be EXCLUDED
+        //     other/
+        //       session-3.jsonl       <- should be included
+
+        let logs_dir = temp.path().join("logs");
+        std::fs::create_dir_all(logs_dir.join("project/subagents")).unwrap();
+        std::fs::create_dir_all(logs_dir.join("other")).unwrap();
+
+        // Create test files
+        std::fs::write(logs_dir.join("session-1.jsonl"), "session 1").unwrap();
+        std::fs::write(logs_dir.join("project/session-2.jsonl"), "session 2").unwrap();
+        std::fs::write(
+            logs_dir.join("project/subagents/agent-123.jsonl"),
+            "subagent",
+        )
+        .unwrap();
+        std::fs::write(logs_dir.join("other/session-3.jsonl"), "session 3").unwrap();
+
+        // Create plugin with exclude pattern for subagents
+        let plugin = Plugin {
+            plugin: PluginMeta {
+                name: "test-agent".to_string(),
+                version: "1.0".to_string(),
+            },
+            source: Source {
+                paths: vec![logs_dir.join("**/*.jsonl").to_str().unwrap().to_string()],
+                exclude: vec!["*/subagents/*".to_string()], // Relative pattern
+                format: LogFormat::Jsonl,
+                session_detection: SessionDetection::OneFilePerSession {
+                    session_id_from: SessionIdSource::Filename,
+                },
+                tree: None,
+                truncation_limit: None,
+                envelope: None,
+                array: None,
+            },
+            parser: Parser {
+                ..Default::default()
+            },
+            metadata: None,
+        };
+
+        let scraper = Scraper::new(data_dir).unwrap();
+        let files = scraper.discover_files(&plugin).unwrap();
+
+        // Convert to set for easier comparison
+        let file_set: std::collections::HashSet<String> = files
+            .iter()
+            .map(|p| p.to_str().unwrap().to_string())
+            .collect();
+
+        // Verify the subagent file is excluded
+        let subagent_path = logs_dir
+            .join("project/subagents/agent-123.jsonl")
+            .to_str()
+            .unwrap()
+            .to_string();
+        assert!(
+            !file_set.contains(&subagent_path),
+            "subagent file should be excluded: {}",
+            subagent_path
+        );
+
+        // Verify non-excluded files are included
+        let session1_path = logs_dir
+            .join("session-1.jsonl")
+            .to_str()
+            .unwrap()
+            .to_string();
+        assert!(
+            file_set.contains(&session1_path),
+            "session-1.jsonl should be included"
+        );
+
+        let session2_path = logs_dir
+            .join("project/session-2.jsonl")
+            .to_str()
+            .unwrap()
+            .to_string();
+        assert!(
+            file_set.contains(&session2_path),
+            "project/session-2.jsonl should be included"
+        );
+
+        let session3_path = logs_dir
+            .join("other/session-3.jsonl")
+            .to_str()
+            .unwrap()
+            .to_string();
+        assert!(
+            file_set.contains(&session3_path),
+            "other/session-3.jsonl should be included"
+        );
+
+        // Verify we got exactly 3 files (not 4)
+        assert_eq!(
+            files.len(),
+            3,
+            "should have discovered 3 files (excluding subagent), got: {:?}",
+            files
+        );
+    }
+
+    /// Test that absolute exclude patterns work correctly.
+    #[test]
+    fn test_absolute_exclude_patterns() {
+        use crate::plugin::{Parser, PluginMeta, SessionDetection, SessionIdSource, Source};
+
+        let temp = tempfile::tempdir().unwrap();
+        let data_dir = temp.path().join(".agentscribe");
+        std::fs::create_dir_all(data_dir.join("sessions")).unwrap();
+
+        let logs_dir = temp.path().join("logs");
+        std::fs::create_dir_all(logs_dir.join("subdir")).unwrap();
+
+        std::fs::write(logs_dir.join("file1.jsonl"), "content 1").unwrap();
+        std::fs::write(logs_dir.join("subdir/file2.jsonl"), "content 2").unwrap();
+
+        // Use absolute path in exclude pattern
+        let exclude_abs = logs_dir
+            .join("subdir/*.jsonl")
+            .to_str()
+            .unwrap()
+            .to_string();
+
+        let plugin = Plugin {
+            plugin: PluginMeta {
+                name: "test-agent".to_string(),
+                version: "1.0".to_string(),
+            },
+            source: Source {
+                paths: vec![logs_dir.join("**/*.jsonl").to_str().unwrap().to_string()],
+                exclude: vec![exclude_abs],
+                format: LogFormat::Jsonl,
+                session_detection: SessionDetection::OneFilePerSession {
+                    session_id_from: SessionIdSource::Filename,
+                },
+                tree: None,
+                truncation_limit: None,
+                envelope: None,
+                array: None,
+            },
+            parser: Parser {
+                ..Default::default()
+            },
+            metadata: None,
+        };
+
+        let scraper = Scraper::new(data_dir).unwrap();
+        let files = scraper.discover_files(&plugin).unwrap();
+
+        assert_eq!(
+            files.len(),
+            1,
+            "should have excluded subdir files, got: {:?}",
+            files
+        );
+        assert!(
+            files.iter().any(|p| p.ends_with("file1.jsonl")),
+            "file1.jsonl should be included"
+        );
+    }
+
+    /// Test the glob::Pattern behavior directly to verify the bug scenario.
+    #[test]
+    fn test_glob_pattern_relative_vs_absolute_matching() {
+        // This test demonstrates the core issue:
+        // A relative pattern like "*/subagents/*" won't match an absolute path
+        // unless the pattern is constructed correctly.
+
+        let abs_path = PathBuf::from("/home/user/logs/project/subagents/file.jsonl");
+        let rel_pattern_str = "*/subagents/*";
+
+        // Create pattern from relative string
+        let rel_pattern = glob::Pattern::new(rel_pattern_str).unwrap();
+
+        // This demonstrates the bug: relative pattern doesn't match absolute path
+        let matches_rel = rel_pattern.matches_path(&abs_path);
+
+        // The pattern needs to match against the path relative to current directory
+        // OR we need to ensure the pattern is normalized to match absolute paths
+        assert!(
+            !matches_rel,
+            "relative pattern '*/subagents/*' should NOT match absolute path {:?} without normalization",
+            abs_path
+        );
+
+        // The fix: prepend **/ to relative patterns to make them match anywhere
+        let fixed_pattern_str = "**/subagents/*";
+        let fixed_pattern = glob::Pattern::new(fixed_pattern_str).unwrap();
+        let matches_fixed = fixed_pattern.matches_path(&abs_path);
+
+        assert!(
+            matches_fixed,
+            "fixed pattern '**/subagents/*' SHOULD match absolute path {:?}",
+            abs_path
+        );
+
+        // Also test that patterns starting with ** already work
+        let double_star_pattern = glob::Pattern::new("**/subagents/*").unwrap();
+        assert!(
+            double_star_pattern.matches_path(&abs_path),
+            "pattern with leading ** should match absolute path"
+        );
+
+        // And absolute patterns work as expected
+        let abs_pattern = glob::Pattern::new("/home/user/logs/*/subagents/*").unwrap();
+        assert!(
+            abs_pattern.matches_path(&abs_path),
+            "absolute pattern should match absolute path"
+        );
+    }
+
+    /// Debug test to verify pattern normalization behavior
+    #[test]
+    fn test_exclude_pattern_normalization_debug() {
+        use crate::plugin::{Parser, PluginMeta, SessionDetection, SessionIdSource, Source};
+
+        let temp = tempfile::tempdir().unwrap();
+        let data_dir = temp.path().join(".agentscribe");
+        std::fs::create_dir_all(data_dir.join("sessions")).unwrap();
+
+        let logs_dir = temp.path().join("logs");
+        std::fs::create_dir_all(logs_dir.join("vendor/node_modules")).unwrap();
+        std::fs::write(
+            logs_dir.join("vendor/node_modules/package.json"),
+            "node package",
+        )
+        .unwrap();
+
+        // Test with pattern */subagents/*
+        let exclude_pattern = "*/subagents/*";
+        let exclude_expanded = exclude_pattern.to_string();
+
+        // This is the exact logic from discover_files
+        let normalized_pattern =
+            if !exclude_expanded.starts_with('/') && !exclude_expanded.starts_with("**") {
+                let stripped = if exclude_expanded.starts_with("./") {
+                    &exclude_expanded[2..]
+                } else {
+                    &exclude_expanded
+                };
+                format!("**/{}", stripped)
+            } else {
+                exclude_expanded
+            };
+
+        println!("Original pattern: {}", exclude_pattern);
+        println!("Normalized pattern: {}", normalized_pattern);
+
+        let abs_path = logs_dir.join("vendor/node_modules/package.json");
+        println!("Absolute path: {}", abs_path.display());
+
+        let pat = glob::Pattern::new(&normalized_pattern).unwrap();
+        println!("Pattern matches: {}", pat.matches_path(&abs_path));
+
+        // The pattern should NOT match vendor/node_modules/package.json
+        assert!(
+            !pat.matches_path(&abs_path),
+            "Pattern {} should not match {}",
+            normalized_pattern,
+            abs_path.display()
+        );
+    }
+
+    /// Comprehensive test for discover_files with various exclude patterns.
+    ///
+    /// This test creates a realistic directory structure and verifies that:
+    /// - Relative exclude patterns (*/subagents/*) properly exclude files
+    /// - Double-star patterns (**/node_modules/**) work correctly
+    /// - Absolute exclude patterns work as expected
+    /// - Non-matching files are not excluded
+    #[test]
+    fn test_discover_files_with_exclude_patterns() {
+        use crate::plugin::{Parser, PluginMeta, SessionDetection, SessionIdSource, Source};
+
+        let temp = tempfile::tempdir().unwrap();
+        let data_dir = temp.path().join(".agentscribe");
+        std::fs::create_dir_all(data_dir.join("sessions")).unwrap();
+
+        // Create directory structure:
+        // temp/
+        //   logs/
+        //     root.jsonl                    <- should be included
+        //     project-a/
+        //       session.jsonl               <- should be included
+        //       subagents/
+        //         agent-1.jsonl             <- EXCLUDED by */subagents/*
+        //     project-b/
+        //       session.jsonl               <- should be included
+        //       subagents/
+        //         nested/
+        //           agent-2.jsonl           <- EXCLUDED by */subagents/*
+        //     vendor/
+        //       node_modules/
+        //         package.json              <- EXCLUDED by **/node_modules/**
+        //       otherlib/
+        //         lib.json                  <- should be included
+
+        let logs_dir = temp.path().join("logs");
+        std::fs::create_dir_all(logs_dir.join("project-a/subagents")).unwrap();
+        std::fs::create_dir_all(logs_dir.join("project-b/subagents/nested")).unwrap();
+        std::fs::create_dir_all(logs_dir.join("vendor/node_modules")).unwrap();
+        std::fs::create_dir_all(logs_dir.join("vendor/otherlib")).unwrap();
+
+        // Create test files
+        std::fs::write(logs_dir.join("root.jsonl"), "root session").unwrap();
+        std::fs::write(logs_dir.join("project-a/session.jsonl"), "project a").unwrap();
+        std::fs::write(
+            logs_dir.join("project-a/subagents/agent-1.jsonl"),
+            "subagent 1",
+        )
+        .unwrap();
+        std::fs::write(logs_dir.join("project-b/session.jsonl"), "project b").unwrap();
+        std::fs::write(
+            logs_dir.join("project-b/subagents/nested/agent-2.jsonl"),
+            "subagent 2",
+        )
+        .unwrap();
+        std::fs::write(
+            logs_dir.join("vendor/node_modules/package.json"),
+            "node package",
+        )
+        .unwrap();
+        std::fs::write(logs_dir.join("vendor/otherlib/lib.json"), "library").unwrap();
+
+        // Test 1: Relative pattern */subagents/*
+        let plugin = Plugin {
+            plugin: PluginMeta {
+                name: "test-agent".to_string(),
+                version: "1.0".to_string(),
+            },
+            source: Source {
+                paths: vec![logs_dir.join("**/*.jsonl").to_str().unwrap().to_string()],
+                exclude: vec!["*/subagents/*".to_string()],
+                format: LogFormat::Jsonl,
+                session_detection: SessionDetection::OneFilePerSession {
+                    session_id_from: SessionIdSource::Filename,
+                },
+                tree: None,
+                truncation_limit: None,
+                envelope: None,
+                array: None,
+            },
+            parser: Parser {
+                ..Default::default()
+            },
+            metadata: None,
+        };
+
+        let scraper = Scraper::new(data_dir.clone()).unwrap();
+        let files = scraper.discover_files(&plugin).unwrap();
+
+        let file_set: std::collections::HashSet<String> = files
+            .iter()
+            .map(|p| p.to_str().unwrap().to_string())
+            .collect();
+
+        // Should exclude both subagent files
+        assert!(
+            !file_set.contains(
+                &logs_dir
+                    .join("project-a/subagents/agent-1.jsonl")
+                    .to_str()
+                    .unwrap()
+                    .to_string()
+            ),
+            "project-a/subagents/agent-1.jsonl should be excluded by */subagents/*"
+        );
+        assert!(
+            !file_set.contains(
+                &logs_dir
+                    .join("project-b/subagents/nested/agent-2.jsonl")
+                    .to_str()
+                    .unwrap()
+                    .to_string()
+            ),
+            "project-b/subagents/nested/agent-2.jsonl should be excluded by */subagents/*"
+        );
+
+        // Should include non-subagent files
+        assert!(
+            file_set.contains(&logs_dir.join("root.jsonl").to_str().unwrap().to_string()),
+            "root.jsonl should be included"
+        );
+        assert!(
+            file_set.contains(
+                &logs_dir
+                    .join("project-a/session.jsonl")
+                    .to_str()
+                    .unwrap()
+                    .to_string()
+            ),
+            "project-a/session.jsonl should be included"
+        );
+        assert!(
+            file_set.contains(
+                &logs_dir
+                    .join("vendor/node_modules/package.json")
+                    .to_str()
+                    .unwrap()
+                    .to_string()
+            ),
+            "vendor/node_modules/package.json should be included (not excluded by */subagents/*)"
+        );
+
+        assert_eq!(
+            files.len(),
+            5,
+            "should have 5 files with */subagents/* exclude (all except subagents), got: {:?}",
+            files
+        );
+
+        // Test 2: Double-star pattern **/node_modules/**
+        let plugin2 = Plugin {
+            plugin: PluginMeta {
+                name: "test-agent".to_string(),
+                version: "1.0".to_string(),
+            },
+            source: Source {
+                paths: vec![logs_dir.join("**/*.jsonl").to_str().unwrap().to_string()],
+                exclude: vec!["**/node_modules/**".to_string()],
+                format: LogFormat::Jsonl,
+                session_detection: SessionDetection::OneFilePerSession {
+                    session_id_from: SessionIdSource::Filename,
+                },
+                tree: None,
+                truncation_limit: None,
+                envelope: None,
+                array: None,
+            },
+            parser: Parser {
+                ..Default::default()
+            },
+            metadata: None,
+        };
+
+        let files2 = scraper.discover_files(&plugin2).unwrap();
+        let file_set2: std::collections::HashSet<String> = files2
+            .iter()
+            .map(|p| p.to_str().unwrap().to_string())
+            .collect();
+
+        // Should exclude node_modules
+        assert!(
+            !file_set2.contains(
+                &logs_dir
+                    .join("vendor/node_modules/package.json")
+                    .to_str()
+                    .unwrap()
+                    .to_string()
+            ),
+            "vendor/node_modules/package.json should be excluded by **/node_modules/**"
+        );
+
+        // Should include subagent files (not excluded by this pattern)
+        assert!(
+            file_set2.contains(
+                &logs_dir
+                    .join("project-a/subagents/agent-1.jsonl")
+                    .to_str()
+                    .unwrap()
+                    .to_string()
+            ),
+            "project-a/subagents/agent-1.jsonl should be included with **/node_modules/** exclude"
+        );
+
+        // Test 3: Multiple exclude patterns
+        let plugin3 = Plugin {
+            plugin: PluginMeta {
+                name: "test-agent".to_string(),
+                version: "1.0".to_string(),
+            },
+            source: Source {
+                paths: vec![logs_dir.join("**/*.jsonl").to_str().unwrap().to_string()],
+                exclude: vec![
+                    "*/subagents/*".to_string(),
+                    "**/node_modules/**".to_string(),
+                ],
+                format: LogFormat::Jsonl,
+                session_detection: SessionDetection::OneFilePerSession {
+                    session_id_from: SessionIdSource::Filename,
+                },
+                tree: None,
+                truncation_limit: None,
+                envelope: None,
+                array: None,
+            },
+            parser: Parser {
+                ..Default::default()
+            },
+            metadata: None,
+        };
+
+        let files3 = scraper.discover_files(&plugin3).unwrap();
+        let file_set3: std::collections::HashSet<String> = files3
+            .iter()
+            .map(|p| p.to_str().unwrap().to_string())
+            .collect();
+
+        // Should exclude both subagents and node_modules
+        assert!(
+            !file_set3.contains(
+                &logs_dir
+                    .join("project-a/subagents/agent-1.jsonl")
+                    .to_str()
+                    .unwrap()
+                    .to_string()
+            ),
+            "should exclude subagents"
+        );
+        assert!(
+            !file_set3.contains(
+                &logs_dir
+                    .join("vendor/node_modules/package.json")
+                    .to_str()
+                    .unwrap()
+                    .to_string()
+            ),
+            "should exclude node_modules"
+        );
+
+        // Should include other files
+        assert!(
+            file_set3.contains(&logs_dir.join("root.jsonl").to_str().unwrap().to_string()),
+            "root.jsonl should be included"
+        );
+        assert!(
+            file_set3.contains(
+                &logs_dir
+                    .join("vendor/otherlib/lib.json")
+                    .to_str()
+                    .unwrap()
+                    .to_string()
+            ),
+            "vendor/otherlib/lib.json should be included"
+        );
+
+        assert_eq!(
+            files3.len(),
+            4,
+            "should have 4 files with both excludes, got: {:?}",
+            files3
+        );
     }
 }

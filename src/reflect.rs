@@ -721,7 +721,7 @@ impl BehavioralSignalsExt for BehavioralSignals {
     fn try_from_events(events: &[Event]) -> Result<Option<BehavioralSignals>, ReflectError> {
         // Import the compute function from behavioral_signals module
         use crate::enrichment::behavioral_signals::compute_behavioral_signals;
-        Ok(Some(compute_behavioral_signals(events)))
+        Ok(Some(compute_behavioral_signals(events, None)))
     }
 }
 
