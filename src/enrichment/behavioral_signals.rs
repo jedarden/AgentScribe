@@ -311,7 +311,7 @@ pub fn load_behavioral_signals(
     serde_json::from_str(&content).ok()
 }
 
-/// Read and parse behavioral_signals.json sidecar for a session.
+/// Read and parse .behavioral.json sidecar for a session.
 ///
 /// # Arguments
 ///
