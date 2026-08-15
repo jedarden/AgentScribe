@@ -336,3 +336,6 @@
 {"bead":"agentscr-1775e6d4","duration_ms":343980,"event":"complete","exit_code":0,"outcome":"success","strand":"auto","ts":"2026-08-15T15:50:28.471490207+00:00","worker":"agentscribe-1"}
 {"bead":"agentscr-afe7d8a2","event":"claim","strand":"auto","ts":"2026-08-15T15:50:28.504873563+00:00","worker":"agentscribe-1"}
 {"adapter":"claude-code-glm-4.7","bead":"agentscr-afe7d8a2","event":"dispatch","model":"glm-4.7","strand":"auto","ts":"2026-08-15T15:50:28.513096639+00:00","worker":"agentscribe-1"}
+{"bead":"agentscr-afe7d8a2","duration_ms":418246,"event":"complete","exit_code":0,"outcome":"success","strand":"auto","ts":"2026-08-15T15:57:26.776464562+00:00","worker":"agentscribe-1"}
+{"bead":"agentscr-87411625","event":"claim","strand":"auto","ts":"2026-08-15T15:57:26.826339138+00:00","worker":"agentscribe-1"}
+{"adapter":"claude-code-glm-4.7","bead":"agentscr-87411625","event":"dispatch","model":"glm-4.7","strand":"auto","ts":"2026-08-15T15:57:26.837565365+00:00","worker":"agentscribe-1"}
