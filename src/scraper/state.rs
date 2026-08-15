@@ -1130,36 +1130,59 @@ mod tests {
         // One of the writes should have won
         assert!(matches!(file_state.unwrap().last_byte_offset, 111 | 222));
 
-        // Test JSON backend
+        // Test JSON backend (atomic writes prevent corruption)
+        // Note: JSON backend doesn't support true concurrent access since each
+        // store has its own in-memory cache. We test that atomic writes
+        // produce valid state files even with concurrent filesystem access.
         let json_file = temp_dir.path().join("scrape-state.json");
-        let jm1 = Arc::new(create_json_manager(temp_dir.path()));
-        let jm2 = Arc::new(create_json_manager(temp_dir.path()));
 
-        jm1.update_file_state("/test/jsonfile.jsonl", |s| s.last_byte_offset = 333)
-            .unwrap();
-        jm2.update_file_state("/test/jsonfile.jsonl", |s| s.last_byte_offset = 444)
-            .unwrap();
+        // First manager creates and saves initial state
+        let backend1 = StateBackend::Json(JsonFileStateStore::new(json_file.clone()).unwrap());
+        let jm1 = Arc::new(StateManager::with_backend(backend1));
+        jm1.update_file_state("/test/jsonfile.jsonl", |s| {
+            s.last_byte_offset = 100;
+            s.plugin = "test-plugin".to_string();
+        })
+        .unwrap();
+        jm1.save().unwrap();
 
-        jm1.update_file_state("/test/jsonfile.jsonl", |s| s.last_byte_offset = 333)
-            .unwrap();
-        jm2.update_file_state("/test/jsonfile.jsonl", |s| s.last_byte_offset = 444)
-            .unwrap();
+        // Second manager loads the state and modifies it
+        let backend2 = StateBackend::Json(JsonFileStateStore::new(json_file.clone()).unwrap());
+        let jm2 = Arc::new(StateManager::with_backend(backend2));
+        jm2.update_file_state("/test/jsonfile.jsonl", |s| {
+            s.last_byte_offset = 200;
+        })
+        .unwrap();
 
         let jm1c = jm1.clone();
         let jm2c = jm2.clone();
 
-        let jt1 = std::thread::spawn(move || jm1c.save().unwrap());
-        let jt2 = std::thread::spawn(move || jm2c.save().unwrap());
+        // Both try to save concurrently - one will win via atomic rename
+        let jt1 = std::thread::spawn(move || {
+            jm1c.update_file_state("/test/jsonfile.jsonl", |s| {
+                s.last_byte_offset = 333;
+            })
+            .unwrap();
+            jm1c.save().unwrap()
+        });
+
+        let jt2 = std::thread::spawn(move || {
+            jm2c.update_file_state("/test/jsonfile.jsonl", |s| {
+                s.last_byte_offset = 444;
+            })
+            .unwrap();
+            jm2c.save().unwrap()
+        });
 
         jt1.join().unwrap();
         jt2.join().unwrap();
 
-        // The state must be valid and readable
-        let backend = StateBackend::Json(JsonFileStateStore::new(json_file).unwrap());
-        let jmanager3 = StateManager::with_backend(backend);
+        // The state must be valid and readable (no corruption)
+        let backend3 = StateBackend::Json(JsonFileStateStore::new(json_file).unwrap());
+        let jmanager3 = StateManager::with_backend(backend3);
         let file_state = jmanager3.get_file_state("/test/jsonfile.jsonl");
         assert!(file_state.is_some());
-        // One of the writes should have won
+        // One of the writes should have won (333 or 444)
         assert!(matches!(file_state.unwrap().last_byte_offset, 333 | 444));
     }
 
@@ -1224,15 +1247,37 @@ mod tests {
         assert!(json_manager.get_file_state(test_file).is_none());
     }
 
-    /// Verify StateStore is not object-safe and use the enum workaround.
+    /// Verify that StateStore is NOT object-safe due to generic methods.
     ///
-    /// StateStore cannot be used as `dyn StateStore` because it has generic methods
-    /// (update_file_state<F>). Instead, we use an enum-based approach (StateBackend)
-    /// that dispatches to concrete implementations.
+    /// This test demonstrates why StateStore cannot be used as `dyn StateStore`:
+    /// - The trait has generic methods like `update_file_state<F>` which prevent
+    ///   object safety (trait objects require all methods to be non-generic)
+    /// - Attempting to use StateStore as a trait object will fail to compile
     ///
-    /// This test documents the design and verifies the workaround works correctly.
+    /// The solution is the enum-based approach (StateBackend) that wraps all
+    /// backend implementations and dispatches to concrete types.
+    ///
+    /// # Object Safety Rules
+    ///
+    /// A trait is object-safe only if:
+    /// - No methods are generic (no type parameters)
+    /// - No methods return `Self`
+    /// - No methods have `where Self: Sized` bounds
+    ///
+    /// StateStore violates the first rule due to `update_file_state<F>`,
+    /// which is necessary for ergonomic mutation via closures.
     #[test]
-    fn test_statestore_not_object_safe_enum_workaround() {
+    fn test_statestore_object_safety_limitation() {
+        // This test documents why StateStore cannot be used as dyn StateStore
+        // The following code will NOT compile:
+        //
+        // let store: Box<dyn StateStore> = Box::new(JsonFileStateStore::new(...).unwrap());
+        //
+        // Error: the trait `StateStore` cannot be made into an object
+        // Reason: method `update_file_state` has generic signature
+
+        // Instead, we use the StateBackend enum which wraps all implementations
+        let _temp_dir = TempDir::new().unwrap();
         let temp_dir = TempDir::new().unwrap();
 
         // Create both backends
