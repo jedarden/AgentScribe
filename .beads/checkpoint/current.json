@@ -1,12 +1,12 @@
 {
   "active_root": {
-    "path": "objects/gen-3c4b341b6b080161a8f7158e0369440a.jsonl",
-    "sha256": "ec5aff0862ea01d7e73d1b7238dca66395c212c281527d2336cdaaeb068146ba"
+    "path": "objects/gen-09a787bcb823641ebecdc06407788986.jsonl",
+    "sha256": "4727ce74ef712386ecc83cdae23fc404aae68fcbf98feca5c56b44008ca8ca30"
   },
   "added_paths": [
-    "objects/gen-3c4b341b6b080161a8f7158e0369440a.jsonl"
+    "objects/gen-09a787bcb823641ebecdc06407788986.jsonl"
   ],
-  "created_at": "2026-08-15T05:06:44.878564336Z",
+  "created_at": "2026-08-15T05:17:10.203164014Z",
   "deleted_paths": [
     "current.json",
     "objects/gen-03028386065be57ba826201ab3b6a5ae.jsonl",
@@ -17,12 +17,14 @@
     "objects/gen-30e59859765729d70a385527fc83cb82.jsonl",
     "objects/gen-35c4aee2f7d1ed732f7825325538addf.jsonl",
     "objects/gen-38d59dd48eb97e07631421b8d22ad154.jsonl",
+    "objects/gen-3c4b341b6b080161a8f7158e0369440a.jsonl",
     "objects/gen-3eac90cf6239238b037031bf668875b8.jsonl",
     "objects/gen-41d025bb1eb16c796cb63988b70e37c9.jsonl",
     "objects/gen-4c34fa15f188326f8b8df95c6a51b2a3.jsonl",
     "objects/gen-504a0703e427a9841bf31a854780bb49.jsonl",
     "objects/gen-51ef630fb06ca1f05c3e1be324a2dfb5.jsonl",
     "objects/gen-6001eed2c6650240b48e5ef65df7dd41.jsonl",
+    "objects/gen-679bf4a8c60c29acccd63c6379747718.jsonl",
     "objects/gen-7a4d0ce838ba0ef90eec3bc80dba1b10.jsonl",
     "objects/gen-83551a4c6879efbf80879be1601117f1.jsonl",
     "objects/gen-8e007eef1be3ea3902efe9ae64c24471.jsonl",
@@ -37,8 +39,8 @@
     "objects/gen-e9992d7d2d44d316dbc94483dcb388f5.jsonl",
     "objects/gen-f0c733137f87fa0c3dfbd14cff67f196.jsonl"
   ],
-  "event_count": 377,
-  "generation_id": "gen-3c4b341b6b080161a8f7158e0369440a",
+  "event_count": 382,
+  "generation_id": "gen-09a787bcb823641ebecdc06407788986",
   "issue_count": 434,
   "mode": "monolithic",
   "receipt_count": 0,
@@ -47,7 +49,7 @@
     "previous.json"
   ],
   "schema_version": 1,
-  "snapshot_sequence": 377,
+  "snapshot_sequence": 382,
   "store_uuid": "f344605d-77a8-496e-eaf6-c3973a01376b",
-  "total_record_count": 811
+  "total_record_count": 816
 }
