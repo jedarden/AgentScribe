@@ -2073,6 +2073,38 @@ mod tests {
     }
 
     #[test]
+    fn test_non_envelope_basic_fixture_parsing() {
+        // Test skeleton for non-envelope parsing
+        // Verifies that JsonlParser::parse() can load and parse all lines from
+        // envelope_test.jsonl fixture using a plugin without envelope config
+        //
+        // TODO: Add assertions to verify:
+        //   - All 9 fixture lines produce events (no type-based filtering)
+        //   - Event fields are correctly extracted from nested payload structure
+        //   - Timestamps are parsed correctly
+
+        let fixture_path =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/envelope_test.jsonl");
+
+        let plugin = create_non_envelope_test_plugin();
+
+        // Call JsonlParser::parse() with the fixture path and non-envelope plugin
+        let result = JsonlParser.parse(&fixture_path, &plugin);
+
+        // Verify the parse operation succeeds
+        assert!(
+            result.is_ok(),
+            "JsonlParser::parse() should succeed for envelope_test.jsonl with non-envelope plugin"
+        );
+
+        let events = result.unwrap();
+
+        // TODO: Add specific assertions about event counts and content
+        // For now, just verify the test compiles and basic parsing works
+        eprintln!("DEBUG: Parsed {} events from envelope_test.jsonl", events.len());
+    }
+
+    #[test]
     fn test_non_envelope_parses_all_fixture_lines_as_events() {
         // Verify that without envelope config, type-based routing is completely bypassed.
         // Every line in envelope_test.jsonl should produce at least one event, regardless
