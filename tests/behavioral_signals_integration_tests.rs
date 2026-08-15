@@ -233,21 +233,22 @@ fn test_sidecar_roundtrip() {
     let session_id = "claude-code/test-session-123";
 
     // Create behavioral signals
-    let mut original_signals = BehavioralSignals::default();
-    original_signals.tool_call_count = 42;
-    original_signals.tool_call_counts_by_name =
-        vec![("Read".to_string(), 10), ("Bash".to_string(), 5)]
+    let original_signals = BehavioralSignals {
+        tool_call_count: 42,
+        tool_call_counts_by_name: vec![("Read".to_string(), 10), ("Bash".to_string(), 5)]
             .into_iter()
-            .collect();
-    original_signals.re_read_files = vec!["/project/src/auth.rs".to_string()];
-    original_signals.re_read_count = 3;
-    original_signals.bash_failure_count = 2;
-    original_signals.multi_edit_files = vec!["/project/src/lib.rs".to_string()];
-    original_signals.duration_secs = 3600;
-    original_signals.assistant_turn_ratio = 0.65;
-    original_signals.read_config_files = vec!["/project/CLAUDE.md".to_string()];
-    original_signals.modified_config_files = vec!["/project/AGENTS.md".to_string()];
-    original_signals.cwd_switch_count = 5;
+            .collect(),
+        re_read_files: vec!["/project/src/auth.rs".to_string()],
+        re_read_count: 3,
+        bash_failure_count: 2,
+        multi_edit_files: vec!["/project/src/lib.rs".to_string()],
+        duration_secs: 3600,
+        assistant_turn_ratio: 0.65,
+        read_config_files: vec!["/project/CLAUDE.md".to_string()],
+        modified_config_files: vec!["/project/AGENTS.md".to_string()],
+        cwd_switch_count: 5,
+        ..Default::default()
+    };
 
     // Write sidecar
     write_behavioral_sidecar(data_dir.path(), session_id, &original_signals)
