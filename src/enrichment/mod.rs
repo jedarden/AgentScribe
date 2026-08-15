@@ -12,6 +12,7 @@
 pub mod antipatterns;
 pub mod behavioral_signals;
 pub mod code_artifacts;
+pub mod config_change_tracker;
 pub mod errors;
 pub mod git;
 pub mod outcome;
@@ -21,6 +22,7 @@ pub mod summary;
 pub use antipatterns::{detect_antipatterns, AntiPattern};
 pub use behavioral_signals::{compute_behavioral_signals, BehavioralSignals};
 pub use code_artifacts::{extract_code_artifacts, CodeArtifact};
+pub use config_change_tracker::{ConfigChangeRecord, ConfigChangeTracker, CorrelatedSession};
 pub use errors::enrich_events;
 pub use git::{correlate_commits, GitCommit};
 pub use outcome::{detect_outcome, Outcome, OutcomeConfig};
@@ -92,6 +94,6 @@ pub fn enrich_session(
         code_artifacts,
         anti_patterns,
         git_commits,
-        behavioral_signals: Some(compute_behavioral_signals(events)),
+        behavioral_signals: Some(compute_behavioral_signals(events, None)),
     }
 }

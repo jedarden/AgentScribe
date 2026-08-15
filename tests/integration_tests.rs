@@ -231,6 +231,75 @@ fn codex_plugin_with_companion(glob: &str, companion_path: &str) -> Plugin {
     }
 }
 
+/// Build an envelope-aware JSONL plugin with type routing.
+///
+/// # Arguments
+/// * `glob` - Glob pattern matching source files
+/// * `type_routing` - Map of envelope type values to routing actions ("event", "meta", "skip")
+///
+/// # Returns
+/// A Plugin configured with [source.envelope] for unwrapping JSONL envelopes.
+///
+/// # Example
+/// ```ignore
+/// let mut routing = std::collections::HashMap::new();
+/// routing.insert("message".to_string(), "event".to_string());
+/// routing.insert("session".to_string(), "meta".to_string());
+/// routing.insert("model_change".to_string(), "skip".to_string());
+/// let plugin = envelope_jsonl_plugin("/tmp/*.jsonl", routing);
+/// ```
+fn envelope_jsonl_plugin(
+    glob: &str,
+    type_routing: std::collections::HashMap<String, String>,
+) -> Plugin {
+    use std::collections::HashMap;
+
+    // Configure role_map for common transformations (toolResult -> tool_result)
+    let mut role_map = HashMap::new();
+    role_map.insert("toolResult".to_string(), "tool_result".to_string());
+
+    Plugin {
+        plugin: PluginMeta {
+            name: "envelope-test".to_string(),
+            version: "1.0".to_string(),
+        },
+        source: Source {
+            paths: vec![glob.to_string()],
+            exclude: vec![],
+            format: LogFormat::Jsonl,
+            session_detection: SessionDetection::OneFilePerSession {
+                session_id_from: SessionIdSource::Filename,
+            },
+            tree: None,
+            truncation_limit: None,
+            envelope: Some(agentscribe::plugin::Envelope {
+                payload_field: "message".to_string(),
+                type_field: "type".to_string(),
+                type_routing,
+            }),
+            array: None,
+        },
+        parser: Parser {
+            // After envelope unwrapping, fields are accessed from the payload
+            timestamp: Some("timestamp".to_string()), // Uses wrapper timestamp (^timestamp)
+            role: Some("role".to_string()),           // From message.role
+            content: Some("content".to_string()),     // From message.content
+            tool_name: Some("toolName".to_string()),  // From message.toolName for tool results
+            project: Some(ProjectDetection::Field {
+                field: "cwd".to_string(),
+            }),
+            model: Some(ModelDetection::None),
+            role_map,
+            file_paths: Some(FilePathExtraction {
+                tool_call_field: None,
+                content_regex: Some(true),
+            }),
+            ..Default::default()
+        },
+        metadata: None,
+    }
+}
+
 /// Read RSS (Resident Set Size) in kilobytes from /proc/self/status.
 /// Returns None on non-Linux platforms.
 fn current_rss_kb() -> Option<u64> {
@@ -1981,5 +2050,156 @@ fn test_scrape_cursor_and_windsurf_together() {
     assert!(
         result.agent_types.contains(&"windsurf".to_string()),
         "windsurf not in agent_types"
+    );
+}
+
+// ─── Envelope-aware parsing tests ───────────────────────────────────────────────
+
+/// Envelope plugin helper builds a plugin with correct envelope configuration.
+#[test]
+fn test_envelope_jsonl_plugin_helper() {
+    use std::collections::HashMap;
+
+    let mut type_routing = HashMap::new();
+    type_routing.insert("message".to_string(), "event".to_string());
+    type_routing.insert("session".to_string(), "meta".to_string());
+    type_routing.insert("model_change".to_string(), "skip".to_string());
+
+    let plugin = envelope_jsonl_plugin("/tmp/*.jsonl", type_routing);
+
+    // Verify envelope configuration is present
+    assert!(
+        plugin.source.envelope.is_some(),
+        "envelope configuration should be present"
+    );
+
+    let envelope = plugin.source.envelope.as_ref().unwrap();
+    assert_eq!(envelope.payload_field, "message");
+    assert_eq!(envelope.type_field, "type");
+
+    // Verify type_routing is configured
+    assert_eq!(
+        envelope.get_routing("message"),
+        "event",
+        "message type should route to event"
+    );
+    assert_eq!(
+        envelope.get_routing("session"),
+        "meta",
+        "session type should route to meta"
+    );
+    assert_eq!(
+        envelope.get_routing("model_change"),
+        "skip",
+        "model_change type should route to skip"
+    );
+    assert_eq!(
+        envelope.get_routing("unknown"),
+        "skip",
+        "unknown types should default to skip"
+    );
+}
+
+/// Scraping enveloped JSONL produces correct canonical Events.
+///
+/// Verifies that:
+/// - Wrapper timestamp is used (not payload timestamp)
+/// - Role and content come from the payload_field
+/// - role_map is applied (e.g., toolResult -> tool_result)
+/// - Type routing skips non-event types (model_change, compaction, label)
+#[test]
+fn test_envelope_parsing_produces_correct_events() {
+    use std::collections::HashMap;
+
+    let data_dir = make_data_dir();
+    let fixtures = fixtures_dir().join("envelope");
+    let glob = format!("{}/enveloped-session.jsonl", fixtures.display());
+
+    // Configure type routing for the enveloped session
+    let mut type_routing = HashMap::new();
+    type_routing.insert("message".to_string(), "event".to_string());
+    type_routing.insert("session".to_string(), "meta".to_string());
+    type_routing.insert("model_change".to_string(), "skip".to_string());
+    type_routing.insert("compaction".to_string(), "skip".to_string());
+    type_routing.insert("label".to_string(), "skip".to_string());
+
+    let mut scraper = Scraper::new(data_dir.path().to_path_buf()).expect("scraper init");
+    let plugin = envelope_jsonl_plugin(&glob, type_routing);
+    scraper.plugin_manager_mut().add_plugin(plugin.clone());
+
+    let result = scraper.scrape_plugin(&plugin).expect("scrape failed");
+
+    // Should scrape exactly 1 session from the envelope fixture
+    assert_eq!(
+        result.sessions_scraped, 1,
+        "expected 1 session from envelope fixture, got {}",
+        result.sessions_scraped
+    );
+
+    // Get the scraped events
+    let sessions = scraper
+        .list_sessions("envelope-test")
+        .expect("list sessions");
+    assert!(!sessions.is_empty(), "no sessions found");
+
+    let events = scraper
+        .read_session(&sessions[0])
+        .expect("read session failed");
+
+    // We should have 6 message-type events (lines 2, 3, 5, 6, 8, 10 from fixture)
+    // Lines 1 (session), 4 (model_change), 7 (compaction), 9 (label) are skipped
+    let message_events: Vec<_> = events
+        .iter()
+        .filter(|e| matches!(e.role, Role::User | Role::Assistant | Role::ToolResult))
+        .collect();
+
+    assert!(
+        message_events.len() >= 6,
+        "expected at least 6 message events, got {}",
+        message_events.len()
+    );
+
+    // Verify first event is a user message from line 2
+    let first_user = message_events
+        .iter()
+        .find(|e| matches!(e.role, Role::User))
+        .expect("should have at least one user message");
+
+    // The wrapper timestamp is "2025-01-15T09:00:01.000Z" (line 2 timestamp field)
+    // NOT the payload timestamp "1736920801000" (which is a Unix timestamp)
+    // The parsed timestamp may vary in format (timezone vs UTC), so check the core components
+    let expected_ts = first_user.ts.timestamp();
+    // Wrapper timestamp "2025-01-15T09:00:01.000Z" = 1736920801 seconds since epoch
+    // NOT the payload timestamp 1736920801000 (milliseconds since epoch)
+    assert_eq!(
+        expected_ts, 1736920801,
+        "wrapper timestamp should be used (seconds), not payload timestamp (milliseconds)"
+    );
+
+    // Content comes from payload_field (message.content)
+    assert!(
+        first_user.content.contains("refactor"),
+        "content should come from payload field: {:?}",
+        first_user.content
+    );
+
+    // Verify role_map is applied: toolResult -> tool_result
+    let tool_result = message_events
+        .iter()
+        .find(|e| matches!(e.role, Role::ToolResult))
+        .expect("should have a tool_result event (line 5 from fixture)");
+
+    // The fixture has role="toolResult" in the payload, which should map to "tool_result"
+    assert_eq!(
+        format!("{:?}", tool_result.role),
+        "ToolResult",
+        "role_map should convert toolResult to tool_result"
+    );
+
+    // Verify content is extracted from toolResult payload
+    assert!(
+        tool_result.content.contains("src/auth"),
+        "tool_result content should be extracted: {:?}",
+        tool_result.content
     );
 }

@@ -1855,10 +1855,10 @@ mod tests {
         wl.try_watch(&dir.path());
 
         // It should not be in failed_dirs
-        assert!(!wl.failed_dirs.contains_key(&dir.path()));
+        assert!(!wl.failed_dirs.contains_key(dir.path()));
 
         // It should be in watched_dirs
-        assert!(wl.watched_dirs.contains(&dir.path()));
+        assert!(wl.watched_dirs.contains(dir.path()));
     }
 
     #[test]
@@ -1891,13 +1891,13 @@ mod tests {
         };
 
         // First attempt at a directory - should have no entry in failed_dirs initially
-        assert!(!wl.failed_dirs.contains_key(&dir.path()));
+        assert!(!wl.failed_dirs.contains_key(dir.path()));
 
         // Watch should succeed (test directory exists and is watchable)
         wl.try_watch(&dir.path());
 
         // Directory should be watched, not failed
-        assert!(wl.watched_dirs.contains(&dir.path()));
-        assert!(!wl.failed_dirs.contains_key(&dir.path()));
+        assert!(wl.watched_dirs.contains(dir.path()));
+        assert!(!wl.failed_dirs.contains_key(dir.path()));
     }
 }
