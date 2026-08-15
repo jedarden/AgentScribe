@@ -105,16 +105,6 @@ impl MarkdownParser {
         }
     }
 
-    #[allow(dead_code)]
-    fn parse_markdown(
-        &self,
-        content: &str,
-        context: &ParseContext,
-        plugin: &Plugin,
-    ) -> Result<Vec<Event>> {
-        self.parse_markdown_with_input_history(content, context, plugin, None)
-    }
-
     fn parse_markdown_with_input_history(
         &self,
         content: &str,

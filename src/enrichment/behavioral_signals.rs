@@ -77,17 +77,10 @@ pub fn compute_behavioral_signals(
     }
 
     // Use provided patterns or defaults
-    let patterns = config_patterns.map(|ps| {
-        ps.as_ref()
-            .into_iter()
-            .map(|s| s.as_str())
-            .collect::<Vec<_>>()
-    });
+    let patterns =
+        config_patterns.map(|ps| ps.as_ref().iter().map(|s| s.as_str()).collect::<Vec<_>>());
     let default_patterns: Vec<&str> = DEFAULT_CONFIG_FILE_PATTERNS.to_vec();
-    let effective_patterns = patterns
-        .as_ref()
-        .map(|p| p.as_slice())
-        .unwrap_or(&default_patterns);
+    let effective_patterns = patterns.as_deref().unwrap_or(&default_patterns);
 
     // Track reads, writes, edits per file
     let mut file_reads: HashMap<&str, u32> = HashMap::new();

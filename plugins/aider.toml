@@ -1,5 +1,12 @@
 # Aider plugin for AgentScribe
 # Aider stores conversations in append-only Markdown files
+#
+# Companion index decision (bf-xp9w):
+# Aider analytics JSONL (~/.aider.analytics.jsonl) is NOT wired as a companion_index
+# because it lacks session-level identifiers needed for correlation. Analytics events
+# only contain persistent user_id (not session-specific) and timestamps that cannot
+# be reliably matched to chat delimiter timestamps due to timezone ambiguity and
+# lack of 1:1 mapping. See notes/bf-xp9w.md for full analysis.
 
 [plugin]
 name = "aider"

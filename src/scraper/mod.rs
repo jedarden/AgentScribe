@@ -280,7 +280,9 @@ impl Scraper {
                     let normalized_pattern = if !exclude_expanded.starts_with('/')
                         && !exclude_expanded.starts_with("**")
                     {
-                        let stripped = exclude_expanded.strip_prefix("./").unwrap_or(&exclude_expanded);
+                        let stripped = exclude_expanded
+                            .strip_prefix("./")
+                            .unwrap_or(&exclude_expanded);
                         format!("**/{}", stripped)
                     } else {
                         exclude_expanded
@@ -1666,12 +1668,12 @@ mod tests {
         );
     }
 
-    /// Test the glob::Pattern behavior directly to verify the bug scenario.
+    /// Test the glob::Pattern behavior for relative vs absolute path matching.
     #[test]
     fn test_glob_pattern_relative_vs_absolute_matching() {
-        // This test demonstrates the core issue:
-        // A relative pattern like "*/subagents/*" won't match an absolute path
-        // unless the pattern is constructed correctly.
+        // This test verifies glob pattern matching behavior:
+        // A relative pattern like "*/subagents/*" DOES match absolute paths
+        // because the leading * matches any number of leading path components.
 
         let abs_path = PathBuf::from("/home/user/logs/project/subagents/file.jsonl");
         let rel_pattern_str = "*/subagents/*";
@@ -1679,40 +1681,33 @@ mod tests {
         // Create pattern from relative string
         let rel_pattern = glob::Pattern::new(rel_pattern_str).unwrap();
 
-        // This demonstrates the bug: relative pattern doesn't match absolute path
+        // Relative pattern DOES match absolute path (leading * matches any path prefix)
         let matches_rel = rel_pattern.matches_path(&abs_path);
-
-        // The pattern needs to match against the path relative to current directory
-        // OR we need to ensure the pattern is normalized to match absolute paths
         assert!(
-            !matches_rel,
-            "relative pattern '*/subagents/*' should NOT match absolute path {:?} without normalization",
+            matches_rel,
+            "relative pattern '*/subagents/*' SHOULD match absolute path {:?} (leading * matches any prefix)",
             abs_path
         );
 
-        // The fix: prepend **/ to relative patterns to make them match anywhere
-        let fixed_pattern_str = "**/subagents/*";
-        let fixed_pattern = glob::Pattern::new(fixed_pattern_str).unwrap();
-        let matches_fixed = fixed_pattern.matches_path(&abs_path);
-
-        assert!(
-            matches_fixed,
-            "fixed pattern '**/subagents/*' SHOULD match absolute path {:?}",
-            abs_path
-        );
-
-        // Also test that patterns starting with ** already work
+        // Patterns with ** also work (equivalent behavior for this case)
         let double_star_pattern = glob::Pattern::new("**/subagents/*").unwrap();
         assert!(
             double_star_pattern.matches_path(&abs_path),
             "pattern with leading ** should match absolute path"
         );
 
-        // And absolute patterns work as expected
+        // Absolute patterns work as expected
         let abs_pattern = glob::Pattern::new("/home/user/logs/*/subagents/*").unwrap();
         assert!(
             abs_pattern.matches_path(&abs_path),
             "absolute pattern should match absolute path"
+        );
+
+        // Test that patterns without wildcards in the right positions don't match
+        let specific_pattern = glob::Pattern::new("project/subagents/*").unwrap();
+        assert!(
+            !specific_pattern.matches_path(&abs_path),
+            "pattern 'project/subagents/*' should NOT match absolute path (doesn't match leading /home/user/logs)"
         );
     }
 
@@ -1738,7 +1733,9 @@ mod tests {
         // This is the exact logic from discover_files
         let normalized_pattern =
             if !exclude_expanded.starts_with('/') && !exclude_expanded.starts_with("**") {
-                let stripped = exclude_expanded.strip_prefix("./").unwrap_or(&exclude_expanded);
+                let stripped = exclude_expanded
+                    .strip_prefix("./")
+                    .unwrap_or(&exclude_expanded);
                 format!("**/{}", stripped)
             } else {
                 exclude_expanded
@@ -1792,9 +1789,9 @@ mod tests {
         //           agent-2.jsonl           <- EXCLUDED by */subagents/*
         //     vendor/
         //       node_modules/
-        //         package.json              <- EXCLUDED by **/node_modules/**
+        //         package.jsonl             <- EXCLUDED by **/node_modules/**
         //       otherlib/
-        //         lib.json                  <- should be included
+        //         lib.jsonl                 <- should be included
 
         let logs_dir = temp.path().join("logs");
         std::fs::create_dir_all(logs_dir.join("project-a/subagents")).unwrap();
@@ -1817,11 +1814,11 @@ mod tests {
         )
         .unwrap();
         std::fs::write(
-            logs_dir.join("vendor/node_modules/package.json"),
+            logs_dir.join("vendor/node_modules/package.jsonl"),
             "node package",
         )
         .unwrap();
-        std::fs::write(logs_dir.join("vendor/otherlib/lib.json"), "library").unwrap();
+        std::fs::write(logs_dir.join("vendor/otherlib/lib.jsonl"), "library").unwrap();
 
         // Test 1: Relative pattern */subagents/*
         let plugin = Plugin {
@@ -1881,22 +1878,17 @@ mod tests {
             "root.jsonl should be included"
         );
         assert!(
-            file_set.contains(
-                logs_dir
-                    .join("project-a/session.jsonl")
-                    .to_str()
-                    .unwrap()
-            ),
+            file_set.contains(logs_dir.join("project-a/session.jsonl").to_str().unwrap()),
             "project-a/session.jsonl should be included"
         );
         assert!(
             file_set.contains(
                 logs_dir
-                    .join("vendor/node_modules/package.json")
+                    .join("vendor/node_modules/package.jsonl")
                     .to_str()
                     .unwrap()
             ),
-            "vendor/node_modules/package.json should be included (not excluded by */subagents/*)"
+            "vendor/node_modules/package.jsonl should be included (not excluded by */subagents/*)"
         );
 
         assert_eq!(
@@ -1940,11 +1932,11 @@ mod tests {
         assert!(
             !file_set2.contains(
                 logs_dir
-                    .join("vendor/node_modules/package.json")
+                    .join("vendor/node_modules/package.jsonl")
                     .to_str()
                     .unwrap()
             ),
-            "vendor/node_modules/package.json should be excluded by **/node_modules/**"
+            "vendor/node_modules/package.jsonl should be excluded by **/node_modules/**"
         );
 
         // Should include subagent files (not excluded by this pattern)
@@ -2004,7 +1996,7 @@ mod tests {
         assert!(
             !file_set3.contains(
                 logs_dir
-                    .join("vendor/node_modules/package.json")
+                    .join("vendor/node_modules/package.jsonl")
                     .to_str()
                     .unwrap()
             ),
@@ -2017,13 +2009,8 @@ mod tests {
             "root.jsonl should be included"
         );
         assert!(
-            file_set3.contains(
-                logs_dir
-                    .join("vendor/otherlib/lib.json")
-                    .to_str()
-                    .unwrap()
-            ),
-            "vendor/otherlib/lib.json should be included"
+            file_set3.contains(logs_dir.join("vendor/otherlib/lib.jsonl").to_str().unwrap()),
+            "vendor/otherlib/lib.jsonl should be included"
         );
 
         assert_eq!(

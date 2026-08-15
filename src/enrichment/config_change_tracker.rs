@@ -90,6 +90,7 @@ pub struct ConfigChangeTracker {
 #[derive(Debug, Clone)]
 struct ProjectInfo {
     /// Project path
+    #[allow(dead_code)]
     path: PathBuf,
     /// Last scan timestamp
     last_scanned: Option<DateTime<Utc>>,
@@ -258,7 +259,6 @@ impl ConfigChangeTracker {
             if let Some(ended) = manifest.ended {
                 if ended >= correlation_threshold && ended <= modified_at {
                     // Check if session touched this config file or worked in the same project
-                    let session_project = manifest.project.as_deref();
                     let touched_config = self.session_touched_config(manifest, config_path);
 
                     if touched_config || self.session_in_same_project(manifest, config_path) {
@@ -274,7 +274,7 @@ impl ConfigChangeTracker {
         }
 
         // Sort by recency (most recent first)
-        correlated.sort_by(|a, b| b.ended_at.cmp(&a.ended_at));
+        correlated.sort_by_key(|b| std::cmp::Reverse(b.ended_at));
 
         Ok(correlated)
     }
@@ -326,7 +326,7 @@ impl ConfigChangeTracker {
         }
 
         // Sort by modification time (most recent first)
-        existing.sort_by(|a, b| b.modified_at.cmp(&a.modified_at));
+        existing.sort_by_key(|b| std::cmp::Reverse(b.modified_at));
 
         // Write back
         let json = serde_json::to_string_pretty(&existing).map_err(|e| {
@@ -347,8 +347,6 @@ impl ConfigChangeTracker {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::event::Event;
-    use chrono::TimeZone;
 
     fn make_manifest(
         session_id: &str,
@@ -391,7 +389,7 @@ mod tests {
 
         // This test verifies the pattern matching logic; actual file existence
         // depends on test setup, so we just verify the logic doesn't crash
-        let results = tracker.find_config_files("/fake/project", "CLAUDE.md");
+        let _results = tracker.find_config_files("/fake/project", "CLAUDE.md");
         // Result depends on whether /fake/project/CLAUDE.md exists
         // We're just checking the function doesn't panic
     }
