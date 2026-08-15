@@ -189,6 +189,41 @@ pub fn add_annotation(sessions_dir: &Path, session_id: &str, annotation: Annotat
     Ok(())
 }
 
+/// Merge annotation tags with enrichment tags for a session
+///
+/// # Arguments
+/// * `sessions_dir` - Path to the sessions directory (e.g., ~/.agentscribe/sessions)
+/// * `session_id` - Session ID in format "\<agent\>/\<id\>"
+/// * `enrichment_tags` - Existing tags from enrichment (indexed in Tantivy)
+///
+/// # Returns
+/// A deduplicated vector of tags containing both enrichment and annotation tags
+pub fn merge_annotation_tags(
+    sessions_dir: &Path,
+    session_id: &str,
+    enrichment_tags: Vec<String>,
+) -> Vec<String> {
+    // Load annotations from sidecar
+    let annotations = match load_annotations(sessions_dir, session_id) {
+        Ok(ann) => ann,
+        Err(_) => return enrichment_tags, // Return enrichment tags on error
+    };
+
+    // Extract annotation tags
+    let mut annotation_tags: std::collections::HashSet<String> =
+        annotations.into_iter().map(|a| a.tag).collect();
+
+    // Add enrichment tags
+    for tag in enrichment_tags {
+        annotation_tags.insert(tag);
+    }
+
+    // Convert to sorted vector for consistent output
+    let mut merged: Vec<String> = annotation_tags.into_iter().collect();
+    merged.sort();
+    merged
+}
+
 /// Remove an annotation by tag from a session's sidecar file
 ///
 /// # Arguments

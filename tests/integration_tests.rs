@@ -2100,6 +2100,131 @@ fn test_envelope_jsonl_plugin_helper() {
     );
 }
 
+/// Envelope routing produces correct event count from envelope_test.jsonl.
+///
+/// Fixture structure (8 lines total):
+/// - Line 1: session_start (type: "session_start") → routes to meta
+/// - Line 2: heartbeat (type: "heartbeat") → routes to skip
+/// - Line 3: ping (type: "ping") → routes to skip
+/// - Lines 4-7: message (type: "message") → routes to event (4 events)
+/// - Line 8: unknown_event (type: "unknown_event") → no routing defined → defaults to skip
+///
+/// Expected result: 4 events produced from the 4 message-type lines.
+#[test]
+fn test_envelope_routing_event_count() {
+    use std::collections::HashMap;
+
+    let data_dir = make_data_dir();
+    let fixtures = fixtures_dir();
+    let fixture_path = fixtures.join("envelope_test.jsonl");
+    let glob = format!("{}", fixture_path.display());
+
+    // Build envelope configuration matching envelope_test.toml
+    // Note: The fixture uses payload_field: "payload", not "message" like the helper
+    let mut type_routing = HashMap::new();
+    type_routing.insert("message".to_string(), "event".to_string());
+    type_routing.insert("session_start".to_string(), "meta".to_string());
+    type_routing.insert("heartbeat".to_string(), "skip".to_string());
+    type_routing.insert("ping".to_string(), "skip".to_string());
+    // Note: unknown_event has no explicit routing → defaults to skip
+
+    let mut envelope_routing = HashMap::new();
+    envelope_routing.insert("message".to_string(), "event".to_string());
+    envelope_routing.insert("session_start".to_string(), "meta".to_string());
+    envelope_routing.insert("heartbeat".to_string(), "skip".to_string());
+    envelope_routing.insert("ping".to_string(), "skip".to_string());
+
+    let plugin = Plugin {
+        plugin: PluginMeta {
+            name: "envelope-test".to_string(),
+            version: "1.0".to_string(),
+        },
+        source: Source {
+            paths: vec![glob.to_string()],
+            exclude: vec![],
+            format: LogFormat::Jsonl,
+            session_detection: SessionDetection::OneFilePerSession {
+                session_id_from: SessionIdSource::Filename,
+            },
+            tree: None,
+            truncation_limit: None,
+            envelope: Some(agentscribe::plugin::Envelope {
+                payload_field: "payload".to_string(), // Fixture uses "payload" field
+                type_field: "type".to_string(),
+                type_routing: envelope_routing,
+            }),
+            array: None,
+        },
+        parser: Parser {
+            // Use envelope-level timestamp (^ prefix for wrapper fields)
+            timestamp: Some("^timestamp".to_string()),
+            // After envelope unwrapping, payload fields become root
+            role: Some("role".to_string()),
+            content: Some("content".to_string()),
+            project: Some(ProjectDetection::Field {
+                field: "cwd".to_string(),
+            }),
+            model: Some(ModelDetection::None),
+            ..Default::default()
+        },
+        metadata: None,
+    };
+
+    let mut scraper = Scraper::new(data_dir.path().to_path_buf()).expect("scraper init");
+    scraper.plugin_manager_mut().add_plugin(plugin.clone());
+
+    let result = scraper.scrape_plugin(&plugin).expect("scrape failed");
+
+    // Should scrape exactly 1 session from the fixture
+    assert_eq!(
+        result.sessions_scraped, 1,
+        "expected 1 session from envelope_test.jsonl, got {} (errors: {:?})",
+        result.sessions_scraped, result.errors
+    );
+
+    // Get the scraped events
+    let sessions = scraper
+        .list_sessions("envelope-test")
+        .expect("list sessions");
+    assert!(!sessions.is_empty(), "no sessions found");
+
+    let events = scraper
+        .read_session(&sessions[0])
+        .expect("read session failed");
+
+    // Verify exactly 4 events are produced (from the 4 message-type lines)
+    // Lines 4-7 are message type → event, all others are skipped or meta
+    assert_eq!(
+        events.len(),
+        4,
+        "expected exactly 4 events from envelope_test.jsonl, got {}. Events: {:?}",
+        events.len(),
+        events
+            .iter()
+            .map(|e| (&e.role, &e.content[..e.content.len().min(50)]))
+            .collect::<Vec<_>>()
+    );
+
+    // Verify all events have meaningful content from the message lines
+    for (i, event) in events.iter().enumerate() {
+        assert!(
+            !event.content.is_empty(),
+            "event {} should have non-empty content",
+            i
+        );
+        // Verify role is one of the expected conversation roles
+        assert!(
+            matches!(
+                event.role,
+                Role::User | Role::Assistant | Role::ToolCall | Role::System
+            ),
+            "event {} should have a conversation role, got {:?}",
+            i,
+            event.role
+        );
+    }
+}
+
 /// Scraping enveloped JSONL produces correct canonical Events.
 ///
 /// Verifies that:
