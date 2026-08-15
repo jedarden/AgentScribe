@@ -79,6 +79,21 @@ enum Commands {
         plugin: Option<String>,
     },
     /// Query the Tantivy index for matching sessions
+    ///
+    /// # Search CLI Options Structure
+    ///
+    /// **CLI Definition Location:** This enum variant (lines 82-193) in `/home/coding/AgentScribe/src/cli.rs`
+    ///
+    /// **Internal Options Struct:** `SearchOptions` in `/home/coding/AgentScribe/src/search.rs` (lines 192-226)
+    ///
+    /// **Pattern Used:** clap derive macros with struct fields:
+    /// - `#[derive(Subcommand, Debug)]` on the Commands enum
+    /// - Individual flags use `#[arg(short, long)]`, `#[arg(long)]`, etc.
+    /// - Repeatable flags use `Vec<Type>` (e.g., `tag: Vec<String>`)
+    ///
+    /// **Tag Filter Implementation:** The `--tag` flag is already implemented below (lines 126-128)
+    /// and mapped to the `tag: Vec<String>` field in SearchOptions (line 204 in search.rs).
+    /// The field supports repeatable tags with AND logic for filtering sessions by tag.
     Search {
         /// Search query string (Tantivy query syntax)
         query: Option<String>,
@@ -123,7 +138,7 @@ enum Commands {
         #[arg(long)]
         before: Option<String>,
 
-        /// Filter by tag (repeatable, AND logic)
+        /// Filter by tag (repeatable, AND logic) - Already implemented, maps to SearchOptions.tag field
         #[arg(short = 't', long)]
         tag: Vec<String>,
 
