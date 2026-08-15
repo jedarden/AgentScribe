@@ -4,6 +4,7 @@
 //! can use to spot behavioral trends across sessions.
 
 use crate::event::{Event, Role};
+use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -308,6 +309,74 @@ pub fn load_behavioral_signals(
 
     let content = std::fs::read_to_string(&sidecar_path).ok()?;
     serde_json::from_str(&content).ok()
+}
+
+/// Read and parse behavioral_signals.json sidecar for a session.
+///
+/// # Arguments
+///
+/// * `session_id` - Session identifier string (format: "agent/session-id")
+///
+/// # Returns
+///
+/// * `Ok(BehavioralSignals)` - Successfully parsed signals
+/// * `Ok(BehavioralSignals::default())` - Sidecar file doesn't exist yet
+/// * `Err` - File exists but cannot be read or parsed
+///
+/// # Examples
+///
+/// ```ignore
+/// use agentscribe::enrichment::behavioral_signals::read_behavioral_signals;
+///
+/// let signals = read_behavioral_signals("claude-code/abc123").unwrap();
+/// println!("Tool calls: {}", signals.tool_call_count);
+/// ```
+pub fn read_behavioral_signals(session_id: &str) -> Result<BehavioralSignals> {
+    // Get the data directory from environment or default
+    let data_dir = std::env::var("AGENTSCRIBE_DATA_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| {
+            let home = directories::BaseDirs::new()
+                .expect("Failed to determine home directory")
+                .home_dir()
+                .to_path_buf();
+            home.join(".agentscribe")
+        });
+
+    let session_dir = data_dir.join("sessions");
+    let parts: Vec<&str> = session_id.splitn(2, '/').collect();
+    if parts.len() != 2 {
+        anyhow::bail!(
+            "Invalid session_id format: expected 'agent/session-id', got: {}",
+            session_id
+        );
+    }
+
+    let sidecar_path = session_dir
+        .join(parts[0])
+        .join(format!("{}.behavioral.json", parts[1]));
+
+    // Return empty default if file doesn't exist
+    if !sidecar_path.exists() {
+        return Ok(BehavioralSignals::default());
+    }
+
+    // Read and parse the file
+    let content = std::fs::read_to_string(&sidecar_path).map_err(|e| {
+        anyhow::anyhow!(
+            "Failed to read behavioral signals file {:?}: {}",
+            sidecar_path,
+            e
+        )
+    })?;
+
+    serde_json::from_str(&content).map_err(|e| {
+        anyhow::anyhow!(
+            "Failed to parse behavioral signals JSON from {:?}: {}",
+            sidecar_path,
+            e
+        )
+    })
 }
 
 /// Detect a working directory change from a Bash tool_call event.
