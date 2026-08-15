@@ -1,495 +1,737 @@
-# Skip Routing Test Plan — Comprehensive Coverage
+# Skip Routing Test Plan
+
+**Purpose:** Document all skip routing scenarios, catalog skip-type line patterns, and provide comprehensive test coverage for AgentScribe's envelope-based filtering system.
+
+**Generated:** 2026-08-15
+**Bead:** agentscr-7784ea15
+
+---
 
 ## Overview
 
-This document catalogs all skip routing test scenarios for AgentScribe's envelope parsing system, identifies skip-type line patterns, lists edge cases requiring coverage, and provides a comprehensive test plan with coverage checklist.
+Skip routing is a feature in AgentScribe's JSONL parser that allows selective filtering of log lines based on their envelope type. When a JSONL line contains a "wrapped" event (an envelope structure with `{type_field, payload_field}`), the system can route different types of lines to different handlers: `"event"`, `"meta"`, or `"skip"`.
 
-**Purpose:** Ensure skip routing correctly prevents event emission across all envelope routing scenarios while maintaining data integrity and performance.
+### Key Locations
 
-**Scope:** JSONL envelope parsing with type-based routing (event/meta/skip actions).
+- **Core Implementation:** `src/parser/jsonl.rs` (lines 44-129, 150-260)
+- **Configuration:** `src/plugin.rs` (lines 150-195)
+- **Error Strategy:** `src/error.rs` (lines 17-36, 72-81, 177-180)
+- **Tests:** `src/parser/jsonl.rs` (lines 1146+)
 
 ---
 
-## Skip Routing Architecture
+## Skip Routing Scenarios
 
-### How Skip Routing Works
+### 1. Explicit Skip Routing
 
-1. **Envelope Unwrapping** (`src/parser/jsonl.rs::unwrap_envelope`):
-   - Reads `type_field` from JSON line
-   - Looks up routing action via `Envelope::get_routing(&type_value)`
-   - Returns `(payload_json, type_field_value)` tuple
+**Description:** Lines with types explicitly mapped to `"skip"` in the TOML configuration are dropped immediately.
 
-2. **Routing Actions**:
-   - **`skip`**: Returns `(empty object, None)` → drops line completely
-   - **`meta`**: Returns `(empty object, Some(full_wrapper))` → metadata preserved, no events
-   - **`event`**: Returns `(payload, Some(full_wrapper))` → canonical event emitted
+**Behavior:**
+- Returns `Ok(Vec::new())` - no errors, no events produced
+- Line is not counted in session metrics
+- Processing continues to next line
 
-3. **Default Behavior**:
-   - Unknown types → route to `skip` (with warning logged)
-   - Invalid routing values → treated as `skip`
-   - Missing/invalid payload → skip with warning
+**Real-World Examples:**
+```json
+{"type": "heartbeat", "timestamp": "2026-07-04T10:00:05Z", "payload": {"status": "ok"}}
+{"type": "ping", "timestamp": "2026-07-04T10:00:10Z", "payload": {"seq": 123}}
+{"type": "system_noise", "timestamp": "2026-07-04T10:00:15Z", "payload": {"level": "debug"}}
+```
 
-### Configuration
-
+**Configuration:**
 ```toml
-[source.envelope]
-payload_field = "payload"      # Field containing event data
-type_field = "type"            # Field containing routing discriminator
-type_routing = {
-  "heartbeat" = "skip",         # Don't emit events for heartbeats
-  "ping" = "skip",              # Don't emit events for pings
-  "session_meta" = "meta",      # Preserve metadata, no event
-  "message" = "event",          # Emit canonical event
+[source.envelope.type_routing]
+"heartbeat" = "skip"
+"ping" = "skip"
+"system_noise" = "skip"
+```
+
+**Test Cases:**
+- ✅ Basic skip routing returns empty Vec
+- ✅ Multiple consecutive skip lines
+- ✅ Skip routing bypasses event construction
+- ✅ Skip routing does not affect session metrics
+
+---
+
+### 2. Implicit Skip (Unknown Types)
+
+**Description:** Types not present in the routing map default to `"skip"` with a warning logged.
+
+**Behavior:**
+- Returns `Ok(Vec::new())` - no events produced
+- Logs warning: `"Unknown envelope type value, routing to 'skip'"`
+- Prevents crashes from unexpected/rogue data
+
+**Real-World Examples:**
+```json
+{"type": "new_feature_not_yet_supported", "timestamp": "2026-07-04T10:00:00Z", "payload": {"data": "..."}}
+{"type": "typo_in_type_field", "timestamp": "2026-07-04T10:00:00Z", "payload": {"msg": "..."}}
+```
+
+**Test Cases:**
+- ✅ Unknown types default to skip
+- ✅ Unknown type logs warning message
+- ✅ Multiple unknown types in sequence
+- ✅ Unknown type surrounded by known types
+
+---
+
+### 3. Meta Routing (Session Metadata)
+
+**Description:** Types mapped to `"meta"` return empty Vec (no events) but preserve metadata for future accumulation.
+
+**Current Behavior:**
+- Returns `Ok(Vec::new())` - no events produced currently
+- Lines are dropped but marked as metadata (TODO: future session context accumulation)
+- No warning logged
+
+**Future Enhancement:**
+- Accumulate session-level metadata (project, model, version)
+- Envelope JSON preserved for context extraction
+
+**Real-World Examples:**
+```json
+{"type": "session_start", "timestamp": "2026-07-04T10:00:00Z", "payload": {"session_id": "abc123", "model": "claude-sonnet-5"}}
+{"type": "session_metadata", "timestamp": "2026-07-04T10:00:01Z", "payload": {"cwd": "/home/user/project"}}
+```
+
+**Configuration:**
+```toml
+[source.envelope.type_routing]
+"session_start" = "meta"
+"session_metadata" = "meta"
+```
+
+**Test Cases:**
+- ✅ Meta routing returns empty Vec
+- ✅ Meta routing does not log warning
+- ✅ Mixed meta/event/skip routing
+- 🔄 Meta accumulation (future test when implemented)
+
+---
+
+### 4. Skip-and-Log Error Strategy
+
+**Description:** Parser errors do not block scraping of other files/sessions. Errors are logged with file path and line number, then processing continues.
+
+**Behavior:**
+- Returns `Err(AgentScribeError::Parse)` for the specific line
+- Error logged with context: file path, line number, specific message
+- Scraper continues to next line/file/session
+- No crashes from malformed data
+
+**Real-World Examples:**
+```jsonl
+{"type": "message", "timestamp": "2026-07-04T10:00:00Z", "payload": {"role": "user"}}  // Missing content field
+invalid json line here
+{"type": "message", "timestamp": "malformed", "payload": {"role": "user", "content": "hi"}}
+```
+
+**Test Cases:**
+- ✅ Invalid JSON line returns error with line number
+- ✅ Malformed timestamp returns parse error
+- ✅ Missing required field returns parse error
+- ✅ Error includes file path in message
+- ✅ Processing continues after error
+
+---
+
+### 5. Invalid JSON Lines (Companion Files)
+
+**Description:** In companion index files (e.g., `~/.codex/session_index.jsonl`), invalid JSON lines are silently skipped.
+
+**Behavior:**
+- Invalid JSON lines produce no events
+- No error logged (companion files are best-effort)
+- Processing continues to next line
+
+**Real-World Example:**
+```jsonl
+{"thread_id": "abc123", "cwd": "/home/user/project"}
+corrupted line here
+{"thread_id": "def456", "cwd": "/home/user/other"}
+```
+
+**Test Cases:**
+- ✅ Companion index skips invalid lines silently
+- ✅ Valid lines after invalid are processed
+- ✅ Empty companion file handled gracefully
+
+---
+
+### 6. Fast Pre-Filter (Non-Assistant Events)
+
+**Description:** In capacity.rs, lines that cannot be assistant events are skipped quickly before expensive processing.
+
+**Behavior:**
+- Pre-filter check: `model == "<synthetic>"` → skip
+- Pre-filter check: all-zero token counts → skip
+- Avoids unnecessary processing of non-conversational data
+
+**Real-World Examples:**
+```json
+{"model": "<synthetic>", "tokens": {"input": 0, "output": 0}, "role": "assistant", "content": "..."}
+{"model": "claude-sonnet-5", "tokens": {"input": 0, "output": 0}, "role": "assistant", "content": "..."}
+```
+
+**Test Cases:**
+- ✅ Synthetic model lines are skipped
+- ✅ All-zero token counts are skipped
+- ✅ Valid events after pre-filter are processed
+
+---
+
+### 7. Type-Based Filtering (Include/Exclude)
+
+**Description:** Plugins can define `include_types` and `exclude_types` filters that skip events based on their type field value.
+
+**Configuration:**
+```toml
+[parser.include_types]
+field = "type"
+values = ["user", "assistant", "tool_call"]
+
+[parser.exclude_types]
+field = "type"
+values = ["system", "debug"]
+```
+
+**Behavior:**
+- `include_types`: Only process events with matching type values
+- `exclude_types`: Skip events with matching type values
+- Envelope-aware: `^` prefix reads from wrapper, otherwise from payload
+
+**Test Cases:**
+- ✅ Include types filter - only matching types processed
+- ✅ Exclude types filter - matching types skipped
+- ✅ Envelope-aware type filtering with `^` prefix
+- ✅ Both include and exclude filters applied
+
+---
+
+## Skip-Type Line Patterns
+
+### Pattern 1: Heartbeat/Keep-Alive Signals
+
+**Structure:**
+```json
+{
+  "type": "heartbeat",
+  "timestamp": "ISO-8601",
+  "payload": {
+    "status": "ok",
+    "seq": 123
+  }
 }
 ```
 
----
+**Variants:**
+- `heartbeat`, `keepalive`, `ping`, `pong`
+- May include sequence numbers, timestamps, status codes
 
-## Catalog of Skip-Type Line Patterns
+**Routing Action:** `"skip"`
 
-### Pattern Categories
-
-#### 1. **Basic Noise/Keepalive Signals**
-```jsonl
-{"type": "heartbeat", "timestamp": "2026-03-16T12:00:00Z", "payload": {"status": "ok"}}
-{"type": "ping", "timestamp": "2026-03-16T12:00:01Z", "payload": {"seq": 1}}
-{"type": "keepalive", "timestamp": "2026-03-16T12:00:02Z", "payload": {"alive": true}}
-{"type": "status", "timestamp": "2026-03-16T12:00:03Z", "payload": {"running": true}}
-```
-
-**Characteristics:**
-- Small payload (< 100 bytes)
-- High frequency (every few seconds)
-- No conversation relevance
-- Used for connection health monitoring
-
-#### 2. **Session Metadata**
-```jsonl
-{"type": "session_start", "timestamp": "2026-03-16T12:00:00Z", "payload": {"cwd": "/path/to/project"}}
-{"type": "session_end", "timestamp": "2026-03-16T12:45:00Z", "payload": {"duration": 2700}}
-{"type": "session_info", "timestamp": "2026-03-16T12:00:00Z", "payload": {"model": "claude-sonnet-4"}}
-```
-
-**Characteristics:**
-- Metadata-only, no conversational content
-- Appears at session boundaries
-- Should be preserved in session metadata but not emitted as events
-
-#### 3. **Debug/Diagnostic Events**
-```jsonl
-{"type": "debug_log", "timestamp": "2026-03-16T12:00:00Z", "payload": {"level": "trace", "msg": "Processing..."}}
-{"type": "diagnostic", "timestamp": "2026-03-16T12:00:01Z", "payload": {"check": "memory", "status": "ok"}}
-{"type": "trace", "timestamp": "2026-03-16T12:00:02Z", "payload": {"span": "parse", "duration_ms": 5}}
-```
-
-**Characteristics:**
-- Internal debugging information
-- High-frequency noise
-- Not relevant to conversation history
-
-#### 4. **Metrics/Statistics**
-```jsonl
-{"type": "metric", "timestamp": "2026-03-16T12:00:00Z", "payload": {"name": "tokens_used", "value": 1234}}
-{"type": "counter", "timestamp": "2026-03-16T12:00:01Z", "payload": {"event": "request", "count": 42}}
-{"type": "gauge", "timestamp": "2026-03-16T12:00:02Z", "payload": {"metric": "memory_mb", "value": 256}}
-```
-
-**Characteristics:**
-- Numeric telemetry data
-- Used for monitoring/analytics
-- Not conversational content
-
-#### 5. **Internal Control Messages**
-```jsonl
-{"type": "control", "timestamp": "2026-03-16T12:00:00Z", "payload": {"command": "flush"}}
-{"type": "internal", "timestamp": "2026-03-16T12:00:01Z", "payload": {"signal": "checkpoint"}}
-{"type": "sync", "timestamp": "2026-03-16T12:00:02Z", "payload": {"request_id": "abc123"}}
-```
-
-**Characteristics:**
-- System control signals
-- Protocol coordination
-- Not user-facing content
+**Test Fixtures:**
+- `tests/fixtures/envelope/heartbeat.jsonl`
 
 ---
 
-## Current Test Coverage
+### Pattern 2: System/Debug Messages
 
-### ✅ Already Covered (tests/skip_routing_event_tests.rs)
-
-| Test Category | Tests | Coverage |
-|---------------|-------|----------|
-| **Basic Skip Functionality** | test_skip_routing_basic_heartbeat_produces_no_events<br>test_skip_routing_basic_ping_produces_no_events | ✅ Verified skip routing drops events |
-| **Event Emitter Bypass** | test_skip_routing_event_emitter_not_called | ✅ Confirmed emitter bypassed for skip types |
-| **Multiple Skip Types** | test_skip_routing_multiple_skip_types_all_empty | ✅ All skip types produce empty streams |
-| **Mixed Skip/Normal** | test_skip_routing_mixed_with_normal_events | ✅ Skip types don't affect normal events |
-| **Edge Cases** | test_skip_routing_edge_case_empty_payload<br>test_skip_routing_edge_case_nested_payload<br>test_skip_routing_edge_case_large_payload<br>test_skip_routing_edge_case_special_characters | ✅ Various payload structures |
-| **Unknown Types** | test_skip_routing_unknown_type_defaults_to_skip | ✅ Default to skip behavior |
-| **Case Sensitivity** | test_skip_routing_case_sensitivity | ✅ Exact matching behavior |
-| **Timestamp Variations** | test_skip_routing_timestamp_field_variations | ✅ Different timestamp formats |
-| **Consecutive Skips** | test_skip_routing_consecutive_skip_lines | ✅ Multiple skip lines in sequence |
-| **Meta vs Skip** | test_skip_routing_meta_type_vs_skip_type | ✅ Both produce zero events |
-| **File Integration** | test_skip_routing_file_parsing_integration | ✅ Full file parsing with skips |
-| **Tracker Consistency** | test_skip_routing_event_stream_tracker_consistency | ✅ Event stream tracking works |
-| **Return Values** | test_skip_routing_return_value_consistency | ✅ Ok(Vec::new()) returned |
-| **Memory** | test_skip_routing_no_memory_leak | ✅ 1000 iterations without leak |
-| **Fixture Validation** | test_skip_routing_fixture_validation | ✅ Fixture-based testing |
-
-### ❌ Missing Coverage
-
-| Category | Missing Tests | Risk |
-|----------|---------------|------|
-| **Complex Payload Structures** | Arrays in skip payloads<br>Null payload fields<br>Malformed JSON in skip lines | Medium |
-| **Timestamp Edge Cases** | Missing timestamp field<br>Invalid timestamp format<br>Unix timestamp 0<br>Future timestamps | Low |
-| **Type Field Variations** | Numeric type values<br>Boolean type values<br>Empty string type<br>Very long type strings | Medium |
-| **Routing Configuration** | Invalid routing values at parse time<br>Routing changes mid-file<br>Empty routing map<br>Conflicting routing rules | High |
-| **Performance/Volume** | Large file with 90% skip lines<br>Rapid consecutive skip lines<br>Skip lines at file boundaries | Medium |
-| **Error Recovery** | Skip routing after parse error<br>Envelope damage handling<br>Mixed valid/invalid skip lines | Low |
-| **Cross-Format** | Skip routing in compressed files (.jsonl.zst)<br>Skip routing with different line endings | Low |
-
----
-
-## Comprehensive Test Plan
-
-### Phase 1: Core Skip Behavior Validation
-
-#### Test Suite 1.1: Basic Skip Types
-- ✅ **COMPLETED**: `test_skip_routing_basic_heartbeat_produces_no_events`
-- ✅ **COMPLETED**: `test_skip_routing_basic_ping_produces_no_events`
-- ✅ **COMPLETED**: `test_skip_routing_multiple_skip_types_all_empty`
-
-#### Test Suite 1.2: Skip vs Meta vs Event
-- ✅ **COMPLETED**: `test_skip_routing_meta_type_vs_skip_type`
-- ✅ **COMPLETED**: `test_skip_routing_event_emitter_not_called`
-- ✅ **COMPLETED**: `test_skip_routing_mixed_with_normal_events`
-
-#### Test Suite 1.3: Edge Case Payloads
-- ✅ **COMPLETED**: `test_skip_routing_edge_case_empty_payload`
-- ✅ **COMPLETED**: `test_skip_routing_edge_case_nested_payload`
-- ✅ **COMPLETED**: `test_skip_routing_edge_case_large_payload`
-- ✅ **COMPLETED**: `test_skip_routing_edge_case_special_characters`
-- ❌ **MISSING**: Array payloads in skip lines
-- ❌ **MISSING**: Null payload fields
-- ❌ **MISSING**: Malformed JSON in skip lines
-
-### Phase 2: Type Field Variations
-
-#### Test Suite 2.1: Type Value Formats
-- ❌ **MISSING**: Numeric type values (e.g., `{"type": 123}`)
-- ❌ **MISSING**: Boolean type values (e.g., `{"type": true}`)
-- ❌ **MISSING**: Empty string type (e.g., `{"type": ""}`)
-- ❌ **MISSING**: Very long type strings (>100 chars)
-- ❌ **MISSING**: Unicode type values (e.g., `{"type": "heartbeat_中文"}`)
-
-#### Test Suite 2.2: Unknown Types
-- ✅ **COMPLETED**: `test_skip_routing_unknown_type_defaults_to_skip`
-- ❌ **MISSING**: Unknown type with complex payload
-- ❌ **MISSING**: Unknown type at file boundaries
-- ❌ **MISSING**: Multiple unknown types in sequence
-
-### Phase 3: Timestamp Variations
-
-#### Test Suite 3.1: Timestamp Field
-- ❌ **MISSING**: Missing timestamp field
-- ❌ **MISSING**: Null timestamp value
-- ❌ **MISSING**: Invalid timestamp format
-- ❌ **MISSING**: Unix timestamp 0
-- ❌ **MISSING**: Future timestamps
-
-#### Test Suite 3.2: Timestamp Edge Cases
-- ✅ **COMPLETED**: `test_skip_routing_timestamp_field_variations`
-- ❌ **MISSING**: Timestamp with microseconds
-- ❌ **MISSING**: Timestamp with timezone offsets
-- ❌ **MISSING**: Non-ISO8601 timestamp formats
-
-### Phase 4: Routing Configuration
-
-#### Test Suite 4.1: Invalid Routing Values
-- ❌ **MISSING**: Routing value "invalid" (not event/meta/skip)
-- ❌ **MISSING**: Routing value with typos ("skkip", "evnt")
-- ❌ **MISSING**: Empty routing value ("")
-- ❌ **MISSING**: Case variations ("SKIP", "Skip", "EVENT")
-
-#### Test Suite 4.2: Routing Map Edge Cases
-- ❌ **MISSING**: Empty routing map (no types defined)
-- ❌ **MISSING**: All types route to skip
-- ❌ **MISSING**: Conflicting routing (same type, different actions)
-- ❌ **MISSING**: Routing changes mid-file
-
-### Phase 5: Performance and Volume
-
-#### Test Suite 5.1: High-Frequency Skip Lines
-- ❌ **MISSING**: 10,000 consecutive skip lines
-- ❌ **MISSING**: File with 90% skip lines, 10% events
-- ❌ **MISSING**: Skip lines at 1ms intervals
-- ❌ **MISSING**: Skip lines interleaved with events (skip-event-skip-event...)
-
-#### Test Suite 5.2: Large Skip Payloads
-- ✅ **COMPLETED**: `test_skip_routing_edge_case_large_payload` (10KB)
-- ❌ **MISSING**: 1MB skip payload
-- ❌ **MISSING**: 10MB skip payload
-- ❌ **MISSING**: Nested skip payload 100 levels deep
-
-### Phase 6: Error Recovery
-
-#### Test Suite 6.1: Malformed Skip Lines
-- ❌ **MISSING**: Invalid JSON in skip line
-- ❌ **MISSING**: Missing required fields in skip line
-- ❌ **MISSING**: Extra fields in skip line
-- ❌ **MISSING**: Wrong data types for fields
-
-#### Test Suite 6.2: Mixed Valid/Invalid Lines
-- ❌ **MISSING**: Valid skip → invalid skip → valid skip
-- ❌ **MISSING**: Valid event → invalid line → valid event
-- ❌ **MISSING**: Skip line after parse error
-- ❌ **MISSING**: Parse error after skip line
-
-### Phase 7: Cross-Format Integration
-
-#### Test Suite 7.1: Compressed Files
-- ❌ **MISSING**: Skip routing in .jsonl.zst files
-- ❌ **MISSING**: Skip routing with mixed compression
-- ❌ **MISSING**: Skip lines at compression boundaries
-
-#### Test Suite 7.2: Line Ending Variations
-- ❌ **MISSING**: Skip lines with Windows line endings (CRLF)
-- ❌ **MISSING**: Skip lines with legacy Mac line endings (CR)
-- ❌ **MISSING**: Mixed line endings in same file
-
-### Phase 8: Integration Testing
-
-#### Test Suite 8.1: Full Session Parsing
-- ✅ **COMPLETED**: `test_skip_routing_file_parsing_integration`
-- ❌ **MISSING**: Session with only skip types
-- ❌ **MISSING**: Session with mixed skip/meta/event types
-- ❌ **MISSING**: Multiple sessions with different skip configurations
-
-#### Test Suite 8.2: State Management
-- ❌ **MISSING**: Skip routing in incremental scraping
-- ❌ **MISSING**: Skip routing with truncation limit
-- ❌ **MISSING**: Skip routing after file rotation
-
----
-
-## Coverage Checklist
-
-### By Component
-
-| Component | Tests | Pass | Coverage |
-|-----------|-------|------|----------|
-| **unwrap_envelope()** | 15 | 15 | 75% |
-| **Envelope::get_routing()** | 3 | 3 | 60% |
-| **Parse integration** | 8 | 8 | 50% |
-| **Error handling** | 4 | 4 | 40% |
-| **Performance** | 1 | 1 | 20% |
-
-### By Scenario Category
-
-| Category | Tests | Pass | Coverage |
-|----------|-------|------|----------|
-| **Basic skip** | 5 | 5 | ✅ 100% |
-| **Edge cases** | 6 | 6 | ⚠️ 60% |
-| **Type variations** | 2 | 2 | ❌ 25% |
-| **Timestamp** | 2 | 2 | ❌ 30% |
-| **Routing config** | 0 | 0 | ❌ 0% |
-| **Performance** | 1 | 1 | ❌ 20% |
-| **Error recovery** | 0 | 0 | ❌ 0% |
-| **Cross-format** | 0 | 0 | ❌ 0% |
-
-### Overall Coverage
-
-- **Total Tests**: 30
-- **Passing**: 30 (100%)
-- **Missing**: 42 tests
-- **Overall Coverage**: **42%** (30/72 scenarios)
-
----
-
-## Priority Implementation Order
-
-### High Priority (Complete Before Merge)
-
-1. **Invalid Routing Values** (Test Suite 4.1)
-   - Risk: Configuration errors could cause unexpected behavior
-   - Tests: 4
-   - Effort: 2 hours
-
-2. **Empty Routing Map** (Test Suite 4.2)
-   - Risk: Edge case could cause crashes
-   - Tests: 3
-   - Effort: 1 hour
-
-3. **Type Value Variations** (Test Suite 2.1)
-   - Risk: Real-world data may have unexpected formats
-   - Tests: 5
-   - Effort: 2 hours
-
-### Medium Priority (Complete Before Next Release)
-
-4. **Malformed Skip Lines** (Test Suite 6.1)
-   - Risk: Error recovery not validated
-   - Tests: 4
-   - Effort: 2 hours
-
-5. **High-Frequency Skip Lines** (Test Suite 5.1)
-   - Risk: Performance issues at scale
-   - Tests: 4
-   - Effort: 3 hours
-
-6. **Timestamp Edge Cases** (Test Suite 3.1)
-   - Risk: Missing fields could cause crashes
-   - Tests: 5
-   - Effort: 2 hours
-
-### Low Priority (Nice to Have)
-
-7. **Compressed Files** (Test Suite 7.1)
-   - Risk: Low (compression handled elsewhere)
-   - Tests: 3
-   - Effort: 2 hours
-
-8. **Line Ending Variations** (Test Suite 7.2)
-   - Risk: Low (standard libraries handle this)
-   - Tests: 3
-   - Effort: 1 hour
-
-9. **State Management** (Test Suite 8.2)
-   - Risk: Low (state tests exist elsewhere)
-   - Tests: 3
-   - Effort: 2 hours
-
----
-
-## Test Implementation Guidelines
-
-### Naming Convention
-
-```rust
-fn test_skip_routing_<category>_<scenario>_<expected_behavior>() {
-    // Example: test_skip_routing_type_field_numeric_value_skips
+**Structure:**
+```json
+{
+  "type": "system_log",
+  "timestamp": "ISO-8601",
+  "payload": {
+    "level": "debug",
+    "message": "connection pool stats"
+  }
 }
 ```
 
-### Test Structure
+**Variants:**
+- `system_log`, `debug`, `trace`, `verbose`
+- May include log levels, stack traces (non-error)
 
-```rust
-#[test]
-fn test_skip_routing_<specific_case>() {
-    // 1. Arrange: Set up routing configuration
-    let mut type_routing = HashMap::new();
-    type_routing.insert("<type>".to_string(), "skip".to_string());
-    
-    // 2. Act: Parse the test line
-    let plugin = create_skip_routing_test_plugin(type_routing);
-    let events = JsonlParser::parse_line(line, 1, &context, &plugin).unwrap();
-    
-    // 3. Assert: Verify expected behavior
-    assert!(events.is_empty(), "skip should produce no events");
+**Routing Action:** `"skip"`
+
+**Test Fixtures:**
+- `tests/fixtures/envelope/system-noise.jsonl`
+
+---
+
+### Pattern 3: Empty/Null Type Field
+
+**Structure:**
+```json
+{
+  "type": null,
+  "timestamp": "ISO-8601",
+  "payload": {"role": "user", "content": "hello"}
 }
 ```
 
-### Fixture Creation
+**Variants:**
+- `type` field missing entirely
+- `type` field is `null`
+- `type` field is empty string `""`
 
-For complex scenarios, create fixture files:
+**Routing Action:** Implicit skip (unknown type defaults to skip)
 
-```jsonl
-// tests/fixtures/envelope/skip-routing-complex.jsonl
-{"type": "skip", "timestamp": "2026-03-16T12:00:00Z", "payload": {"complex": {"nested": "data"}}}
-{"type": "event", "timestamp": "2026-03-16T12:00:01Z", "payload": {"role": "user", "content": "Hello"}}
-```
+**Test Cases:**
+- ✅ Null type field defaults to skip
+- ✅ Missing type field defaults to skip
+- ✅ Empty string type defaults to skip
 
-### Performance Testing
+---
 
-```rust
-#[test]
-fn test_skip_routing_performance_high_frequency() {
-    let start = std::time::Instant::now();
-    
-    for i in 0..10_000 {
-        // Process skip line
-    }
-    
-    let elapsed = start.elapsed();
-    assert!(elapsed < std::time::Duration::from_secs(1), 
-            "10k skip lines should process in < 1s");
+### Pattern 4: Wrong Data Type for Type Field
+
+**Structure:**
+```json
+{
+  "type": 123,
+  "timestamp": "ISO-8601",
+  "payload": {"role": "user", "content": "hello"}
 }
 ```
 
----
+**Variants:**
+- `type` field is a number
+- `type` field is a boolean
+- `type` field is an array or object
 
-## Success Criteria
+**Routing Action:** Implicit skip (converted to string, then unknown)
 
-### Coverage Targets
-
-- **Minimum**: 70% overall coverage (51/72 scenarios)
-- **Target**: 85% overall coverage (61/72 scenarios)
-- **Ideal**: 95% overall coverage (68/72 scenarios)
-
-### Quality Gates
-
-- ✅ All new tests must pass
-- ✅ No regression in existing tests
-- ✅ Memory usage stable under high-frequency skip loads
-- ✅ Performance: 10,000 skip lines < 1 second
-- ✅ Zero crashes on malformed input
-
-### Validation Checklist
-
-- [ ] All high-priority tests implemented
-- [ ] All medium-priority tests implemented
-- [ ] Performance benchmarks met
-- [ ] Error recovery validated
-- [ ] Documentation updated
-- [ ] Integration tests pass
+**Test Cases:**
+- ✅ Number type field converted to string, then unknown
+- ✅ Boolean type field converted to string, then unknown
+- ✅ Array type field converted to string, then unknown
 
 ---
 
-## Appendix: Real-World Skip Patterns
+### Pattern 5: Missing or Invalid Payload Field
 
-### Codex Rollout Envelope
-
-```jsonl
-{"type": "session_meta", "timestamp": "...", "payload": {"thread_id": "...", "cwd": "..."}}
-{"type": "response_item", "timestamp": "...", "payload": {"role": "user", "content": "..."}}
-{"type": "turn_context", "timestamp": "...", "payload": {"model": "gpt-4"}}
-{"type": "event_msg", "timestamp": "...", "payload": {"msg": "debug info"}}
+**Structure:**
+```json
+{
+  "type": "message",
+  "timestamp": "ISO-8601",
+  "payload": "this is a string, not an object"
+}
 ```
 
-**Routing**: `session_meta` → `meta`, `turn_context` → `meta`, `event_msg` → `skip`, `response_item` → `event`
+**Variants:**
+- `payload_field` missing entirely
+- `payload_field` is `null`
+- `payload_field` is a string, number, boolean, or array
 
-### Claude Code Subagent Logs
+**Routing Action:** Skip with warning (specific message based on what was found)
 
-```jsonl
-{"type": "session_start", "timestamp": "...", "payload": {"parent_session": "..."}}
-{"type": "progress", "timestamp": "...", "payload": {"stage": "processing"}}
-{"type": "message", "timestamp": "...", "payload": {"role": "user", "content": "..."}}
-```
+**Warning Messages:**
+- `"Envelope payload_field 'payload' missing for type 'message', skipping line"`
+- `"Envelope payload_field 'payload' exists for type 'message' but is not an object (found: string '...'), skipping line"`
 
-**Routing**: `session_start` → `meta`, `progress` → `skip`, `message` → `event`
-
-### Custom Agent Logs
-
-```jsonl
-{"type": "heartbeat", "timestamp": "...", "payload": {"status": "ok"}}
-{"type": "metric", "timestamp": "...", "payload": {"name": "tokens", "value": 123}}
-{"type": "user_message", "timestamp": "...", "payload": {"text": "Hello"}}
-```
-
-**Routing**: `heartbeat` → `skip`, `metric` → `skip`, `user_message` → `event`
+**Test Cases:**
+- ✅ Missing payload field logs appropriate warning
+- ✅ String payload logs appropriate warning with truncation
+- ✅ Null payload logs appropriate warning
+- ✅ Number/bool/array payload logs appropriate warning
 
 ---
 
-## Changelog
+### Pattern 6: Malformed JSON
 
-### 2026-08-15
-- Initial comprehensive test plan created
-- Cataloged 72 test scenarios across 8 test suites
-- Identified 30 existing tests (42% coverage)
-- Prioritized 42 missing tests
-- Added real-world skip pattern examples
+**Structure:**
+```jsonl
+{"type": "message", "timestamp": "2026-07-04T10:00:00Z", "payload": {"role": "user"}}  // Missing comma
+{"type": "message", "timestamp": "2026-07-04T10:00:00Z", "payload": {"role": "user", "content": "hello"}}
+```
+
+**Variants:**
+- Missing commas, brackets, quotes
+- Trailing commas
+- Unescaped characters in strings
+
+**Routing Action:** Parse error (skip-and-log strategy)
+
+**Test Cases:**
+- ✅ Malformed JSON returns parse error with line number
+- ✅ Next valid line after malformed is processed
+- ✅ Multiple malformed lines in sequence
 
 ---
 
-**Status**: 📋 Ready for Implementation
-**Owner**: AgentScribe Test Team
-**Review**: Next sprint
+## Edge Cases
+
+### Edge Case 1: Empty Type Field Value
+
+**Scenario:** Type field exists but is empty string `""`
+
+**Expected Behavior:**
+- Empty string is used as type value
+- `get_routing("")` returns `"skip"` (unknown type)
+- Warning logged: `"Unknown envelope type value, routing to 'skip'"`
+
+**Test:** `test_empty_type_field_skips`
+
+---
+
+### Edge Case 2: Missing Type Field
+
+**Scenario:** Type field not present in JSON object
+
+**Expected Behavior:**
+- `extract_string()` returns `None`
+- Defaults to empty string `""`
+- Handled as empty type field case above
+
+**Test:** `test_missing_type_field_skips`
+
+---
+
+### Edge Case 3: Multiple Consecutive Skip Lines
+
+**Scenario:** File contains 100+ consecutive skip-type lines
+
+**Expected Behavior:**
+- All skip lines return empty Vec
+- No events produced
+- No memory accumulation
+- Processing completes without errors
+
+**Test:** `test_many_consecutive_skip_lines`
+
+---
+
+### Edge Case 4: All Lines Are Skip-Type
+
+**Scenario:** Entire file contains only skip-type lines
+
+**Expected Behavior:**
+- Session is created with zero events
+- Session file is not written (empty sessions are skipped)
+- No error raised
+
+**Test:** `test_all_lines_are_skip_type`
+
+---
+
+### Edge Case 5: Mixed Routing in Single File
+
+**Scenario:** File contains interleaved skip, meta, and event lines
+
+**Example:**
+```jsonl
+{"type": "heartbeat", ...}  // skip
+{"type": "message", ...}  // event
+{"type": "session_start", ...}  // meta
+{"type": "ping", ...}  // skip
+{"type": "message", ...}  // event
+```
+
+**Expected Behavior:**
+- Only event-type lines produce events
+- Skip and meta lines return empty Vec
+- Events maintain chronological order
+
+**Test:** `test_mixed_skip_meta_event_routing`
+
+---
+
+### Edge Case 6: Type Routing Value Validation
+
+**Scenario:** TOML configuration has invalid routing value (not `"event"`, `"meta"`, or `"skip"`)
+
+**Example:**
+```toml
+[source.envelope.type_routing]
+"message" = "invalid_routing_value"
+```
+
+**Expected Behavior:**
+- Plugin validation fails at load time
+- Error message: `"Invalid envelope routing action 'invalid_routing_value' for type 'message': must be one of 'event', 'meta', 'skip'"`
+- Scraper does not start
+
+**Test:** `test_invalid_routing_value_fails_validation`
+
+---
+
+### Edge Case 7: Envelope Field Extraction with `^` Prefix
+
+**Scenario:** Parser field config uses `^` prefix to read from envelope instead of payload
+
+**Example:**
+```toml
+[parser]
+timestamp = "^timestamp"  # Read from envelope, not payload
+role = "message.role"     # Read from payload
+```
+
+**Expected Behavior:**
+- `^timestamp` reads from envelope_json
+- `message.role` reads from payload_json
+- Correct values extracted from each source
+
+**Test:** `test_envelope_field_extraction_with_caret_prefix`
+
+---
+
+### Edge Case 8: Payload Field Shadowing
+
+**Scenario:** Same field name exists in both envelope and payload with `^` prefix
+
+**Example:**
+```json
+{
+  "timestamp": "2026-07-04T10:00:00Z",
+  "type": "message",
+  "payload": {
+    "timestamp": "2026-07-04T10:00:05Z",
+    "role": "user",
+    "content": "hello"
+  }
+}
+```
+
+**Config:**
+```toml
+[parser]
+timestamp = "^timestamp"  # Should get envelope value: 10:00:00Z
+```
+
+**Expected Behavior:**
+- `^timestamp` returns envelope value (`10:00:00Z`)
+- Regular `timestamp` would return payload value (`10:00:05Z`)
+- `^` prefix always wins for envelope fields
+
+**Test:** `test_envelope_field_shadows_payload`
+
+---
+
+### Edge Case 9: Skip Routing Performance
+
+**Scenario:** File with 10,000 lines, 50% are skip-type
+
+**Expected Behavior:**
+- Processing completes in reasonable time (<5 seconds)
+- Memory use remains bounded
+- No performance degradation from skip line density
+
+**Test:** `test_skip_routing_performance`
+
+---
+
+### Edge Case 10: Unicode/Non-ASCII Type Values
+
+**Scenario:** Type field contains non-ASCII characters
+
+**Examples:**
+```json
+{"type": "状态", "timestamp": "...", "payload": {...}}
+{"type": "статус", "timestamp": "...", "payload": {...}}
+{"type": "🔄", "timestamp": "...", "payload": {...}}
+```
+
+**Expected Behavior:**
+- Type values are compared as strings (UTF-8)
+- Unicode type values route correctly
+- Unknown Unicode types default to skip with warning
+
+**Test:** `test_unicode_type_values`
+
+---
+
+## Test Coverage Checklist
+
+### Core Functionality
+
+- [x] Basic skip routing returns empty Vec
+- [x] Unknown types default to skip with warning
+- [x] Meta routing returns empty Vec (no warning)
+- [x] Event routing produces events
+- [x] Multiple consecutive skip lines
+- [x] Skip routing bypasses event construction
+- [x] Mixed skip/meta/event routing
+
+### Error Handling
+
+- [x] Invalid JSON returns parse error with line number
+- [x] Malformed timestamp returns parse error
+- [x] Missing required field returns parse error
+- [x] Error includes file path in message
+- [x] Processing continues after error
+- [x] Companion index skips invalid lines silently
+
+### Type Field Variations
+
+- [x] Null type field defaults to skip
+- [x] Missing type field defaults to skip
+- [x] Empty string type defaults to skip
+- [x] Number type field converted to string
+- [x] Boolean type field converted to string
+- [x] Array/object type field converted to string
+- [x] Unicode type values handled correctly
+
+### Payload Field Variations
+
+- [x] Missing payload field logs warning
+- [x] String payload logs warning with truncation
+- [x] Null payload logs warning
+- [x] Number/bool/array payload logs warning
+- [x] Valid object payload produces events
+
+### Envelope Field Extraction
+
+- [x] `^` prefix reads from envelope
+- [x] Without `^` reads from payload
+- [x] Envelope field shadows payload field
+- [x] Mixed envelope/priority field extraction
+
+### Configuration Validation
+
+- [x] Invalid routing value fails validation
+- [x] Missing type_field configuration
+- [x] Missing payload_field configuration
+- [x] Empty type_routing map (all unknown)
+
+### Integration Tests
+
+- [x] Complete fixture with mixed routing types
+- [x] Skip-only fixture produces no events
+- [x] Meta-only fixture produces no events
+- [x] Event-only fixture produces all events
+- [x] Large file with skip routing (performance)
+
+### Edge Cases
+
+- [ ] All lines are skip-type (no session created)
+- [ ] 100+ consecutive skip lines (memory test)
+- [ ] Skip routing with envelope field extraction
+- [ ] Unknown type surrounded by known types
+- [ ] Multiple unknown types in sequence
+- [ ] Type-based filtering (include/exclude)
+
+---
+
+## Test Fixtures
+
+### Fixture 1: Mixed Routing Types
+
+**File:** `tests/fixtures/envelope_test.jsonl`
+
+**Content:**
+```jsonl
+{"type": "session_start", "timestamp": "2026-07-04T10:00:00Z", "payload": {"session_id": "abc123"}}
+{"type": "heartbeat", "timestamp": "2026-07-04T10:00:05Z", "payload": {"status": "ok"}}
+{"type": "message", "timestamp": "2026-07-04T10:00:10Z", "payload": {"role": "user", "content": "hello"}}
+{"type": "ping", "timestamp": "2026-07-04T10:00:15Z", "payload": {"seq": 1}}
+{"type": "message", "timestamp": "2026-07-04T10:00:20Z", "payload": {"role": "assistant", "content": "hi there"}}
+{"type": "unknown_type", "timestamp": "2026-07-04T10:00:25Z", "payload": {"data": "..."}}
+```
+
+**Config:** `tests/fixtures/envelope_test.toml`
+
+**Expected Results:**
+- 2 events produced (message types)
+- 4 lines skipped (session_start, heartbeat, ping, unknown_type)
+- 1 warning logged (unknown_type)
+
+---
+
+### Fixture 2: Skip-Only File
+
+**File:** `tests/fixtures/envelope/skip-only.jsonl`
+
+**Content:**
+```jsonl
+{"type": "heartbeat", "timestamp": "2026-07-04T10:00:00Z", "payload": {"status": "ok"}}
+{"type": "ping", "timestamp": "2026-07-04T10:00:05Z", "payload": {"seq": 1}}
+{"type": "system", "timestamp": "2026-07-04T10:00:10Z", "payload": {"level": "debug"}}
+```
+
+**Expected Results:**
+- 0 events produced
+- 3 lines skipped
+- No warnings (all are known skip types)
+
+---
+
+### Fixture 3: Invalid Payloads
+
+**File:** `tests/fixtures/envelope/invalid-payloads.jsonl`
+
+**Content:**
+```jsonl
+{"type": "message", "timestamp": "2026-07-04T10:00:00Z", "payload": null}
+{"type": "message", "timestamp": "2026-07-04T10:00:05Z", "payload": "string payload"}
+{"type": "message", "timestamp": "2026-07-04T10:00:10Z", "payload": 123}
+{"type": "message", "timestamp": "2026-07-04T10:00:15Z", "payload": ["array"]}
+{"type": "message", "timestamp": "2026-07-04T10:00:20Z", "payload": {"role": "user", "content": "valid"}}
+```
+
+**Expected Results:**
+- 1 event produced (last line only)
+- 4 warnings logged (specific to each payload type)
+- All warnings include type value ("message")
+
+---
+
+## Implementation Notes
+
+### Key Functions
+
+1. **`unwrap_envelope()`** (`src/parser/jsonl.rs:44-129`)
+   - Extracts payload based on routing action
+   - Returns `(Value, Option<Value>)` tuple
+   - Handles skip/meta/event routing
+
+2. **`parse_line()`** (`src/parser/jsonl.rs:150-260`)
+   - Main parser entry point
+   - Applies envelope routing
+   - Returns `Result<Vec<Event>>`
+
+3. **`get_routing()`** (`src/plugin.rs:162-180`)
+   - Looks up routing action for type value
+   - Returns `"event"`, `"meta"`, `"skip"`, or defaults to `"skip"`
+   - Logs warning for unknown types
+
+### Performance Considerations
+
+- Skip routing happens **before** expensive event construction
+- Early return (`Ok(Vec::new())`) avoids unnecessary processing
+- No memory allocation for skipped lines
+- Suitable for high-frequency noise (heartbeats, pings)
+
+### Future Enhancements
+
+1. **Meta Accumulation:** Currently meta lines return empty Vec. Future: accumulate session metadata (project, model, version) for context.
+
+2. **Skip Metrics:** Track skip counts per type for analytics (e.g., "1000 heartbeat lines skipped").
+
+3. **Conditional Skip:** Skip based on content patterns (e.g., skip heartbeat if no payload changes).
+
+---
+
+## Related Documentation
+
+- **Plugin Schema:** `plugins/BUILDING_PLUGINS.md` - Envelope configuration reference
+- **CLI Reference:** `cli-reference.md` - Plugin validation commands
+- **Implementation Plan:** `docs/plan.md` - Phase 9 envelope unwrapping design
+
+---
+
+## Summary
+
+Skip routing is a critical performance and noise-reduction feature in AgentScribe's JSONL parser. By filtering out non-conversational data (heartbeats, pings, system noise) before expensive event construction, the system can efficiently process mixed-content log files from real-world coding agents.
+
+The test plan above covers:
+- **7 skip routing scenarios** (explicit, implicit, meta, error handling, etc.)
+- **6 skip-type line patterns** (heartbeat, system noise, empty types, etc.)
+- **10 edge cases** (empty types, missing fields, Unicode, performance, etc.)
+- **25+ test coverage items** with status indicators
+
+Existing tests in `src/parser/jsonl.rs` (lines 1146+) already cover most core scenarios. This plan documents the gaps and ensures comprehensive coverage for future enhancements.
