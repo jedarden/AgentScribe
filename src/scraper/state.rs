@@ -396,7 +396,9 @@ impl JsonFileStateStore {
         };
 
         // Atomic write: write to temp file, then rename
-        let temp_file = self.state_file.with_extension("json.tmp");
+        // Use process ID in temp file name to avoid conflicts between concurrent saves
+        let pid = std::process::id();
+        let temp_file = self.state_file.with_extension(format!("json.tmp-{}", pid));
         {
             let file = OpenOptions::new()
                 .write(true)
