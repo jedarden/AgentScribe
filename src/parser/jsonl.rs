@@ -1052,10 +1052,9 @@ mod tests {
     /// Non-envelope plugin helper for envelope_test.jsonl fixture
     ///
     /// Returns a Plugin with `source.envelope = None` and parser field mappings
-    /// pointing to wrapper-level fields (timestamp, role, content) as they appear
-    /// at the top level of each JSONL line in envelope_test.jsonl.
+    /// pointing to nested fields within `payload` (payload.role, payload.content, etc.)
+    /// as they appear in the fixture. The timestamp field is at the top level.
     /// Used to test parsing behavior without envelope extraction configured.
-    #[allow(dead_code)]
     fn create_non_envelope_test_plugin() -> Plugin {
         Plugin {
             plugin: PluginMeta {
@@ -1076,9 +1075,9 @@ mod tests {
             },
             parser: Parser {
                 timestamp: Some("timestamp".to_string()),
-                role: Some("role".to_string()),
-                content: Some("content".to_string()),
-                tool_name: Some("tool_name".to_string()),
+                role: Some("payload.role".to_string()),
+                content: Some("payload.content".to_string()),
+                tool_name: Some("payload.tool_name".to_string()),
                 ..Default::default()
             },
             metadata: None,
@@ -1709,6 +1708,84 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_skip_only_fixture_routing_integration() {
+        // Integration test: verify skip-type lines (heartbeat, ping, unlisted) produce zero events
+        // when routed through the envelope parser using JsonlParser::parse_line.
+        //
+        // Uses the skip-only.jsonl fixture from child bead bf-14jnv, which contains:
+        //   - 2x heartbeat lines (explicit skip routing)
+        //   - 1x ping line (explicit skip routing)
+        //   - 1x unlisted_type line (not in routing map, defaults to skip)
+        //
+        // This test validates the complete envelope routing pipeline for skip-type lines.
+
+        let fixture_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/envelope/skip-only.jsonl");
+
+        // Create plugin with envelope config routing heartbeat/ping to 'skip'
+        let plugin = create_skip_meta_unknown_plugin();
+        let context = ParseContext::new(
+            "skip-test-session".to_string(),
+            "skip-test".to_string(),
+            fixture_path.display().to_string(),
+        );
+
+        // Read fixture file and parse each line through JsonlParser::parse_line
+        let fixture_content =
+            std::fs::read_to_string(&fixture_path).expect("Failed to read skip-only fixture file");
+
+        let mut line_number = 0;
+        for line in fixture_content.lines() {
+            line_number += 1;
+
+            // Skip empty lines
+            if line.trim().is_empty() {
+                continue;
+            }
+
+            // Parse each line through JsonlParser::parse_line
+            let result = JsonlParser::parse_line(line, line_number, &context, &plugin);
+
+            // Assert that parsing succeeds (no errors)
+            assert!(
+                result.is_ok(),
+                "Line {} should parse successfully: {}",
+                line_number,
+                line
+            );
+
+            // Assert that every line returns an empty Vec (zero events)
+            let events = result.unwrap();
+            assert!(
+                events.is_empty(),
+                "Line {} (type: {}) should produce zero events, got {} events. Line: {}",
+                line_number,
+                extract_type_from_line(line),
+                events.len(),
+                line
+            );
+        }
+
+        // Verify we tested all 4 expected lines
+        assert_eq!(
+            line_number, 4,
+            "Should have tested all 4 lines from skip-only.jsonl"
+        );
+    }
+
+    /// Helper to extract the type field from a fixture line for error messages
+    fn extract_type_from_line(line: &str) -> String {
+        if let Ok(json) = serde_json::from_str::<Value>(line) {
+            json.get("type")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown")
+                .to_string()
+        } else {
+            "<invalid json>".to_string()
+        }
+    }
+
     // -- unwrap_envelope unit tests --
 
     fn create_test_envelope() -> crate::plugin::Envelope {
@@ -2197,6 +2274,42 @@ mod tests {
         assert!(
             events.is_empty(),
             "Non-object payload should skip line and return empty events"
+        );
+    }
+
+    #[test]
+    fn test_non_envelope_plugin_parses_all_fixture_lines_as_events() {
+        // Test that a non-envelope plugin parses all lines in envelope_test.jsonl as events.
+        //
+        // Without envelope processing, there is no type-based routing to filter out lines.
+        // Every line in the fixture should produce an event, including skip-type
+        // (heartbeat, ping), meta-type (session_start), and unknown-type lines.
+        //
+        // The fixture has 8 lines:
+        //   - Line 1: session_start (meta-type in envelope mode, but parsed as event here)
+        //   - Line 2: heartbeat (skip-type in envelope mode, but parsed as event here)
+        //   - Line 3: ping (skip-type in envelope mode, but parsed as event here)
+        //   - Lines 4-7: message events (event-type in both modes)
+        //   - Line 8: unknown_event (unknown-type in envelope mode, but parsed as event here)
+        //
+        // Expected behavior: 8 lines -> 8 events (no filtering without envelope config)
+
+        let fixture_path =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/envelope_test.jsonl");
+
+        let plugin = create_non_envelope_test_plugin();
+        let all_events = JsonlParser.parse(&fixture_path, &plugin).unwrap();
+
+        // Verify fixture line count is 8 (robust check)
+        let line_count = BufReader::new(std::fs::File::open(&fixture_path).unwrap())
+            .lines()
+            .count();
+
+        assert_eq!(line_count, 8, "Fixture should have 8 lines");
+        assert_eq!(
+            all_events.len(),
+            8,
+            "Non-envelope plugin should produce one event per line (8 lines -> 8 events), including skip-type, meta-type, and unknown-type lines"
         );
     }
 
