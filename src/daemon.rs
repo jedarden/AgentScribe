@@ -1762,8 +1762,6 @@ mod tests {
 
     #[test]
     fn test_failed_watch_backoff_prevents_infinite_logging() {
-        use std::thread;
-
         let dir = tempfile::tempdir().unwrap();
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel::<notify::Event>();
 
@@ -1852,7 +1850,7 @@ mod tests {
         };
 
         // Successfully watch a directory
-        wl.try_watch(&dir.path());
+        wl.try_watch(dir.path());
 
         // It should not be in failed_dirs
         assert!(!wl.failed_dirs.contains_key(dir.path()));
@@ -1894,7 +1892,7 @@ mod tests {
         assert!(!wl.failed_dirs.contains_key(dir.path()));
 
         // Watch should succeed (test directory exists and is watchable)
-        wl.try_watch(&dir.path());
+        wl.try_watch(dir.path());
 
         // Directory should be watched, not failed
         assert!(wl.watched_dirs.contains(dir.path()));

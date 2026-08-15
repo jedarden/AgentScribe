@@ -62,6 +62,7 @@ pub struct Scraper {
     index_write_depth: usize,
     companion_cache: CompanionCache,
     /// Config change tracker for correlating file modifications with sessions
+    #[allow(dead_code)]
     config_tracker: ConfigChangeTracker,
 }
 
@@ -279,11 +280,7 @@ impl Scraper {
                     let normalized_pattern = if !exclude_expanded.starts_with('/')
                         && !exclude_expanded.starts_with("**")
                     {
-                        let stripped = if exclude_expanded.starts_with("./") {
-                            &exclude_expanded[2..]
-                        } else {
-                            &exclude_expanded
-                        };
+                        let stripped = exclude_expanded.strip_prefix("./").unwrap_or(&exclude_expanded);
                         format!("**/{}", stripped)
                     } else {
                         exclude_expanded
@@ -1722,8 +1719,6 @@ mod tests {
     /// Debug test to verify pattern normalization behavior
     #[test]
     fn test_exclude_pattern_normalization_debug() {
-        use crate::plugin::{Parser, PluginMeta, SessionDetection, SessionIdSource, Source};
-
         let temp = tempfile::tempdir().unwrap();
         let data_dir = temp.path().join(".agentscribe");
         std::fs::create_dir_all(data_dir.join("sessions")).unwrap();
@@ -1743,11 +1738,7 @@ mod tests {
         // This is the exact logic from discover_files
         let normalized_pattern =
             if !exclude_expanded.starts_with('/') && !exclude_expanded.starts_with("**") {
-                let stripped = if exclude_expanded.starts_with("./") {
-                    &exclude_expanded[2..]
-                } else {
-                    &exclude_expanded
-                };
+                let stripped = exclude_expanded.strip_prefix("./").unwrap_or(&exclude_expanded);
                 format!("**/{}", stripped)
             } else {
                 exclude_expanded
@@ -1867,47 +1858,43 @@ mod tests {
         // Should exclude both subagent files
         assert!(
             !file_set.contains(
-                &logs_dir
+                logs_dir
                     .join("project-a/subagents/agent-1.jsonl")
                     .to_str()
                     .unwrap()
-                    .to_string()
             ),
             "project-a/subagents/agent-1.jsonl should be excluded by */subagents/*"
         );
         assert!(
             !file_set.contains(
-                &logs_dir
+                logs_dir
                     .join("project-b/subagents/nested/agent-2.jsonl")
                     .to_str()
                     .unwrap()
-                    .to_string()
             ),
             "project-b/subagents/nested/agent-2.jsonl should be excluded by */subagents/*"
         );
 
         // Should include non-subagent files
         assert!(
-            file_set.contains(&logs_dir.join("root.jsonl").to_str().unwrap().to_string()),
+            file_set.contains(logs_dir.join("root.jsonl").to_str().unwrap()),
             "root.jsonl should be included"
         );
         assert!(
             file_set.contains(
-                &logs_dir
+                logs_dir
                     .join("project-a/session.jsonl")
                     .to_str()
                     .unwrap()
-                    .to_string()
             ),
             "project-a/session.jsonl should be included"
         );
         assert!(
             file_set.contains(
-                &logs_dir
+                logs_dir
                     .join("vendor/node_modules/package.json")
                     .to_str()
                     .unwrap()
-                    .to_string()
             ),
             "vendor/node_modules/package.json should be included (not excluded by */subagents/*)"
         );
@@ -1952,11 +1939,10 @@ mod tests {
         // Should exclude node_modules
         assert!(
             !file_set2.contains(
-                &logs_dir
+                logs_dir
                     .join("vendor/node_modules/package.json")
                     .to_str()
                     .unwrap()
-                    .to_string()
             ),
             "vendor/node_modules/package.json should be excluded by **/node_modules/**"
         );
@@ -1964,11 +1950,10 @@ mod tests {
         // Should include subagent files (not excluded by this pattern)
         assert!(
             file_set2.contains(
-                &logs_dir
+                logs_dir
                     .join("project-a/subagents/agent-1.jsonl")
                     .to_str()
                     .unwrap()
-                    .to_string()
             ),
             "project-a/subagents/agent-1.jsonl should be included with **/node_modules/** exclude"
         );
@@ -2009,37 +1994,34 @@ mod tests {
         // Should exclude both subagents and node_modules
         assert!(
             !file_set3.contains(
-                &logs_dir
+                logs_dir
                     .join("project-a/subagents/agent-1.jsonl")
                     .to_str()
                     .unwrap()
-                    .to_string()
             ),
             "should exclude subagents"
         );
         assert!(
             !file_set3.contains(
-                &logs_dir
+                logs_dir
                     .join("vendor/node_modules/package.json")
                     .to_str()
                     .unwrap()
-                    .to_string()
             ),
             "should exclude node_modules"
         );
 
         // Should include other files
         assert!(
-            file_set3.contains(&logs_dir.join("root.jsonl").to_str().unwrap().to_string()),
+            file_set3.contains(logs_dir.join("root.jsonl").to_str().unwrap()),
             "root.jsonl should be included"
         );
         assert!(
             file_set3.contains(
-                &logs_dir
+                logs_dir
                     .join("vendor/otherlib/lib.json")
                     .to_str()
                     .unwrap()
-                    .to_string()
             ),
             "vendor/otherlib/lib.json should be included"
         );
