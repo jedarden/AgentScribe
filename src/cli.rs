@@ -82,18 +82,25 @@ enum Commands {
     ///
     /// # Search CLI Options Structure
     ///
-    /// **CLI Definition Location:** This enum variant (lines 82-193) in `/home/coding/AgentScribe/src/cli.rs`
+    /// **CLI Definition Location:** This enum variant (lines 81-208) in `/home/coding/AgentScribe/src/cli.rs`
     ///
-    /// **Internal Options Struct:** `SearchOptions` in `/home/coding/AgentScribe/src/search.rs` (lines 192-226)
+    /// **Internal Options Struct:** `SearchOptions` struct in `/home/coding/AgentScribe/src/search.rs` (lines 192-226)
     ///
     /// **Pattern Used:** clap derive macros with struct fields:
-    /// - `#[derive(Subcommand, Debug)]` on the Commands enum
-    /// - Individual flags use `#[arg(short, long)]`, `#[arg(long)]`, etc.
-    /// - Repeatable flags use `Vec<Type>` (e.g., `tag: Vec<String>`)
+    /// - `#[derive(Subcommand, Debug)]` on the Commands enum (line 26)
+    /// - Individual flags use `#[arg(short, long)]`, `#[arg(long)]`, `#[arg(short = 't', long)]`, etc.
+    /// - Repeatable flags use `Vec<Type>` (e.g., `tag: Vec<String>`, `agent: Vec<String>`)
+    /// - Default values use `#[arg(long, default_value = "10")]` or `#[arg(long, default_value_t = true)]`
     ///
-    /// **Tag Filter Implementation:** The `--tag` flag is already implemented below (lines 126-128)
+    /// **Tag Filter Implementation:** The `--tag` flag is already implemented below (lines 141-143)
     /// and mapped to the `tag: Vec<String>` field in SearchOptions (line 204 in search.rs).
     /// The field supports repeatable tags with AND logic for filtering sessions by tag.
+    ///
+    /// **To add a new flag:**
+    /// 1. Add the field here with appropriate clap attributes (e.g., `#[arg(long)] flag_name: Option<String>`)
+    /// 2. Add the corresponding field to `SearchOptions` in src/search.rs
+    /// 3. Map the CLI value to internal opts in `run_search()` function (lines 1216-1320)
+    /// 4. Implement the filter logic in `build_query()` or search functions in src/search.rs
     Search {
         /// Search query string (Tantivy query syntax)
         query: Option<String>,
