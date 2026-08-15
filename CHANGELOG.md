@@ -38,5 +38,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Pre-built binaries for Linux x86_64/aarch64 and macOS x86_64/aarch64
 - Install script (`install.sh`) with automatic platform detection
 
-[Unreleased]: https://github.com/coding/AgentScribe/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/coding/AgentScribe/releases/tag/v0.1.0
+[Unreleased]: https://github.com/jedarden/AgentScribe/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/jedarden/AgentScribe/releases/tag/v0.1.0
