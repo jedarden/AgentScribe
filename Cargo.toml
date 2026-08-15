@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 description = "Archive, search, and learn from coding agent conversations"
 license = "MIT"
-repository = "https://github.com/coding/AgentScribe"
+repository = "https://github.com/jedarden/AgentScribe"
 authors = ["coding"]
 
 [dependencies]
