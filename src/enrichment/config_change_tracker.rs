@@ -65,6 +65,9 @@ pub struct ConfigChangeRecord {
     pub correlated_sessions: Vec<CorrelatedSession>,
 }
 
+/// Type alias for ConfigChangeRecord to match task specification.
+pub type ConfigChange = ConfigChangeRecord;
+
 /// A session correlated with a config change.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CorrelatedSession {
@@ -77,6 +80,9 @@ pub struct CorrelatedSession {
     /// When the session ended
     pub ended_at: DateTime<Utc>,
 }
+
+/// Type alias for CorrelatedSession to match task specification.
+pub type ConfigChangeSession = CorrelatedSession;
 
 /// Tracker for correlating config file changes with sessions.
 pub struct ConfigChangeTracker {
