@@ -2072,6 +2072,77 @@ mod tests {
         }
     }
 
+    #[test]
+    fn test_non_envelope_parses_all_fixture_lines_as_events() {
+        // Verify that without envelope config, type-based routing is completely bypassed.
+        // Every line in envelope_test.jsonl should produce at least one event, regardless
+        // of the `type` field value (session_start, heartbeat, ping, message, unknown_event).
+        //
+        // The fixture has 9 lines total. When parsed with a non-envelope plugin,
+        // all 9 lines should produce events (no skip/meta routing applies).
+
+        let fixture_path =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/envelope_test.jsonl");
+
+        let plugin = create_non_envelope_test_plugin();
+        let context = ParseContext::new(
+            "envelope-test".to_string(),
+            "envelope-test".to_string(),
+            fixture_path.display().to_string(),
+        );
+
+        // Read fixture and count lines
+        let fixture_content =
+            std::fs::read_to_string(&fixture_path).expect("Failed to read envelope_test.jsonl");
+        let line_count = fixture_content
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .count();
+
+        // Parse all lines
+        let mut total_events = 0;
+        let mut line_number = 0;
+
+        for line in fixture_content.lines() {
+            line_number += 1;
+
+            // Skip empty lines
+            if line.trim().is_empty() {
+                continue;
+            }
+
+            // Parse line with non-envelope plugin
+            let result = JsonlParser::parse_line(line, line_number, &context, &plugin);
+
+            // Assert parsing succeeds
+            assert!(
+                result.is_ok(),
+                "Line {} should parse successfully: {}",
+                line_number,
+                line
+            );
+
+            let events = result.unwrap();
+
+            // Assert every line produces at least one event (type routing is bypassed)
+            assert!(
+                !events.is_empty(),
+                "Line {} should produce at least one event (type routing bypassed), got 0. Line: {}",
+                line_number,
+                line
+            );
+
+            total_events += events.len();
+        }
+
+        // Assert total events equals total non-empty lines (9 lines in fixture)
+        assert_eq!(
+            total_events, line_count,
+            "Total events ({}) should equal total line count ({}) - every line produces an event",
+            total_events, line_count
+        );
+    }
+
     // -- ^-prefixed envelope field extraction tests --
 
     fn create_caret_envelope_test_plugin() -> Plugin {
@@ -4578,5 +4649,72 @@ mod tests {
             events.is_empty(),
             "Empty type field should result in skip behavior"
         );
+    }
+
+    #[test]
+    fn test_non_envelope_plugin_parses_all_fixture_lines() {
+        // Verify that without envelope config, type-based routing is completely bypassed.
+        // All lines in envelope_test.jsonl should produce events, even those with types
+        // (session_start, heartbeat, ping, unknown_event) that would be skipped/meta-routed
+        // if envelope config were enabled.
+        //
+        // The non-envelope plugin has:
+        // - source.envelope = None
+        // - Parser field mappings pointing to payload.* (payload.role, payload.content, etc.)
+        // - timestamp at top level
+        //
+        // This test verifies that type-based routing only applies when envelope is configured.
+
+        let fixture_path =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/envelope_test.jsonl");
+
+        let plugin = create_non_envelope_test_plugin();
+        let context = ParseContext::new(
+            "envelope-test".to_string(),
+            "envelope-test".to_string(),
+            fixture_path.display().to_string(),
+        );
+
+        // Read all lines from the fixture
+        let fixture_content =
+            std::fs::read_to_string(&fixture_path).expect("Failed to read envelope_test.jsonl");
+
+        let mut total_events = 0;
+        let mut line_count = 0;
+
+        for (line_num, line) in fixture_content.lines().enumerate() {
+            let line_num = line_num + 1;
+
+            // Skip empty lines
+            if line.trim().is_empty() {
+                continue;
+            }
+
+            line_count += 1;
+
+            // Parse each line with the non-envelope plugin
+            let events = JsonlParser::parse_line(line, line_num, &context, &plugin)
+                .expect("Non-envelope parsing should succeed");
+
+            // Assert every line produces at least one event
+            assert!(
+                !events.is_empty(),
+                "Line {} should produce at least one event with non-envelope plugin. Line: {}",
+                line_num,
+                line
+            );
+
+            total_events += events.len();
+        }
+
+        // Assert total events equals total line count
+        assert_eq!(
+            total_events, line_count,
+            "Non-envelope plugin should produce exactly one event per line. Expected {} events, got {}",
+            line_count, total_events
+        );
+
+        // Verify we tested the expected number of lines (8 lines in envelope_test.jsonl)
+        assert_eq!(line_count, 8, "Test fixture should have 8 non-empty lines");
     }
 }
