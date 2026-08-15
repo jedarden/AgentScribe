@@ -113,6 +113,10 @@ pub enum AgentScribeError {
     #[error("State file error: {0}")]
     State(String),
 
+    /// SQLite database errors
+    #[error("SQLite error: {0}")]
+    Sqlite(#[from] rusqlite::Error),
+
     /// Rules extraction errors
     #[error("Rules error: {0}")]
     Rules(String),

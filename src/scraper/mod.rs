@@ -5,6 +5,7 @@
 mod companion;
 mod file_path_extractor;
 mod state;
+mod state_sqlite;
 
 pub use companion::{CompanionCache, CompanionIndex};
 pub use file_path_extractor::FilePathExtractor;
