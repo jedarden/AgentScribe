@@ -18,6 +18,7 @@ pub mod git;
 pub mod outcome;
 pub mod solution;
 pub mod summary;
+pub mod tool_params;
 
 pub use antipatterns::{detect_antipatterns, AntiPattern};
 pub use behavioral_signals::{compute_behavioral_signals, BehavioralSignals};
@@ -28,6 +29,7 @@ pub use git::{correlate_commits, GitCommit};
 pub use outcome::{detect_outcome, Outcome, OutcomeConfig};
 pub use solution::extract_solution;
 pub use summary::generate_summary;
+pub use tool_params::{extract_tool_params, get_tool_param_field};
 
 use crate::event::{Event, SessionManifest};
 use crate::scraper::Scraper;
