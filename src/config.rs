@@ -134,6 +134,27 @@ pub struct DaemonConfig {
     pub mcp_enabled: bool,
     /// Unix socket path for the MCP server (default: ~/.agentscribe/mcp.sock)
     pub mcp_socket_path: Option<String>,
+    /// Log rotation mode: "daily", "hourly", or "never" (default: "daily")
+    #[serde(default = "default_log_rotation")]
+    pub log_rotation: String,
+    /// Maximum size of a single log file before rotation in bytes (default: 10MB)
+    #[serde(default = "default_log_max_size_bytes")]
+    pub log_max_size_bytes: u64,
+    /// Number of rotated log files to retain (default: 7)
+    #[serde(default = "default_log_retention_count")]
+    pub log_retention_count: usize,
+}
+
+fn default_log_rotation() -> String {
+    "daily".to_string()
+}
+
+fn default_log_max_size_bytes() -> u64 {
+    10 * 1024 * 1024 // 10MB
+}
+
+fn default_log_retention_count() -> usize {
+    7
 }
 
 #[allow(clippy::derivable_impls)]
@@ -142,6 +163,9 @@ impl Default for DaemonConfig {
         DaemonConfig {
             mcp_enabled: false,
             mcp_socket_path: None,
+            log_rotation: default_log_rotation(),
+            log_max_size_bytes: default_log_max_size_bytes(),
+            log_retention_count: default_log_retention_count(),
         }
     }
 }

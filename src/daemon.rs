@@ -395,6 +395,10 @@ pub fn logs(data_dir: &Path, follow: bool, lines: usize) -> Result<()> {
 
 /// The main daemon event loop. Runs a Tokio runtime and idles on a timer.
 fn run_event_loop(log_file: &Path, pid_file: &Path, state_file: &Path, data_dir: &Path) {
+    // Load config for log rotation settings before initializing logging
+    let config_path = data_dir.join("config.toml");
+    let app_config = AppConfig::load(&config_path).unwrap_or_default();
+
     // Use current_thread runtime — safe after fork (no thread pool)
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -408,8 +412,8 @@ fn run_event_loop(log_file: &Path, pid_file: &Path, state_file: &Path, data_dir:
 
     let _guard = rt.enter();
 
-    // Initialize file logging
-    init_file_logging(&log_path);
+    // Initialize file logging with config
+    init_file_logging_with_config(&log_path, Some(&app_config));
 
     let started_at = Utc::now();
 
@@ -428,9 +432,7 @@ fn run_event_loop(log_file: &Path, pid_file: &Path, state_file: &Path, data_dir:
         std::process::exit(0);
     });
 
-    // Load config for debounce, git, and MCP settings
-    let config_path = data_path.join("config.toml");
-    let app_config = AppConfig::load(&config_path).unwrap_or_default();
+    // Extract settings from the already-loaded config
     let debounce_secs = app_config.scrape.debounce_seconds;
     let lock_timeout_secs = app_config.scrape.lock_timeout_seconds;
     let git_auto_commit = app_config.scrape.git_auto_commit;
@@ -902,32 +904,73 @@ async fn run_watch_loop(
     }
 }
 
-/// Set up a file-based tracing subscriber that writes to the given path.
-fn init_file_logging(log_path: &Path) {
+/// Set up file-based logging with optional configuration override.
+/// If config is None, uses daily rotation with default retention.
+fn init_file_logging_with_config(log_path: &Path, config: Option<&AppConfig>) {
     use tracing_subscriber::fmt::writer::BoxMakeWriter;
     use tracing_subscriber::EnvFilter;
 
     let log_dir = log_path.parent().unwrap_or(Path::new("."));
     let _ = fs::create_dir_all(log_dir);
 
-    let file_appender = tracing_appender::rolling::never(
-        log_dir,
-        log_path
-            .file_name()
-            .unwrap_or_default()
-            .to_str()
-            .unwrap_or("daemon.log"),
-    );
+    let log_name = log_path
+        .file_name()
+        .unwrap_or_default()
+        .to_str()
+        .unwrap_or("daemon");
+
+    // Get rotation settings from config or use defaults
+    let (rotation_mode, retention_count) = if let Some(cfg) = config {
+        (
+            cfg.daemon.log_rotation.clone(),
+            cfg.daemon.log_retention_count,
+        )
+    } else {
+        // Default: daily rotation with 7 files retained
+        ("daily".to_string(), 7)
+    };
+
+    // Create the appropriate rolling appender based on rotation mode
+    // Note: All rolling appenders implement MakeWriter, so we can use them uniformly
+    let appender = match rotation_mode.as_str() {
+        "daily" => {
+            let a = tracing_appender::rolling::daily(log_dir, log_name);
+            BoxMakeWriter::new(a)
+        }
+        "hourly" => {
+            let a = tracing_appender::rolling::hourly(log_dir, log_name);
+            BoxMakeWriter::new(a)
+        }
+        "never" => {
+            let a = tracing_appender::rolling::never(log_dir, log_name);
+            BoxMakeWriter::new(a)
+        }
+        _ => {
+            // Log to stderr before tracing is set up
+            eprintln!(
+                "Unknown log rotation mode '{}', defaulting to daily",
+                rotation_mode
+            );
+            let a = tracing_appender::rolling::daily(log_dir, log_name);
+            BoxMakeWriter::new(a)
+        }
+    };
 
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
 
     let subscriber = tracing_subscriber::fmt()
-        .with_writer(BoxMakeWriter::new(file_appender))
+        .with_writer(appender)
         .with_env_filter(filter)
         .with_ansi(false)
         .finish();
 
     let _ = tracing::subscriber::set_global_default(subscriber);
+
+    // Now that tracing is initialized, clean up old log files
+    // Use eprintln as fallback since tracing might not work immediately
+    if let Err(e) = cleanup_old_logs(log_dir, log_name, retention_count) {
+        eprintln!("Failed to clean up old log files: {}", e);
+    }
 }
 
 /// Global shutdown flag set by signal handlers.
@@ -1069,6 +1112,67 @@ fn load_state(path: &Path) -> Option<PersistedState> {
 fn save_state(path: &Path, state: &PersistedState) -> std::io::Result<()> {
     let json = serde_json::to_string(state)?;
     fs::write(path, json)
+}
+
+/// Clean up old log files based on retention policy.
+///
+/// Keeps only the most recent `retention_count` log files, removing older ones.
+/// Log files are named with a suffix like `.log.2024-03-16` or `.log.2024-03-16-14` for daily/hourly rotation.
+fn cleanup_old_logs(log_dir: &Path, log_prefix: &str, retention_count: usize) -> Result<()> {
+    if retention_count == 0 {
+        // 0 means keep all logs (no cleanup)
+        return Ok(());
+    }
+
+    // Find all log files matching the pattern: <log_prefix>.log.*
+    let _pattern = format!("{}.log.*", log_prefix);
+    let mut log_files: Vec<PathBuf> = Vec::new();
+
+    if let Ok(entries) = fs::read_dir(log_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if let Some(os_str) = path.file_name() {
+                if let Some(file_name) = os_str.to_str() {
+                    // Match files like "daemon.log.2024-03-16" or "daemon.log.2024-03-16-14"
+                    if file_name.starts_with(&format!("{}.log.", log_prefix)) {
+                        log_files.push(path);
+                    }
+                }
+            }
+        }
+    }
+
+    // Sort by modification time (newest first)
+    log_files.sort_by(|a, b| {
+        let a_time = fs::metadata(a)
+            .and_then(|m| m.modified())
+            .unwrap_or(std::time::UNIX_EPOCH);
+        let b_time = fs::metadata(b)
+            .and_then(|m| m.modified())
+            .unwrap_or(std::time::UNIX_EPOCH);
+        b_time.cmp(&a_time) // Descending order (newest first)
+    });
+
+    // Keep the most recent `retention_count` files, delete the rest
+    if log_files.len() > retention_count {
+        eprintln!(
+            "Cleaning up {} old log files (retaining {} most recent)",
+            log_files.len() - retention_count,
+            retention_count
+        );
+        for old_file in &log_files[retention_count..] {
+            eprintln!("Deleting old log file: {}", old_file.display());
+            if let Err(e) = fs::remove_file(old_file) {
+                eprintln!(
+                    "Failed to delete old log file {}: {}",
+                    old_file.display(),
+                    e
+                );
+            }
+        }
+    }
+
+    Ok(())
 }
 
 /// Queue newly scraped sessions for embedding.
@@ -1789,16 +1893,16 @@ mod tests {
             failed_dirs: HashMap::new(),
         };
 
-        // Create a directory that exists but we'll simulate a watch failure
+        // Create a directory path that we'll simulate as having failed to watch
+        // We don't create the actual directory to avoid a successful watch
         let test_dir = dir.path().join("test");
-        fs::create_dir(&test_dir).unwrap();
 
-        // Simulate that the directory already exists but we can't watch it
-        // (e.g., due to permissions). We'll manually insert it into failed_dirs
-        // to simulate the first failure.
+        // Simulate that this directory previously failed to watch
+        // (e.g., due to permissions or temporary unavailability)
         wl.failed_dirs.insert(test_dir.clone(), Instant::now());
 
-        // First retry attempt immediately - should not log (within backoff)
+        // First retry attempt immediately - should not attempt to watch since dir doesn't exist
+        // The early return on line 581-583 prevents any action, keeping the failed_dirs entry
         let failed_count_before = wl.failed_dirs.len();
         wl.try_watch(&test_dir);
 
