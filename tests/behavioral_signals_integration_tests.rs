@@ -582,3 +582,297 @@ fn test_config_file_detection_various_patterns() {
         .iter()
         .all(|f| f != "/project/src/main.rs"));
 }
+
+#[test]
+fn test_integration_re_read_detection() {
+    // Integration test focused specifically on re-read detection.
+    // Creates a realistic session with multiple re-reads of the same file,
+    // mixed with other tool calls, and verifies correct detection.
+
+    let base_time = Utc::now();
+
+    // Create a realistic debugging session with multiple re-reads
+    let events = vec![
+        // User starts debugging session
+        make_user_event(base_time, "Debug the authentication flow in src/auth.rs"),
+        // Assistant acknowledges
+        make_assistant_event(
+            base_time + Duration::seconds(1),
+            "I'll investigate the auth flow",
+        ),
+        // First read of auth.rs
+        make_tool_call(
+            base_time + Duration::seconds(2),
+            "Read",
+            json!({"file_path": "/project/src/auth.rs"}),
+        ),
+        // Read config file (different file)
+        make_tool_call(
+            base_time + Duration::seconds(3),
+            "Read",
+            json!({"file_path": "/project/CLAUDE.md"}),
+        ),
+        // Try to build (fails)
+        make_tool_call(
+            base_time + Duration::seconds(4),
+            "Bash",
+            json!({"command": "cargo build"}),
+        ),
+        make_tool_result(
+            base_time + Duration::seconds(5),
+            "Bash",
+            json!({"exit_code": 1, "stderr": "error: unused variable"}),
+        ),
+        // RE-READ #1: Read auth.rs again to investigate error
+        make_tool_call(
+            base_time + Duration::seconds(6),
+            "Read",
+            json!({"file_path": "/project/src/auth.rs"}),
+        ),
+        // Edit the file to fix
+        make_tool_call(
+            base_time + Duration::seconds(7),
+            "Edit",
+            json!({"file_path": "/project/src/auth.rs", "old_text": "let x = 42;", "new_text": "let x = 42;"}),
+        ),
+        // Try to build again (still fails)
+        make_tool_call(
+            base_time + Duration::seconds(8),
+            "Bash",
+            json!({"command": "cargo build"}),
+        ),
+        make_tool_result(
+            base_time + Duration::seconds(9),
+            "Bash",
+            json!({"exit_code": 101, "stderr": "error[E0382]"}),
+        ),
+        // RE-READ #2: Read auth.rs again to check changes
+        make_tool_call(
+            base_time + Duration::seconds(10),
+            "Read",
+            json!({"file_path": "/project/src/auth.rs"}),
+        ),
+        // Read a different file (not re-read)
+        make_tool_call(
+            base_time + Duration::seconds(11),
+            "Read",
+            json!({"file_path": "/project/src/main.rs"}),
+        ),
+        // Edit again
+        make_tool_call(
+            base_time + Duration::seconds(12),
+            "Edit",
+            json!({"file_path": "/project/src/auth.rs", "old_text": "fix", "new_text": "fix_v2"}),
+        ),
+        // RE-READ #3: Read auth.rs one more time to verify final state
+        make_tool_call(
+            base_time + Duration::seconds(13),
+            "Read",
+            json!({"file_path": "/project/src/auth.rs"}),
+        ),
+        // Build succeeds
+        make_tool_call(
+            base_time + Duration::seconds(14),
+            "Bash",
+            json!({"command": "cargo build"}),
+        ),
+        make_tool_result(
+            base_time + Duration::seconds(15),
+            "Bash",
+            json!({"exit_code": 0}),
+        ),
+        // Run tests (succeeds)
+        make_tool_call(
+            base_time + Duration::seconds(16),
+            "Bash",
+            json!({"command": "cargo test"}),
+        ),
+        make_tool_result(
+            base_time + Duration::seconds(17),
+            "Bash",
+            json!({"exit_code": 0}),
+        ),
+        // Assistant concludes
+        make_assistant_event(
+            base_time + Duration::seconds(18),
+            "Auth flow debugged successfully",
+        ),
+        // User confirms
+        make_user_event(base_time + Duration::seconds(19), "thanks, that works!"),
+    ];
+
+    // Compute behavioral signals
+    let signals = compute_behavioral_signals(&events, None);
+
+    // ASSERTIONS: Re-read detection
+
+    // Should detect exactly one file with re-reads
+    assert_eq!(
+        signals.re_read_files.len(),
+        1,
+        "should detect exactly one file with re-reads"
+    );
+
+    // The re-read file should be src/auth.rs
+    assert!(
+        signals
+            .re_read_files
+            .contains(&"/project/src/auth.rs".to_string()),
+        "re-read files should contain /project/src/auth.rs"
+    );
+
+    // Re-read count calculation: 4 total reads - 1 initial read = 3 re-reads
+    assert_eq!(
+        signals.re_read_count, 3,
+        "should count 3 re-reads (4 total reads - 1 initial read)"
+    );
+
+    // Verify other behavioral signals are also computed correctly
+
+    // Tool call count: 12 tool calls (Read: 6, Bash: 4, Edit: 2)
+    assert_eq!(signals.tool_call_count, 12);
+
+    // Breakdown by tool name
+    assert_eq!(*signals.tool_call_counts_by_name.get("Read").unwrap(), 6);
+    assert_eq!(*signals.tool_call_counts_by_name.get("Bash").unwrap(), 4);
+    assert_eq!(*signals.tool_call_counts_by_name.get("Edit").unwrap(), 2);
+
+    // Bash failure count: 2 failed builds
+    assert_eq!(signals.bash_failure_count, 2);
+
+    // Multi-edit detection: auth.rs edited twice
+    assert!(signals
+        .multi_edit_files
+        .contains(&"/project/src/auth.rs".to_string()));
+    assert_eq!(signals.multi_edit_files.len(), 1);
+
+    // Config file reads: CLAUDE.md only
+    assert!(signals
+        .read_config_files
+        .contains(&"/project/CLAUDE.md".to_string()));
+    assert_eq!(signals.read_config_files.len(), 1);
+
+    // Duration: ~19 seconds
+    assert!(signals.duration_secs >= 18 && signals.duration_secs <= 20);
+
+    // Assistant turn ratio: 2 assistant / 4 total = 0.5
+    assert!((signals.assistant_turn_ratio - 0.5).abs() < 0.01);
+}
+
+#[test]
+fn test_integration_re_read_detection_multiple_files() {
+    // Test re-read detection when multiple files are re-read
+    // Verifies the detection logic correctly handles multiple files
+
+    let base_time = Utc::now();
+
+    let events = vec![
+        make_user_event(base_time, "Refactor both auth.rs and main.rs"),
+        make_assistant_event(base_time + Duration::seconds(1), "I'll refactor both files"),
+        // Read auth.rs (first time)
+        make_tool_call(
+            base_time + Duration::seconds(2),
+            "Read",
+            json!({"file_path": "/project/src/auth.rs"}),
+        ),
+        // Read main.rs (first time)
+        make_tool_call(
+            base_time + Duration::seconds(3),
+            "Read",
+            json!({"file_path": "/project/src/main.rs"}),
+        ),
+        // RE-READ auth.rs
+        make_tool_call(
+            base_time + Duration::seconds(4),
+            "Read",
+            json!({"file_path": "/project/src/auth.rs"}),
+        ),
+        // Edit auth.rs
+        make_tool_call(
+            base_time + Duration::seconds(5),
+            "Edit",
+            json!({"file_path": "/project/src/auth.rs"}),
+        ),
+        // RE-READ main.rs
+        make_tool_call(
+            base_time + Duration::seconds(6),
+            "Read",
+            json!({"file_path": "/project/src/main.rs"}),
+        ),
+        // RE-READ auth.rs again (3rd read)
+        make_tool_call(
+            base_time + Duration::seconds(7),
+            "Read",
+            json!({"file_path": "/project/src/auth.rs"}),
+        ),
+        // Edit main.rs
+        make_tool_call(
+            base_time + Duration::seconds(8),
+            "Edit",
+            json!({"file_path": "/project/src/main.rs"}),
+        ),
+        make_assistant_event(base_time + Duration::seconds(9), "Refactoring complete"),
+    ];
+
+    let signals = compute_behavioral_signals(&events, None);
+
+    // Should detect both files with re-reads
+    assert_eq!(signals.re_read_files.len(), 2);
+    assert!(signals
+        .re_read_files
+        .contains(&"/project/src/auth.rs".to_string()));
+    assert!(signals
+        .re_read_files
+        .contains(&"/project/src/main.rs".to_string()));
+
+    // Re-read count: (3 reads - 1) + (2 reads - 1) = 2 + 1 = 3 total re-reads
+    assert_eq!(signals.re_read_count, 3);
+
+    // Verify tool breakdown
+    assert_eq!(*signals.tool_call_counts_by_name.get("Read").unwrap(), 5);
+    assert_eq!(*signals.tool_call_counts_by_name.get("Edit").unwrap(), 2);
+}
+
+#[test]
+fn test_integration_re_read_detection_no_re_reads() {
+    // Test that sessions with no re-reads produce zero counts
+
+    let base_time = Utc::now();
+
+    let events = vec![
+        make_user_event(base_time, "Read several files"),
+        make_assistant_event(base_time + Duration::seconds(1), "Reading files"),
+        // Each file read only once
+        make_tool_call(
+            base_time + Duration::seconds(2),
+            "Read",
+            json!({"file_path": "/project/src/a.rs"}),
+        ),
+        make_tool_call(
+            base_time + Duration::seconds(3),
+            "Read",
+            json!({"file_path": "/project/src/b.rs"}),
+        ),
+        make_tool_call(
+            base_time + Duration::seconds(4),
+            "Read",
+            json!({"file_path": "/project/src/c.rs"}),
+        ),
+        make_tool_call(
+            base_time + Duration::seconds(5),
+            "Read",
+            json!({"file_path": "/project/src/d.rs"}),
+        ),
+        make_assistant_event(base_time + Duration::seconds(6), "Done reading"),
+    ];
+
+    let signals = compute_behavioral_signals(&events, None);
+
+    // No re-reads should be detected
+    assert_eq!(signals.re_read_count, 0);
+    assert_eq!(signals.re_read_files.len(), 0);
+
+    // But reads should still be counted
+    assert_eq!(signals.tool_call_count, 4);
+    assert_eq!(*signals.tool_call_counts_by_name.get("Read").unwrap(), 4);
+}
