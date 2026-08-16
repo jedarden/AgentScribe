@@ -82,7 +82,7 @@ console = "0.15"
 termcolor = "1.4"
 
 # Tables for CLI output
-tabled = "0.17"
+tabled = "0.21"
 
 [dev-dependencies]
 tempfile = "3.14"
