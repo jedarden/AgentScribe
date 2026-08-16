@@ -396,9 +396,17 @@ impl JsonFileStateStore {
         };
 
         // Atomic write: write to temp file, then rename
-        // Use process ID in temp file name to avoid conflicts between concurrent saves
+        // Use both process ID and thread ID to ensure uniqueness even with concurrent saves
         let pid = std::process::id();
-        let temp_file = self.state_file.with_extension(format!("json.tmp-{}", pid));
+        let tid = std::thread::current().id();
+        // Append temp suffix before the extension (e.g., scrape-state.json -> scrape-state.tmp-123.json)
+        let temp_file = self.state_file.with_file_name(format!(
+            "{}.tmp-{}-{:?}.{}",
+            self.state_file.file_stem().unwrap().to_str().unwrap(),
+            pid,
+            tid,
+            self.state_file.extension().unwrap().to_str().unwrap()
+        ));
         {
             let file = OpenOptions::new()
                 .write(true)
