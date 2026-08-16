@@ -134,10 +134,15 @@ pub struct DaemonConfig {
     pub mcp_enabled: bool,
     /// Unix socket path for the MCP server (default: ~/.agentscribe/mcp.sock)
     pub mcp_socket_path: Option<String>,
-    /// Log rotation mode: "daily", "hourly", or "never" (default: "daily")
+    /// Log rotation mode (default: "size")
+    /// - "size": Rotate when log file exceeds `log_max_size_bytes` (recommended)
+    /// - "daily": Time-based rotation at midnight (may grow unbounded within a day)
+    /// - "hourly": Time-based rotation every hour
+    /// - "daily+size": Hybrid - rotates at midnight AND when exceeding size limit
     #[serde(default = "default_log_rotation")]
     pub log_rotation: String,
     /// Maximum size of a single log file before rotation in bytes (default: 10MB)
+    /// Only used when rotation mode is "size" or "daily+size"
     #[serde(default = "default_log_max_size_bytes")]
     pub log_max_size_bytes: u64,
     /// Number of rotated log files to retain (default: 7)
@@ -146,7 +151,7 @@ pub struct DaemonConfig {
 }
 
 fn default_log_rotation() -> String {
-    "daily".to_string()
+    "size".to_string()
 }
 
 fn default_log_max_size_bytes() -> u64 {
