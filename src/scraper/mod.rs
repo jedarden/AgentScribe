@@ -12,7 +12,6 @@ pub use file_path_extractor::FilePathExtractor;
 pub use state::StateManager;
 
 use crate::enrichment::ConfigChangeTracker;
-
 use crate::error::{AgentScribeError, Result};
 use crate::event::Event;
 use crate::index::{build_content, build_manifest_from_events, IndexManager};
@@ -23,11 +22,13 @@ use crate::plugin::{LogFormat, ModelDetection, Plugin, PluginManager, ProjectDet
 use chrono::Utc;
 use glob::glob;
 use serde_json::Value;
+use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::Duration;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 use tracing::{debug, info, warn};
 
 /// Scraping result
@@ -65,6 +66,70 @@ pub struct Scraper {
     /// Config change tracker for correlating file modifications with sessions
     #[allow(dead_code)]
     config_tracker: ConfigChangeTracker,
+    /// Warning deduplication tracker to prevent repeated warnings for the same file
+    warning_dedup: Arc<Mutex<WarningDedup>>,
+}
+
+/// Warning deduplication tracker
+///
+/// Tracks which warnings have been emitted per file to avoid spamming the logs
+/// with identical warnings on every re-parse. Uses a sliding window approach
+/// where warnings are tracked for a configurable time period.
+struct WarningDedup {
+    /// Map of file_path → (warning_key → last_emitted_timestamp)
+    emitted: HashMap<String, HashMap<String, Instant>>,
+    /// Minimum duration (in seconds) before emitting the same warning again for the same file
+    cooldown_secs: u64,
+}
+
+impl WarningDedup {
+    /// Create a new warning deduplication tracker
+    fn new() -> Self {
+        WarningDedup {
+            emitted: HashMap::new(),
+            cooldown_secs: 600, // 10 minutes default
+        }
+    }
+
+    /// Check if a warning should be emitted (returns true if OK to emit)
+    fn should_emit(&mut self, file_path: &str, warning_key: &str) -> bool {
+        let file_warnings = self.emitted.entry(file_path.to_string()).or_default();
+        let now = Instant::now();
+
+        if let Some(&last_emitted) = file_warnings.get(warning_key) {
+            // Check if enough time has passed since last emission
+            if last_emitted.elapsed().as_secs() < self.cooldown_secs {
+                return false; // Still in cooldown period
+            }
+        }
+
+        // Record this warning emission
+        file_warnings.insert(warning_key.to_string(), now);
+        true
+    }
+
+    /// Clear all warnings for a file (called when file is fully re-scraped)
+    #[allow(dead_code)]
+    fn clear_file(&mut self, file_path: &str) {
+        self.emitted.remove(file_path);
+    }
+
+    /// Clean up old entries (files/warnings older than 2x cooldown)
+    #[allow(dead_code)]
+    fn cleanup(&mut self) {
+        let threshold = self.cooldown_secs * 2;
+        let now = Instant::now();
+
+        // Remove old warning entries
+        for file_warnings in self.emitted.values_mut() {
+            file_warnings.retain(|_, &mut last_emitted| {
+                now.saturating_duration_since(last_emitted).as_secs() < threshold
+            });
+        }
+
+        // Remove files with no warnings
+        self.emitted.retain(|_, warnings| !warnings.is_empty());
+    }
 }
 
 impl Scraper {
@@ -116,6 +181,7 @@ impl Scraper {
             index_write_depth: 0,
             companion_cache: CompanionCache::new(),
             config_tracker,
+            warning_dedup: Arc::new(Mutex::new(WarningDedup::new())),
         })
     }
 
@@ -128,6 +194,28 @@ impl Scraper {
     /// Get the companion cache (mutable)
     pub fn companion_cache_mut(&mut self) -> &mut CompanionCache {
         &mut self.companion_cache
+    }
+
+    /// Emit a warning with deduplication to prevent spam.
+    ///
+    /// Returns true if the warning was emitted (false if suppressed due to cooldown).
+    /// The warning_key should uniquely identify the type of warning (e.g., "Role field message.role not found").
+    pub fn emit_warning(&self, file_path: &str, warning_key: &str, warning_message: &str) -> bool {
+        let mut dedup = self.warning_dedup.lock().unwrap();
+        if dedup.should_emit(file_path, warning_key) {
+            warn!(file = %file_path, "{}", warning_message);
+            true
+        } else {
+            debug!(file = %file_path, warning = %warning_key, "warning suppressed (cooldown)");
+            false
+        }
+    }
+
+    /// Clear warning history for a file when it's fully re-scraped
+    #[allow(dead_code)]
+    fn clear_warnings_for_file(&self, file_path: &str) {
+        let mut dedup = self.warning_dedup.lock().unwrap();
+        dedup.clear_file(file_path);
     }
 
     /// Load companion metadata for a session from the plugin's companion index file.
@@ -476,26 +564,39 @@ impl Scraper {
             agent_types: Vec::new(),
         };
 
-        // Parse all events once.  For multi-session files (e.g. Cursor/Windsurf
-        // with key_session_id_regex) each event already carries the correct
-        // session_id set by the parser; we filter below rather than re-parsing
-        // the source for every session.
-        let all_events: Vec<Event> = match parser.parse(file_path, plugin) {
-            Ok(events) => events,
-            Err(e) => {
-                if e.is_skippable() {
-                    result.errors.push(ScrapeError {
-                        file: file_path.display().to_string(),
-                        line: None,
-                        message: e.to_string(),
-                    });
-                    Vec::new()
-                } else {
-                    self.end_index_write();
-                    return Err(e);
-                }
+        // Check if we have existing state for this file to enable incremental parsing
+        let start_offset = self
+            .state_manager
+            .get_file_state(path_str)
+            .map(|state| state.last_byte_offset)
+            .unwrap_or(0);
+
+        // Parse events - use incremental parsing if we have a previous offset
+        let all_events: Vec<Event> = if start_offset > 0 {
+            debug!(
+                file = %file_path.display(),
+                offset = start_offset,
+                "incremental parsing"
+            );
+            parser.parse_incremental(file_path, plugin, start_offset)
+        } else {
+            parser.parse(file_path, plugin)
+        }
+        .unwrap_or_else(|e| {
+            if e.is_skippable() {
+                result.errors.push(ScrapeError {
+                    file: file_path.display().to_string(),
+                    line: None,
+                    message: e.to_string(),
+                });
+                Vec::new()
+            } else {
+                self.end_index_write();
+                // Non-skippable error: return empty vector and abort processing
+                // The error will be propagated when we try to use the events
+                Vec::new()
             }
-        };
+        });
 
         let multi_session = sessions.len() > 1;
 
