@@ -146,6 +146,41 @@ fn open_file_maybe_zst(path: &Path) -> Result<Box<dyn BufRead>> {
     }
 }
 
+/// Opens a file and seeks to a specific byte offset for incremental parsing.
+///
+/// For compressed files (.zst), seeking is not supported and the full file is read.
+fn open_file_at_offset(path: &Path, offset: u64) -> Result<Box<dyn BufRead>> {
+    use std::io::{BufReader, Seek};
+
+    let file = std::fs::File::open(path)?;
+
+    if path.extension().and_then(|s| s.to_str()) == Some("zst") {
+        // Cannot seek into compressed files - decompress from start
+        warn!(
+            "Incremental parsing not supported for compressed files, reading from start: {}",
+            path.display()
+        );
+        let decoder =
+            zstd::stream::read::Decoder::new(file).map_err(|e| AgentScribeError::Parse {
+                file: path.display().to_string(),
+                line: Some(0),
+                message: format!("Zstd decompression error: {}", e),
+            })?;
+        Ok(Box::new(BufReader::new(decoder)))
+    } else {
+        // Seek to the offset for regular files
+        let mut file = file;
+        use std::io::SeekFrom;
+        file.seek(SeekFrom::Start(offset))
+            .map_err(|e| AgentScribeError::Parse {
+                file: path.display().to_string(),
+                line: None,
+                message: format!("Failed to seek to offset {}: {}", offset, e),
+            })?;
+        Ok(Box::new(BufReader::new(file)))
+    }
+}
+
 impl JsonlParser {
     /// Parse a single JSONL line into an event
     pub fn parse_line(
@@ -539,6 +574,132 @@ impl super::FormatParser for JsonlParser {
                 Err(e) => {
                     if e.is_skippable() {
                         eprintln!("Warning: {}", e);
+                    } else {
+                        return Err(e);
+                    }
+                }
+            }
+        }
+
+        Ok(events)
+    }
+
+    fn parse_incremental(
+        &self,
+        source_path: &Path,
+        plugin: &Plugin,
+        start_offset: u64,
+    ) -> Result<Vec<Event>> {
+        // For incremental parsing, open file at offset and read only new lines
+        let reader = open_file_at_offset(source_path, start_offset)?;
+        let mut events = Vec::new();
+
+        // Get session ID from filename (same logic as parse())
+        let session_id = match &plugin.source.session_detection {
+            SessionDetection::OneFilePerSession { session_id_from } => match session_id_from {
+                SessionIdSource::Filename => {
+                    let is_subagent = is_subagent_file(source_path);
+                    if is_subagent {
+                        let components: Vec<_> = source_path.components().collect();
+                        if let Some(subagents_idx) =
+                            components.iter().position(|c| c.as_os_str() == "subagents")
+                        {
+                            if subagents_idx >= 2 {
+                                let parent_idx = subagents_idx - 1;
+                                if let (Some(parent_os), Some(agent_os)) = (
+                                    components.get(parent_idx),
+                                    components.get(subagents_idx + 1),
+                                ) {
+                                    if let (Some(parent_name), Some(agent_name)) = (
+                                        parent_os.as_os_str().to_str(),
+                                        agent_os.as_os_str().to_str(),
+                                    ) {
+                                        let agent_stem = agent_name
+                                            .strip_suffix(".jsonl")
+                                            .or_else(|| agent_name.strip_suffix(".json"))
+                                            .unwrap_or(agent_name);
+                                        format!("{}/{}", parent_name, agent_stem)
+                                    } else {
+                                        source_path
+                                            .file_stem()
+                                            .and_then(|s| s.to_str())
+                                            .unwrap_or("unknown")
+                                            .to_string()
+                                    }
+                                } else {
+                                    source_path
+                                        .file_stem()
+                                        .and_then(|s| s.to_str())
+                                        .unwrap_or("unknown")
+                                        .to_string()
+                                }
+                            } else {
+                                source_path
+                                    .file_stem()
+                                    .and_then(|s| s.to_str())
+                                    .unwrap_or("unknown")
+                                    .to_string()
+                            }
+                        } else {
+                            source_path
+                                .file_stem()
+                                .and_then(|s| s.to_str())
+                                .unwrap_or("unknown")
+                                .to_string()
+                        }
+                    } else {
+                        source_path
+                            .file_stem()
+                            .and_then(|s| s.to_str())
+                            .unwrap_or("unknown")
+                            .to_string()
+                    }
+                }
+                SessionIdSource::Field(_) => "unknown".to_string(),
+            },
+            _ => "unknown".to_string(),
+        };
+
+        let source_agent = if is_subagent_file(source_path) {
+            format!("{}-subagent", plugin.plugin.name.clone())
+        } else {
+            plugin.plugin.name.clone()
+        };
+
+        let context =
+            ParseContext::new(session_id, source_agent, source_path.display().to_string());
+
+        // Read lines incrementally from the offset position
+        // Note: line numbers here are relative to the new content, not the full file
+        for (line_num, line_result) in reader.lines().enumerate() {
+            let line_num = line_num + 1; // 1-indexed for error messages
+            let line = match line_result {
+                Ok(l) => l,
+                Err(e) => {
+                    // Don't spam warnings for incremental read errors at EOF
+                    if e.kind() != std::io::ErrorKind::UnexpectedEof {
+                        warn!(
+                            "Read error at {}:{} (offset {}) - {}",
+                            source_path.display(),
+                            line_num,
+                            start_offset,
+                            e
+                        );
+                    }
+                    continue;
+                }
+            };
+
+            if line.trim().is_empty() {
+                continue;
+            }
+
+            match JsonlParser::parse_line(&line, line_num, &context, plugin) {
+                Ok(mut line_events) => events.append(&mut line_events),
+                Err(e) => {
+                    if e.is_skippable() {
+                        // Log at warn level instead of eprintln to respect tracing filters
+                        warn!("{}", e);
                     } else {
                         return Err(e);
                     }
