@@ -4913,4 +4913,21 @@ mod tests {
         // Verify we tested the expected number of lines (8 lines in envelope_test.jsonl)
         assert_eq!(line_count, 8, "Test fixture should have 8 non-empty lines");
     }
+
+    #[test]
+    fn test_non_envelope_plugin_parses_fixture_via_parse() {
+        // Test skeleton: verify JsonlParser::parse() works with non-envelope plugin
+        // Loads tests/fixtures/envelope_test.jsonl and calls parse()
+        let fixture_path =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/envelope_test.jsonl");
+
+        let plugin = create_non_envelope_test_plugin();
+
+        // Call JsonlParser::parse() with fixture path and non-envelope plugin
+        let _events = JsonlParser
+            .parse(&fixture_path, &plugin)
+            .expect("JsonlParser::parse() should succeed with non-envelope plugin");
+
+        // TODO: Add assertions to verify parsed events
+    }
 }
