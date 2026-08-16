@@ -1,42 +1,27 @@
 //! Parser implementations for different log formats
 //!
-//! Each format has a dedicated parser that normalizes events to the canonical schema.
+//! This module provides format-specific parsers that normalize raw agent logs
+//! into the canonical event schema. Each parser handles one log format:
 //!
-//! # Import Types
+//! - **[`JsonlParser`]**: JSONL format (Claude Code, Codex, Goose)
+//! - **[`MarkdownParser`]**: Markdown format (Aider)
+//! - **[`JsonTreeParser`]**: JSON tree format (OpenCode legacy)
+//! - **[`JsonArrayParser`]**: JSON array format (Gemini CLI)
+//! - **[`SqliteParser`]**: SQLite format (Cursor, Windsurf)
 //!
-//! This module provides types for working with Rust import statements:
+//! # When to Use
 //!
-//! - **[`Import`]**: Lightweight struct representing a single import statement with path,
-//!   type, and line number information
-//! - **[`ImportType`]**: Enum representing the three kinds of Rust import statements
-//!   (`use`, `extern crate`, and `mod`)
+//! These parsers are used internally by the scraper plugin system. Each plugin
+//! specifies its format in the `[source] format` field, and the corresponding
+//! parser is instantiated to normalize events.
 //!
-//! ## When to Use These Types
+//! # Parser Behavior
 //!
-//! Use these types when you need to:
-//! - Parse and analyze Rust source files for their import dependencies
-//! - Categorize imports by type (standard `use` statements vs extern crates vs modules)
-//! - Track the location of imports within source files
-//! - Build tools that work with Rust module structures
-//!
-//! ## Example
-//!
-//! ```
-//! use agentscribe::parser::{Import, ImportType};
-//!
-//! // Create an import representing: use std::collections::HashMap;
-//! let import = Import::new(
-//!     "std::collections::HashMap".to_string(),
-//!     ImportType::Use,
-//!     42  // line number
-//! );
-//!
-//! assert_eq!(import.path, "std::collections::HashMap");
-//! assert_eq!(import.import_type, ImportType::Use);
-//! ```
-//!
-//! For full parsing functionality including multi-file import extraction,
-//! see the `ImportParser` type which provides parsing of complete Rust source files.
+//! All parsers:
+//! - Read source files in streaming fashion
+//! - Extract timestamps, roles, content, and metadata
+//! - Normalize to the canonical [`Event`](crate::event::Event) schema
+//! - Handle errors gracefully (skip bad lines, log warnings)
 
 mod aider_input;
 mod import_parser;
@@ -649,6 +634,32 @@ pub fn parse_timestamp_with_envelope(
 pub trait FormatParser {
     /// Parse events from the source
     fn parse(&self, source_path: &Path, plugin: &Plugin) -> Result<Vec<Event>>;
+
+    /// Parse events from the source, starting from a given byte offset for incremental parsing.
+    ///
+    /// For formats that support incremental parsing (JSONL, append-only logs), this allows
+    /// the parser to skip already-processed content and only parse new data.
+    ///
+    /// # Arguments
+    ///
+    /// * `source_path` - Path to the source file
+    /// * `plugin` - Plugin configuration for this source
+    /// * `start_offset` - Byte offset to start reading from (0 for full parse)
+    ///
+    /// # Returns
+    ///
+    /// - `Ok(events)` - Vector of parsed events
+    /// - `Err(_)` - Parse error (check `is_skippable()` for non-fatal errors)
+    fn parse_incremental(
+        &self,
+        source_path: &Path,
+        plugin: &Plugin,
+        start_offset: u64,
+    ) -> Result<Vec<Event>> {
+        // Default implementation falls back to full parse
+        let _ = start_offset; // Suppress unused warning
+        self.parse(source_path, plugin)
+    }
 
     /// Detect session boundaries in the source
     fn detect_sessions(&self, source_path: &Path, plugin: &Plugin) -> Result<Vec<SessionInfo>>;
