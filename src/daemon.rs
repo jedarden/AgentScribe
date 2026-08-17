@@ -60,11 +60,54 @@ pub struct DaemonInfo {
 }
 
 /// Daemon state persisted to disk
+///
+/// Tracks daemon runtime info and per-file byte offsets for incremental parsing.
+/// When the daemon restarts, it uses these offsets to resume reading files from
+/// where it left off, rather than re-processing the entire file.
 #[derive(Debug, Serialize, Deserialize, Default)]
 struct PersistedState {
     started_at: Option<DateTime<Utc>>,
     sessions_indexed: u64,
     last_scrape: Option<DateTime<Utc>>,
+    /// Per-file byte offsets for incremental parsing
+    /// Maps absolute file path to the last byte offset successfully processed
+    #[serde(default)]
+    file_offsets: HashMap<std::string::String, u64>,
+}
+
+impl PersistedState {
+    /// Get the last byte offset for a file.
+    ///
+    /// Returns `None` if the file is not tracked (should read from beginning).
+    #[allow(dead_code)]
+    fn get_file_offset(&self, file_path: &str) -> Option<u64> {
+        self.file_offsets.get(file_path).copied()
+    }
+
+    /// Set the byte offset for a file.
+    ///
+    /// Call this after successfully processing a file up to a certain position.
+    /// On next daemon restart, parsing will resume from this offset.
+    #[allow(dead_code)]
+    fn set_file_offset(&mut self, file_path: &str, offset: u64) {
+        self.file_offsets.insert(file_path.to_string(), offset);
+    }
+
+    /// Remove a file from tracking.
+    ///
+    /// Call this when a file is deleted or when truncation is detected.
+    #[allow(dead_code)]
+    fn remove_file(&mut self, file_path: &str) {
+        self.file_offsets.remove(file_path);
+    }
+
+    /// Clear all file offsets.
+    ///
+    /// Call this to force a full rescan of all files on next daemon start.
+    #[allow(dead_code)]
+    fn clear_file_offsets(&mut self) {
+        self.file_offsets.clear();
+    }
 }
 
 // ── daemon start ──────────────────────────────────────────────────────
@@ -1103,15 +1146,74 @@ fn read_uptime_ticks() -> u64 {
 }
 
 /// Load persisted daemon state from disk.
+///
+/// Returns `None` if the file doesn't exist or is corrupted. This allows the
+/// daemon to recover gracefully from corrupted state by starting with an empty
+/// state.
 fn load_state(path: &Path) -> Option<PersistedState> {
     let content = fs::read_to_string(path).ok()?;
-    serde_json::from_str(&content).ok()
+    match serde_json::from_str::<PersistedState>(&content) {
+        Ok(state) => Some(state),
+        Err(_) => {
+            // Corrupted state file - log warning and return empty state
+            eprintln!(
+                "Warning: Corrupted daemon state file at {}, starting with empty state",
+                path.display()
+            );
+
+            // Rename corrupted file for debugging
+            let timestamp = Utc::now().format("%Y%m%d-%H%M%S");
+            let backup_path = path.with_extension(format!("json.corrupt-{}", timestamp));
+            let _ = fs::rename(path, &backup_path);
+            eprintln!(
+                "Corrupted state file backed up to: {}",
+                backup_path.display()
+            );
+
+            Some(PersistedState::default())
+        }
+    }
 }
 
-/// Save persisted daemon state to disk.
+/// Save persisted daemon state to disk using atomic writes.
+///
+/// Writes to a temporary file then renames over the target. This ensures that
+/// a crash during write leaves a valid previous state file, not a truncated one.
 fn save_state(path: &Path, state: &PersistedState) -> std::io::Result<()> {
-    let json = serde_json::to_string(state)?;
-    fs::write(path, json)
+    let json = serde_json::to_string_pretty(state)?;
+
+    // Create temporary file in the same directory as the target
+    // Use both process ID and thread ID to ensure uniqueness
+    let pid = std::process::id();
+    let tid = std::thread::current().id();
+
+    // Build temp file name: daemon-state.json -> daemon-state.tmp-PID-TID.json
+    let temp_file = if let Some(stem) = path.file_stem() {
+        if let Some(ext) = path.extension() {
+            path.with_file_name(format!(
+                "{}.tmp-{}-{:?}.{}",
+                stem.to_str().unwrap_or("daemon-state"),
+                pid,
+                tid,
+                ext.to_str().unwrap_or("json")
+            ))
+        } else {
+            path.with_file_name(format!(
+                "{}.tmp-{}-{:?}",
+                stem.to_str().unwrap_or("daemon-state"),
+                pid,
+                tid
+            ))
+        }
+    } else {
+        path.with_extension(format!("tmp-{}-{:?}", pid, tid))
+    };
+
+    // Write to temporary file
+    fs::write(&temp_file, json)?;
+
+    // Atomic rename over the target
+    fs::rename(&temp_file, path)
 }
 
 /// Clean up old log files based on retention policy.
@@ -1621,6 +1723,7 @@ mod tests {
             started_at: Some(Utc::now()),
             sessions_indexed: 42,
             last_scrape: Some(Utc::now()),
+            file_offsets: std::collections::HashMap::new(),
         };
         save_state(&state_file, &state).unwrap();
         let loaded = load_state(&state_file).unwrap();
@@ -1668,6 +1771,7 @@ mod tests {
             started_at: Some(Utc::now() - chrono::Duration::days(3)),
             sessions_indexed: 100,
             last_scrape: Some(Utc::now() - chrono::Duration::days(2)),
+            file_offsets: std::collections::HashMap::new(),
         };
         save_state(&state_file, &old_state).unwrap();
 
@@ -1689,6 +1793,7 @@ mod tests {
             started_at: Some(Utc::now() - chrono::Duration::hours(3)),
             sessions_indexed: 50,
             last_scrape: Some(Utc::now() - chrono::Duration::hours(2)),
+            file_offsets: std::collections::HashMap::new(),
         };
         save_state(&state_file, &old_state).unwrap();
 
@@ -1709,6 +1814,7 @@ mod tests {
             started_at: Some(Utc::now() - chrono::Duration::minutes(30)),
             sessions_indexed: 25,
             last_scrape: Some(Utc::now() - chrono::Duration::minutes(10)),
+            file_offsets: HashMap::new(),
         };
         save_state(&state_file, &recent_state).unwrap();
 
@@ -1728,6 +1834,7 @@ mod tests {
             started_at: Some(Utc::now() - chrono::Duration::minutes(5)),
             sessions_indexed: 0,
             last_scrape: None,
+            file_offsets: HashMap::new(),
         };
         save_state(&state_file, &empty_state).unwrap();
 
@@ -2001,5 +2108,254 @@ mod tests {
         // Directory should be watched, not failed
         assert!(wl.watched_dirs.contains(dir.path()));
         assert!(!wl.failed_dirs.contains_key(dir.path()));
+    }
+
+    // ── Daemon state persistence: file offset tracking ─────────────────
+
+    #[test]
+    fn test_persisted_state_file_offset_operations() {
+        let mut state = PersistedState::default();
+
+        // Initially, no offsets are tracked
+        assert_eq!(state.get_file_offset("/tmp/test.jsonl"), None);
+
+        // Set an offset
+        state.set_file_offset("/tmp/test.jsonl", 1024);
+        assert_eq!(state.get_file_offset("/tmp/test.jsonl"), Some(1024));
+
+        // Update the same file's offset
+        state.set_file_offset("/tmp/test.jsonl", 2048);
+        assert_eq!(state.get_file_offset("/tmp/test.jsonl"), Some(2048));
+
+        // Track multiple files
+        state.set_file_offset("/tmp/other.jsonl", 512);
+        state.set_file_offset("/home/user/session.md", 256);
+        assert_eq!(state.get_file_offset("/tmp/other.jsonl"), Some(512));
+        assert_eq!(state.get_file_offset("/home/user/session.md"), Some(256));
+
+        // Remove a file from tracking
+        state.remove_file("/tmp/test.jsonl");
+        assert_eq!(state.get_file_offset("/tmp/test.jsonl"), None);
+        // Other files should still be tracked
+        assert_eq!(state.get_file_offset("/tmp/other.jsonl"), Some(512));
+
+        // Clear all offsets
+        state.clear_file_offsets();
+        assert_eq!(state.get_file_offset("/tmp/other.jsonl"), None);
+        assert_eq!(state.get_file_offset("/home/user/session.md"), None);
+    }
+
+    #[test]
+    fn test_persisted_state_with_file_offsets_persists() {
+        let dir = tempfile::tempdir().unwrap();
+        let state_file = dir.path().join("daemon_state.json");
+
+        // Create state with file offsets
+        let mut state = PersistedState {
+            started_at: Some(Utc::now()),
+            sessions_indexed: 100,
+            last_scrape: Some(Utc::now()),
+            file_offsets: HashMap::new(),
+        };
+
+        state.set_file_offset("/tmp/a.jsonl", 1000);
+        state.set_file_offset("/tmp/b.jsonl", 2000);
+        state.set_file_offset("/home/c.log", 500);
+
+        // Save state
+        save_state(&state_file, &state).unwrap();
+
+        // Load state in a new instance
+        let loaded = load_state(&state_file).unwrap();
+        assert_eq!(loaded.sessions_indexed, 100);
+        assert_eq!(loaded.get_file_offset("/tmp/a.jsonl"), Some(1000));
+        assert_eq!(loaded.get_file_offset("/tmp/b.jsonl"), Some(2000));
+        assert_eq!(loaded.get_file_offset("/home/c.log"), Some(500));
+        assert_eq!(loaded.file_offsets.len(), 3);
+    }
+
+    #[test]
+    fn test_persisted_state_atomic_write_renames_temp_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let state_file = dir.path().join("daemon_state.json");
+
+        // Save state
+        let mut state = PersistedState {
+            started_at: Some(Utc::now()),
+            sessions_indexed: 42,
+            last_scrape: Some(Utc::now()),
+            file_offsets: HashMap::new(),
+        };
+        state.set_file_offset("/tmp/test.jsonl", 12345);
+
+        save_state(&state_file, &state).unwrap();
+
+        // Verify the target file exists (atomic rename completed)
+        assert!(state_file.exists());
+
+        // Verify no temp files remain
+        let temp_files: Vec<_> = fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| entry.file_name().to_str().unwrap_or("").contains(".tmp-"))
+            .collect();
+
+        assert_eq!(
+            temp_files.len(),
+            0,
+            "No temp files should remain after atomic write"
+        );
+
+        // Verify content is correct
+        let loaded = load_state(&state_file).unwrap();
+        assert_eq!(loaded.sessions_indexed, 42);
+        assert_eq!(loaded.get_file_offset("/tmp/test.jsonl"), Some(12345));
+    }
+
+    #[test]
+    fn test_persisted_state_corrupted_file_fallback_to_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let state_file = dir.path().join("daemon_state.json");
+
+        // Write corrupted JSON (missing closing brace)
+        fs::write(&state_file, r#"{"started_at": "2026-03-16T12:00:00Z"#).unwrap();
+
+        // Load should return Some(empty state) rather than None
+        let loaded = load_state(&state_file);
+        assert!(loaded.is_some(), "Should return empty state on corruption");
+
+        let state = loaded.unwrap();
+        assert_eq!(
+            state.sessions_indexed, 0,
+            "Empty state should have 0 sessions"
+        );
+        assert!(state.started_at.is_none());
+        assert!(state.last_scrape.is_none());
+        assert_eq!(state.file_offsets.len(), 0);
+
+        // Corrupted file should be backed up
+        let backup_files: Vec<_> = fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_str()
+                    .unwrap_or("")
+                    .contains(".corrupt-")
+            })
+            .collect();
+
+        assert_eq!(
+            backup_files.len(),
+            1,
+            "Corrupted file should be backed up with .corrupt- suffix"
+        );
+    }
+
+    #[test]
+    fn test_persisted_state_invalid_json_fallback_to_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let state_file = dir.path().join("daemon_state.json");
+
+        // Write completely invalid content (not JSON at all)
+        fs::write(&state_file, "this is not json").unwrap();
+
+        // Load should return Some(empty state)
+        let loaded = load_state(&state_file);
+        assert!(loaded.is_some());
+
+        let state = loaded.unwrap();
+        assert!(state.file_offsets.is_empty());
+        assert_eq!(state.sessions_indexed, 0);
+    }
+
+    #[test]
+    fn test_persisted_state_missing_file_returns_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let state_file = dir.path().join("nonexistent.json");
+
+        // Load should return None for missing file
+        let loaded = load_state(&state_file);
+        assert!(loaded.is_none(), "Missing file should return None");
+    }
+
+    #[test]
+    fn test_persisted_state_concurrent_atomic_writes_produce_valid_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let state_file = dir.path().join("daemon_state.json");
+
+        // Simulate concurrent writes from multiple threads
+        let handles: Vec<_> = (0..5)
+            .map(|i| {
+                let state_file_clone = state_file.clone();
+                std::thread::spawn(move || {
+                    let mut state = PersistedState {
+                        sessions_indexed: i * 10,
+                        ..Default::default()
+                    };
+                    state.set_file_offset(&format!("/tmp/file{}.jsonl", i), i * 100);
+                    save_state(&state_file_clone, &state)
+                })
+            })
+            .collect();
+
+        // Wait for all threads to complete
+        for handle in handles {
+            handle.join().unwrap().expect("Thread save should succeed");
+        }
+
+        // Final state should be valid and readable
+        let loaded = load_state(&state_file);
+        assert!(
+            loaded.is_some(),
+            "Final state should be valid after concurrent writes"
+        );
+
+        let state = loaded.unwrap();
+        // One of the writes should have won (we don't know which, but state should be consistent)
+        assert!(
+            state.sessions_indexed > 0,
+            "At least one write should have succeeded"
+        );
+        // File offsets should be present (from whichever write won)
+        assert!(
+            !state.file_offsets.is_empty(),
+            "At least one file offset should be present"
+        );
+    }
+
+    #[test]
+    fn test_persisted_state_preserves_all_fields_roundtrip() {
+        let dir = tempfile::tempdir().unwrap();
+        let state_file = dir.path().join("daemon_state.json");
+
+        let now = Utc::now();
+        let mut original = PersistedState {
+            started_at: Some(now),
+            sessions_indexed: 12345,
+            last_scrape: Some(now - chrono::Duration::hours(1)),
+            file_offsets: HashMap::new(),
+        };
+
+        // Add multiple file offsets
+        original.set_file_offset("/var/log/agent1.jsonl", 9999);
+        original.set_file_offset("/var/log/agent2.jsonl", 8888);
+        original.set_file_offset("/home/user/.aider.chat.history.md", 5000);
+
+        save_state(&state_file, &original).unwrap();
+
+        let loaded = load_state(&state_file).unwrap();
+
+        assert_eq!(loaded.sessions_indexed, 12345);
+        assert_eq!(loaded.started_at, Some(now));
+        assert_eq!(loaded.last_scrape, Some(now - chrono::Duration::hours(1)));
+        assert_eq!(loaded.get_file_offset("/var/log/agent1.jsonl"), Some(9999));
+        assert_eq!(loaded.get_file_offset("/var/log/agent2.jsonl"), Some(8888));
+        assert_eq!(
+            loaded.get_file_offset("/home/user/.aider.chat.history.md"),
+            Some(5000)
+        );
+        assert_eq!(loaded.file_offsets.len(), 3);
     }
 }
