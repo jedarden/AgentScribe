@@ -8,8 +8,7 @@ mod jsonl_subagent_test;
 use crate::error::{AgentScribeError, Result};
 use crate::event::{Event, Role, TokenCounts};
 use crate::parser::{
-    extract_string, extract_string_with_envelope, parse_timestamp_with_envelope, ParseContext,
-    SessionInfo,
+    extract_string_with_envelope, parse_timestamp_with_envelope, ParseContext, SessionInfo,
 };
 use crate::plugin::{Plugin, SessionDetection, SessionIdSource};
 use chrono::Utc;
@@ -215,8 +214,12 @@ impl JsonlParser {
         ) = plugin.source.envelope
         {
             // Envelope mode: extract type and apply routing
-            let type_value =
-                extract_string(&raw_json, &envelope_cfg.type_field).unwrap_or_default();
+            let type_value = extract_string_with_envelope(
+                &envelope_cfg.type_field,
+                &raw_json,
+                Some(&raw_json),
+            )
+            .unwrap_or_default();
             let routing = envelope_cfg.get_routing(&type_value);
 
             match routing {
@@ -796,9 +799,12 @@ impl super::FormatParser for JsonlParser {
                                         ) =
                                             plugin.source.envelope
                                         {
-                                            let type_value =
-                                                extract_string(&json, &envelope_cfg.type_field)
-                                                    .unwrap_or_default();
+                                            let type_value = extract_string_with_envelope(
+                                                &envelope_cfg.type_field,
+                                                &json,
+                                                Some(&json),
+                                            )
+                                            .unwrap_or_default();
                                             let routing = envelope_cfg.get_routing(&type_value);
 
                                             // Only extract if this line has routing
