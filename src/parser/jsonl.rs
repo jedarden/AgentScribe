@@ -8,7 +8,8 @@ mod jsonl_subagent_test;
 use crate::error::{AgentScribeError, Result};
 use crate::event::{Event, Role, TokenCounts};
 use crate::parser::{
-    extract_string, extract_string_with_envelope, parse_timestamp_with_envelope, ParseContext, SessionInfo,
+    extract_string, extract_string_with_envelope, parse_timestamp_with_envelope, ParseContext,
+    SessionInfo,
 };
 use crate::plugin::{Plugin, SessionDetection, SessionIdSource};
 use chrono::Utc;
