@@ -63,7 +63,11 @@ impl DoctorOutput {
     /// Add a check result
     pub fn add_check(&mut self, check: CheckResult) {
         // Update overall health status based on check severity
-        match (check.severity.as_str(), check.passed, self.health_status.as_str()) {
+        match (
+            check.severity.as_str(),
+            check.passed,
+            self.health_status.as_str(),
+        ) {
             ("critical", false, "healthy" | "warning") => {
                 self.health_status = "critical".to_string();
             }
