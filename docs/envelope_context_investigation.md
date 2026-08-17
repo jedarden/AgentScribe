@@ -1,64 +1,69 @@
-# Envelope Context Availability Investigation
-
-## Overview
-This document verifies the availability and flow of envelope context (`envelope_json`) through the `parse_line()` function in the JSONL parser, and documents which helper functions currently receive envelope context.
+# Envelope Context Availability in parse_line()
 
 ## Investigation Summary
 
-**✓ Confirmed:** `envelope_json` is available in `parse_line()` and correctly passed to all envelope-aware helper functions.
+**Date:** 2026-08-17  
+**Task:** Verify envelope context availability in parse_line() and understand how envelope_json is passed through the call stack  
+**Status:** ✅ **CONFIRMED** - envelope_json is available in parse_line() and properly passed to all helper functions
 
 ---
 
-## 1. Envelope Context Availability in parse_line()
+## Key Findings
 
-### Function Signature
+### 1. envelope_json Parameter Availability
+
+**Location:** `src/parser/jsonl.rs:185-456` - `parse_line()` function
+
+The `parse_line()` function receives:
+- `line: &str` - The raw JSONL line
+- `line_number: usize` - Line number for error reporting
+- `context: &ParseContext` - Session context
+- `plugin: &Plugin` - Plugin configuration with envelope settings
+
+**envelope_json is NOT a direct parameter** but is **extracted within** `parse_line()` based on plugin configuration.
+
+---
+
+### 2. Envelope Extraction Logic
+
+**Lines 212-298** contain the core envelope unwrapping logic:
+
 ```rust
-pub fn parse_line(
-    line: &str,
-    line_number: usize,
-    context: &ParseContext,
-    plugin: &Plugin,
-) -> Result<Vec<Event>>
-```
-Location: `src/parser/jsonl.rs:185-190`
-
-### Envelope Context Setup
-
-**Location:** `src/parser/jsonl.rs:212-298`
-
-The envelope context is established early in `parse_line()` through envelope routing logic:
-
-```rust
-let (envelope_json, payload_json): (Option<&Value>, &Value) = if let Some(
-    ref envelope_cfg,
-) = plugin.source.envelope
-{
+let (envelope_json, payload_json): (Option<&Value>, &Value) = if let Some(ref envelope_cfg) = plugin.source.envelope {
     // Envelope mode: extract type and apply routing
     let type_value = extract_string_with_envelope(
         &envelope_cfg.type_field,
         &raw_json,
-        Some(&raw_json),
-    ).unwrap_or_default();
+        Some(&raw_json),  // envelope_json = raw_json
+    )
+    .unwrap_or_default();
     let routing = envelope_cfg.get_routing(&type_value);
 
     match routing {
-        "skip" => return Ok(Vec::new()),  // Skip this line
-        "meta" => return Ok(Vec::new()),  // Metadata line (TODO: accumulate)
+        "skip" => {
+            return Ok(Vec::new());  // Drop line
+        }
+        "meta" => {
+            return Ok(Vec::new());  // TODO: accumulate metadata
+        }
         "event" => {
-            // Extract payload from payload_field
-            let extracted = raw_json.get(&envelope_cfg.payload_field).and_then(|v| {
-                match v {
+            let extracted = raw_json.get(&envelope_cfg.payload_field)
+                .and_then(|v| match v {
                     Value::Object(_) => Some(v),
                     _ => None,
-                }
-            });
+                });
 
             match extracted {
-                Some(payload) => (Some(&raw_json), payload),
-                None => return Ok(Vec::new()),  // Skip with warning
+                Some(payload) => {
+                    (Some(&raw_json), payload)  // envelope_json + payload
+                }
+                None => {
+                    // Skip with warning
+                    return Ok(Vec::new());
+                }
             }
         }
-        _ => return Ok(Vec::new()),  // Unknown routing
+        _ => return Ok(Vec::new()),
     }
 } else {
     // No envelope: both envelope_json and payload_json point to the full line
@@ -66,289 +71,179 @@ let (envelope_json, payload_json): (Option<&Value>, &Value) = if let Some(
 };
 ```
 
-### Key Points
+---
 
-1. **`envelope_json` is `Option<&Value>`**: Contains reference to wrapper JSON when envelope is configured and routing is "event", otherwise `None`
+### 3. Helper Functions Currently Receiving envelope_json
 
-2. **`payload_json` is `&Value`**: Always contains the event data (from `payload_field` if envelope exists, otherwise the full line)
+All field extraction helpers receive **both** `payload_json` AND `envelope_json`:
 
-3. **Routing determines availability**:
-   - `"skip"` → returns early, envelope unused
-   - `"meta"` → returns early, envelope unused (future: accumulate metadata)
-   - `"event"` → envelope available as `Some(&raw_json)`
-   - No envelope config → `None`
+| Helper Function | Line(s) | Purpose | Receives envelope_json? |
+|----------------|---------|---------|--------------------------|
+| `extract_string_with_envelope` | 304, 315 | Type filtering (include/exclude) | ✅ Yes |
+| `parse_timestamp_with_envelope` | 325 | Timestamp extraction | ✅ Yes |
+| `extract_string_with_envelope` | 338 | Role extraction | ✅ Yes |
+| `extract_string_with_envelope` | 376 | Content extraction | ✅ Yes |
+| `extract_string_with_envelope` | 401 | Tool name extraction | ✅ Yes |
+| `extract_string_with_envelope` | 409, 413 | Token count extraction | ✅ Yes |
 
 ---
 
-## 2. Call Chain to Helper Functions
+### 4. Call Chain Diagram
 
-### Helper Functions in src/parser/mod.rs
-
-#### A. `extract_string_with_envelope()`
-**Signature:**
-```rust
-pub fn extract_string_with_envelope(
-    path: &str,
-    payload: &Value,
-    envelope: Option<&Value>,
-) -> Option<String>
 ```
-**Location:** `src/parser/mod.rs:553-590`
+parse_line(line, line_number, context, plugin)
+    │
+    ├─> Parse JSON line → raw_json: Value
+    │
+    ├─> Extract envelope_json & payload_json (lines 212-298)
+    │   │
+    │   ├─> IF plugin.source.envelope = Some(envelope_cfg):
+    │   │   │
+    │   │   ├─> Extract type field → routing
+    │   │   ├─> routing = "skip" → return Ok(Vec::new())
+    │   │   ├─> routing = "meta" → return Ok(Vec::new())
+    │   │   └─> routing = "event" → (Some(&raw_json), payload)
+    │   │
+    │   └─> ELSE (no envelope): (None, &raw_json)
+    │
+    ├─> Type filtering checks
+    │   └─> extract_string_with_envelope(field, payload_json, envelope_json)
+    │       │
+    │       └─> ^prefix → reads from envelope_json
+    │       └─> no prefix → reads from payload_json
+    │
+    ├─> Timestamp extraction
+    │   └─> parse_timestamp_with_envelope(field, payload_json, envelope_json)
+    │
+    ├─> Role extraction
+    │   └─> extract_string_with_envelope(field, payload_json, envelope_json)
+    │
+    ├─> Content extraction
+    │   └─> extract_string_with_envelope(field, payload_json, envelope_json)
+    │
+    ├─> Tool name extraction
+    │   └─> extract_string_with_envelope(field, payload_json, envelope_json)
+    │
+    └─> Token count extraction
+        └─> extract_string_with_envelope(field, payload_json, envelope_json)
+```
 
-**Behavior:**
-- Envelope-first lookup with payload fallback for `^`-prefixed paths
-- `^field` → try envelope first, fallback to payload
-- `field` → extract from payload only
-- Supports dot notation and array indexing
-- Coerces String/Number/Bool/Null to string
-- Special handling for content arrays (text blocks)
+---
 
-#### B. `parse_timestamp_with_envelope()`
-**Signature:**
+### 5. Envelope-Aware Field Extraction
+
+The `^` prefix syntax controls data source selection:
+
+- **`^field`** → Read from `envelope_json` (wrapper level)
+- **`field`** → Read from `payload_json` (payload level)
+
+**Example from envelope_test.toml:**
+
+```toml
+[parser]
+timestamp = "^timestamp"     # Read from wrapper: {"type": "message", "timestamp": "...", "payload": {...}}
+role = "role"                 # Read from payload: {"role": "user", "content": "..."}
+content = "content"           # Read from payload
+```
+
+**Result:** Wrapper-level fields (like `timestamp`) are extracted from the envelope, while event fields (like `role` and `content`) are extracted from the payload.
+
+---
+
+### 6. Current Implementation Status
+
+| Component | Status | Notes |
+|-----------|--------|-------|
+| Envelope unwrapping in parse_line() | ✅ Complete | Lines 212-298 |
+| Field extraction with envelope context | ✅ Complete | All helpers receive envelope_json |
+| Type filtering with envelope support | ✅ Complete | Lines 301-321 |
+| Meta-type routing | ⚠️ Partial | Routes to `Ok(Vec::new())` with TODO comment for future metadata accumulation |
+| Skip-type routing | ✅ Complete | Returns `Ok(Vec::new())` to drop lines |
+| Event-type routing | ✅ Complete | Extracts payload and continues to event processing |
+
+---
+
+### 7. Helper Function Signatures
+
+**From `src/parser/mod.rs`:**
+
 ```rust
+/// Extract a string field from either envelope or payload
+pub fn extract_string_with_envelope(
+    field: &str,
+    payload_json: &Value,
+    envelope_json: Option<&Value>,
+) -> Option<String>
+
+/// Parse timestamp from either envelope or payload
 pub fn parse_timestamp_with_envelope(
-    path: &str,
-    payload: &Value,
-    envelope: Option<&Value>,
+    field: &str,
+    payload_json: &Value,
+    envelope_json: Option<&Value>,
 ) -> Result<DateTime<Utc>>
 ```
-**Location:** `src/parser/mod.rs:597-631`
 
-**Behavior:**
-- Wrapper around `extract_string_with_envelope()` with timestamp parsing
-- Supports ISO 8601, Unix epoch (seconds/milliseconds), UTC-naive formats
-- Returns `Result<DateTime<Utc>>` or `Timestamp` error
-
-#### C. `extract_with_envelope()`
-**Signature:**
-```rust
-pub fn extract_with_envelope(
-    path: &str,
-    payload: &Value,
-    envelope: Option<&Value>,
-) -> Option<Value>
-```
-**Location:** `src/parser/mod.rs:523-547`
-
-**Behavior:**
-- Lower-level function used by `extract_string_with_envelope()`
-- Returns raw `Value` instead of string
-- Implements envelope-first with payload fallback logic
-- Supports dot notation and array indexing
+Both functions:
+- Accept `envelope_json` as `Option<&Value>` (None when no envelope)
+- Parse the field path (e.g., "timestamp", "payload.role")
+- Handle `^` prefix to select envelope vs payload
+- Return `None` / `Err` when field is missing
 
 ---
 
-## 3. Helper Functions Currently Receiving envelope_json
+### 8. Test Coverage
 
-### In parse_line() at src/parser/jsonl.rs
+**Envelope routing tests** (all passing):
 
-| Line | Helper Call | Field | Purpose |
-|------|-------------|-------|---------|
-| 217 | `extract_string_with_envelope()` | `type_field` | Get type value for routing |
-| 304 | `extract_string_with_envelope()` | `include_types.field` | Type filter (include) |
-| 314 | `extract_string_with_envelope()` | `exclude_types.field` | Type filter (exclude) |
-| 325 | `parse_timestamp_with_envelope()` | `timestamp` | Parse event timestamp |
-| 338 | `extract_string_with_envelope()` | `role` | Extract role field |
-| 376 | `extract_string_with_envelope()` | `content` | Extract content field |
-| 401 | `extract_string_with_envelope()` | `tool_name` | Extract tool name |
-| 409 | `extract_string_with_envelope()` | `tokens_in` | Extract input tokens |
-| 413 | `extract_string_with_envelope()` | `tokens_out` | Extract output tokens |
+- ✅ `test_parse_line_simple` - Basic parsing without envelope
+- ✅ `test_parse_line_envelope_skip_routing` - Skip-type routing drops lines
+- ✅ `test_parse_line_envelope_meta_routing` - Meta-type routing (currently drops)
+- ✅ `test_parse_line_envelope_unknown_type_defaults_to_skip` - Unknown types skip
+- ✅ `test_parse_line_event_type` - Event-type routing extracts payload
+- ✅ `test_parse_line_envelope_field_extraction` - Field extraction from both levels
+- ✅ `test_fixture_with_only_non_event_types_produces_zero_events` - Integration test
+- ✅ `test_skip_only_fixture_routing_integration` - Skip-type integration test
 
-### Pattern Summary
-
-All field extraction in `parse_line()` follows this pattern:
-
-```rust
-// ^ prefix: envelope-first lookup with payload fallback
-let field_value = extract_string_with_envelope(
-    field_path,        // e.g., "^timestamp" or "role"
-    payload_json,      // Event data
-    envelope_json      // Wrapper JSON (Option<&Value>)
-);
-
-// Specialized timestamp parsing
-let ts = parse_timestamp_with_envelope(
-    ts_field,          // e.g., "^timestamp"
-    payload_json,
-    envelope_json
-);
-```
+**Test verification:** ✅ All envelope tests pass, confirming correct envelope_json flow
 
 ---
 
-## 4. Envelope-Aware Helper Function Behavior
+### 9. Key Code Locations
 
-### Field Resolution Order
-
-For **`^field`** (caret-prefixed):
-1. Try `envelope.field` (if envelope exists)
-2. Fallback to `payload.field` (if envelope missing or field not found)
-3. Return `None` (if both fail)
-
-For **`field`** (no caret):
-- Extract from `payload.field` only (envelope ignored)
-
-### Supported Path Syntax
-
-- **Simple:** `"role"`, `"^timestamp"`
-- **Nested:** `"user.role"`, `"^outer.inner.ts"`
-- **Array:** `"items[0].name"`, `"^list[1].field"`
-
-### Type Coercion (extract_string_with_envelope)
-
-- `Value::String(s)` → `Some(s)`
-- `Value::Number(n)` → `Some(n.to_string())`
-- `Value::Bool(b)` → `Some(b.to_string())`
-- `Value::Null` → `Some(String::new())`
-- `Value::Array(arr)` → Text block extraction or `None`
-- `Value::Object(_)` → `None`
+| Concern | File | Lines | Description |
+|---------|------|-------|-------------|
+| Envelope extraction | `src/parser/jsonl.rs` | 212-298 | Core unwrapping logic |
+| Type filtering | `src/parser/jsonl.rs` | 301-321 | Include/exclude with envelope support |
+| Field extraction | `src/parser/jsonl.rs` | 324-423 | All field extraction with envelope |
+| Helper functions | `src/parser/mod.rs` | - | `extract_string_with_envelope`, `parse_timestamp_with_envelope` |
+| Plugin envelope config | `src/plugin.rs` | - | `Envelope` struct definition |
 
 ---
 
-## 5. Usage Examples from Test Suite
+### 10. Future Work Areas
 
-### Example 1: Extract timestamp from envelope
-```rust
-let payload = json!({"role": "user"});
-let envelope = json!({"timestamp": "2026-03-16T12:00:00Z"});
+1. **Meta-type metadata accumulation** (line 232)
+   - Currently returns `Ok(Vec::new())` 
+   - TODO comment indicates future session-level metadata extraction
+   - Should accumulate project, model, version from meta-type lines
 
-// Extract from envelope using ^ prefix
-let result = extract_string_with_envelope("^timestamp", &payload, Some(&envelope));
-assert_eq!(result, Some("2026-03-16T12:00:00Z".to_string()));
-```
+2. **Performance optimization**
+   - Current implementation extracts envelope_json for every line
+   - Could be cached for lines with same envelope structure
+   - No immediate need - performance is acceptable
 
-### Example 2: Extract role from payload (no caret)
-```rust
-let payload = json!({"role": "user", "content": "hello"});
-let envelope = json!({"timestamp": "2026-03-16T12:00:00Z"});
-
-// Extract from payload (no ^ prefix)
-let result = extract_string_with_envelope("role", &payload, Some(&envelope));
-assert_eq!(result, Some("user".to_string()));
-```
-
-### Example 3: Nested field with envelope fallback
-```rust
-let payload = json!({"model": "gpt-4"});
-let envelope = json!({"timestamp": "2026-03-16T12:00:00Z"});
-
-// Field not in envelope, fallback to payload
-let result = extract_string_with_envelope("^model", &payload, Some(&envelope));
-assert_eq!(result, Some("gpt-4".to_string()));
-```
-
-### Example 4: Parse timestamp from envelope
-```rust
-let payload = json!({"role": "user"});
-let envelope = json!({"timestamp": "2026-03-16T12:00:00Z"});
-
-// Parse timestamp from envelope using ^ prefix
-let result = parse_timestamp_with_envelope("^timestamp", &payload, Some(&envelope));
-assert!(result.is_ok());
-```
+3. **Enhanced error messages**
+   - Field extraction could include whether it came from envelope or payload
+   - Helpful for debugging plugin configuration
 
 ---
 
-## 6. List of Helper Functions That Should Be Envelope-Aware
+## Conclusion
 
-### Currently Envelope-Aware ✓
-- `extract_string_with_envelope()` — USED
-- `parse_timestamp_with_envelope()` — USED
-- `extract_with_envelope()` — USED (internally by above)
+**✅ CONFIRMED:** `envelope_json` is available in `parse_line()` and correctly passed to all helper functions via the `(envelope_json, payload_json)` tuple extraction (lines 212-298).
 
-### Potentially Future Helpers
-The following helpers could be made envelope-aware if needed:
+**✅ WORKING:** All field extraction functions receive envelope context and use the `^` prefix syntax to select between envelope and payload data sources.
 
-1. **Custom field extractors** — If new field types are added (e.g., complex objects, custom arrays)
-2. **Metadata accumulators** — For "meta" routing (currently skipped, TODO in code)
-3. **Array field handlers** — For extracting array elements with envelope awareness
+**✅ TESTED:** Comprehensive test coverage validates envelope routing (skip/meta/event), field extraction from both levels, and proper handling of unknown types.
 
-However, the current implementation already covers all common use cases through the three envelope-aware helpers above.
-
----
-
-## 7. Architecture Diagram
-
-```
-parse_line()
-    │
-    ├── [1] Parse JSON line → raw_json: Value
-    │
-    ├── [2] Envelope Routing
-    │     ├── If plugin.source.envelope exists:
-    │     │   ├── Extract type_field → routing
-    │     │   ├── match routing {
-    │     │   │   "skip" → return Ok(Vec::new())
-    │     │   │   "meta" → return Ok(Vec::new())  [TODO: accumulate]
-    │     │   │   "event" → (envelope_json, payload_json) = (Some(&raw_json), payload)
-    │     │   │   }
-    │     │   └── else: (envelope_json, payload_json) = (None, &raw_json)
-    │     │
-    │     └── envelope_json: Option<&Value> is now available
-    │
-    ├── [3] Type Filtering
-    │     ├── include_types: extract_string_with_envelope(field, payload, envelope)
-    │     └── exclude_types: extract_string_with_envelope(field, payload, envelope)
-    │
-    ├── [4] Field Extraction (all use envelope_json)
-    │     ├── timestamp: parse_timestamp_with_envelope(field, payload, envelope)
-    │     ├── role: extract_string_with_envelope(field, payload, envelope)
-    │     ├── content: extract_string_with_envelope(field, payload, envelope)
-    │     ├── tool_name: extract_string_with_envelope(field, payload, envelope)
-    │     ├── tokens_in: extract_string_with_envelope(field, payload, envelope)
-    │     └── tokens_out: extract_string_with_envelope(field, payload, envelope)
-    │
-    └── [5] Build Event → Ok(vec![event])
-```
-
----
-
-## 8. Key Findings
-
-### Availability
-✓ **`envelope_json` is available throughout `parse_line()`** after the envelope routing block (lines 212-298)
-
-### Call Chain
-✓ **All field extraction helpers receive `envelope_json`** via the `envelope` parameter
-
-### Current Implementation
-✓ **Three envelope-aware helpers cover all current use cases:**
-- `extract_string_with_envelope()` — 9 call sites
-- `parse_timestamp_with_envelope()` — 1 call site  
-- `extract_with_envelope()` — internal use
-
-### Design Pattern
-✓ **Envelope-first with payload fallback** is consistently implemented across all helpers:
-- `^field` → envelope first, payload fallback
-- `field` → payload only
-
-### Future Extensibility
-✓ **The pattern is extensible** — new field types can use the same helpers without modification
-
----
-
-## 9. Recommendations
-
-### Current State
-✓ **No changes needed** — envelope context flows correctly through all helpers
-
-### Future Enhancements (Optional)
-1. **Meta routing implementation** — Lines 232-235 have TODO for accumulating metadata from "meta" routing
-2. **Additional helper types** — Only if new field extraction patterns emerge
-3. **Performance optimization** — Consider caching parsed field paths if profiling shows need
-
-### Testing Coverage
-✓ **Comprehensive test suite** — 50+ tests covering envelope scenarios in `src/parser/mod.rs:682-1587`
-
----
-
-## 10. Conclusion
-
-**envelope_json is correctly available in parse_line()** and flows through the entire call chain to all helper functions that need it. The envelope-aware helper design (`extract_string_with_envelope`, `parse_timestamp_with_envelope`, `extract_with_envelope`) provides a consistent pattern for field extraction that:
-
-1. Supports envelope-first lookup with payload fallback
-2. Handles caret-prefixed paths for envelope fields
-3. Maintains backward compatibility (non-caret fields read payload only)
-4. Is extensible for future field types
-
-**No code changes are required** — the implementation is correct and complete.
+**No code changes required** - the envelope context flow is already properly implemented and tested.
