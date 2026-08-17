@@ -3,15 +3,19 @@
   "agent": "claude-code-glm-4.7",
   "provider": "anthropic",
   "model": "glm-4.7",
-  "exit_code": 0,
-  "outcome": "success",
-  "duration_ms": 136022,
+  "exit_code": 124,
+  "outcome": "timeout",
+  "duration_ms": 600008,
   "input_tokens": null,
   "output_tokens": null,
   "cost_usd": null,
-  "captured_at": "2026-08-16T02:10:22.280776083Z",
+  "captured_at": "2026-08-17T06:09:52.367891591Z",
   "trace_format": "claude_json",
   "pruned": false,
   "template_version": null,
-  "timeout_reason": null
+  "timeout_reason": {
+    "hard": {
+      "timeout_secs": 600
+    }
+  }
 }
