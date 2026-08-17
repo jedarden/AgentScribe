@@ -368,12 +368,46 @@ pub struct JsonFileStateStore {
 
 impl JsonFileStateStore {
     /// Create a new JSON file state store.
+    ///
+    /// If an existing state file is corrupted, it will be renamed to
+    /// `*.corrupt-<timestamp>` and a new empty state will be created instead.
+    /// This makes the state persistence crash-safe and self-healing per ADR-1.
     pub fn new(state_file: PathBuf) -> Result<Self> {
         // Load existing state or create new
         let state = if state_file.exists() {
             let file = File::open(&state_file)?;
             let reader = BufReader::new(file);
-            serde_json::from_reader(reader)?
+            match serde_json::from_reader::<_, ScrapeState>(reader) {
+                Ok(state) => state,
+                Err(e) => {
+                    // Corrupted state file - rename for debugging and start fresh
+                    let timestamp = Utc::now().format("%Y%m%d-%H%M%S");
+                    let corrupt_path =
+                        state_file.with_extension(format!("json.corrupt-{}", timestamp));
+
+                    // Rename the corrupted file
+                    std::fs::rename(&state_file, &corrupt_path).map_err(|e| {
+                        crate::error::AgentScribeError::State(format!(
+                            "Failed to rename corrupted state file: {}. Original error: {}",
+                            corrupt_path.display(),
+                            e
+                        ))
+                    })?;
+
+                    // Log error with backup path
+                    eprintln!(
+                        "ERROR: Failed to parse state file at {}: {}. \
+                         Corrupted file backed up to: {}. \
+                         Starting with empty state.",
+                        state_file.display(),
+                        e,
+                        corrupt_path.display()
+                    );
+
+                    // Return empty state for self-healing
+                    ScrapeState::new()
+                }
+            }
         } else {
             ScrapeState::new()
         };
