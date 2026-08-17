@@ -8,7 +8,7 @@ mod jsonl_subagent_test;
 use crate::error::{AgentScribeError, Result};
 use crate::event::{Event, Role, TokenCounts};
 use crate::parser::{
-    extract_string_with_envelope, parse_timestamp_with_envelope, ParseContext, SessionInfo,
+    extract_string, extract_string_with_envelope, parse_timestamp_with_envelope, ParseContext, SessionInfo,
 };
 use crate::plugin::{Plugin, SessionDetection, SessionIdSource};
 use chrono::Utc;
@@ -214,13 +214,12 @@ impl JsonlParser {
         ) = plugin.source.envelope
         {
             // Envelope mode: extract type and apply routing
-            let type_value = extract_string_with_envelope(
-                &envelope_cfg.type_field,
-                &raw_json,
-                Some(&raw_json),
-            )
-            .unwrap_or_default();
-            let routing = envelope_cfg.get_routing(&type_value);
+            // Extract type field from raw_json using extract_string (returns None if missing)
+            let type_value = extract_string(&raw_json, &envelope_cfg.type_field);
+
+            // Get routing action - empty string if type field was missing
+            let type_str = type_value.as_deref().unwrap_or("");
+            let routing = envelope_cfg.get_routing(type_str);
 
             match routing {
                 "skip" => {
@@ -274,12 +273,12 @@ impl JsonlParser {
                                 };
                                 format!(
                                     "Envelope payload_field '{}' exists for type '{}' but is not an object (found: {}), skipping line",
-                                    envelope_cfg.payload_field, type_value, value_desc
+                                    envelope_cfg.payload_field, type_str, value_desc
                                 )
                             } else {
                                 format!(
                                     "Envelope payload_field '{}' missing for type '{}', skipping line",
-                                    envelope_cfg.payload_field, type_value
+                                    envelope_cfg.payload_field, type_str
                                 )
                             };
                             warn!("{}", warning_msg);
