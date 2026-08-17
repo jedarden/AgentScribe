@@ -5,10 +5,8 @@
 //! rather than errors.
 
 use agentscribe::event::{Event, Role, SessionManifest};
-use agentscribe::index::IndexManager;
 use agentscribe::search::{execute_search, SearchOptions};
 use chrono::Utc;
-use std::path::Path;
 
 mod test_helpers;
 use test_helpers::setup_empty_index;
@@ -111,36 +109,38 @@ fn test_empty_index_schema_fields_accessible() {
 #[test]
 fn test_empty_index_supports_multiple_searches() {
     // Create an empty index
-    let (_temp_dir, index_manager) = setup_empty_index();
+    let (temp_dir, _index_manager) = setup_empty_index();
+    let data_dir = temp_dir.path().join(".agentscribe");
 
     // Perform multiple searches (simulating concurrent access)
     for query in &["test1", "test2", "test3"] {
         let options = SearchOptions {
-            query: query.to_string(),
+            query: Some(query.to_string()),
             max_results: 10,
             ..Default::default()
         };
 
-        let results = execute_search(&index_manager, &options).unwrap();
-        assert!(results.is_empty());
+        let results = execute_search(&data_dir, &options).unwrap();
+        assert!(results.results.is_empty());
     }
 }
 
 #[test]
 fn test_empty_index_handles_large_max_results() {
     // Create an empty index
-    let (_temp_dir, index_manager) = setup_empty_index();
+    let (temp_dir, _index_manager) = setup_empty_index();
+    let data_dir = temp_dir.path().join(".agentscribe");
 
     // Request many results from empty index
     let options = SearchOptions {
-        query: "anything".to_string(),
+        query: Some("anything".to_string()),
         max_results: 10000,
         ..Default::default()
     };
 
-    let results = execute_search(&index_manager, &options).unwrap();
+    let results = execute_search(&data_dir, &options).unwrap();
     assert!(
-        results.is_empty(),
+        results.results.is_empty(),
         "Even with large max_results, should return empty"
     );
 }
@@ -148,11 +148,12 @@ fn test_empty_index_handles_large_max_results() {
 #[test]
 fn test_empty_index_search_with_all_filter_types() {
     // Create an empty index
-    let (_temp_dir, index_manager) = setup_empty_index();
+    let (temp_dir, _index_manager) = setup_empty_index();
+    let data_dir = temp_dir.path().join(".agentscribe");
 
     // Search with all possible filter types
     let options = SearchOptions {
-        query: "comprehensive query".to_string(),
+        query: Some("comprehensive query".to_string()),
         max_results: 10,
         agent: vec!["claude-code".to_string(), "aider".to_string()],
         project: Some("/home/coding/test".to_string()),
@@ -162,6 +163,6 @@ fn test_empty_index_search_with_all_filter_types() {
     };
 
     // Should handle all filters gracefully and return empty results
-    let results = execute_search(&index_manager, &options).unwrap();
-    assert!(results.is_empty());
+    let results = execute_search(&data_dir, &options).unwrap();
+    assert!(results.results.is_empty());
 }
