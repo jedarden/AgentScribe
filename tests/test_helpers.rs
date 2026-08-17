@@ -396,6 +396,91 @@ pub fn assert_meta_routing_returns_empty(
     );
 }
 
+/// Set up an empty Tantivy index for testing search behavior.
+///
+/// Creates a temporary directory with the standard AgentScribe layout and
+/// initializes an empty Tantivy index at `<temp_dir>/.agentscribe/index/tantivy/`.
+/// This is useful for tests that need to verify search behavior when the index
+/// contains no documents, or for tests that want to start with a clean slate.
+///
+/// # Returns
+///
+/// A tuple containing:
+/// * `tempfile::TempDir` - The temporary directory (cleaned up on drop)
+/// * `agentscribe::index::IndexManager` - The index manager ready for use
+///
+/// # Index Location
+///
+/// The empty index is created at: `<temp_dir>/.agentscribe/index/tantivy/`
+///
+/// This path is significant because:
+/// 1. It matches the production index structure
+/// 2. It's where `IndexManager::open()` expects to find the index
+/// 3. It persists for the lifetime of the `TempDir`
+///
+/// # Example
+///
+/// ```ignore
+/// use agentscribe::index::IndexManager;
+///
+/// let (temp_dir, index_manager) = setup_empty_index();
+/// let index_path = temp_dir.path().join(".agentscribe/index/tantivy");
+///
+/// // Verify the index exists and is empty
+/// assert!(index_path.exists());
+/// assert!(index_path.is_dir());
+///
+/// // Use the index manager for search tests
+/// let reader = index_manager.index.reader().unwrap();
+/// let searcher = reader.searcher();
+/// assert_eq!(searcher.num_docs(), 0); // No documents indexed
+/// ```
+///
+/// # Notes
+///
+/// - The index is created with the standard AgentScribe schema (see `agentscribe::index::build_schema()`)
+/// - No documents are indexed — this is a truly empty index
+/// - The `TempDir` is automatically cleaned up when dropped, so no manual cleanup is needed
+/// - Multiple calls to this function create independent, isolated indices
+pub fn setup_empty_index() -> (tempfile::TempDir, agentscribe::index::IndexManager) {
+    use agentscribe::index::IndexManager;
+
+    let temp_dir = setup_temp_directory();
+    let data_dir = temp_dir.path().join(".agentscribe");
+
+    // Create the index manager - this will create an empty index if one doesn't exist
+    let index_manager =
+        IndexManager::open(&data_dir).expect("Failed to create empty index manager");
+
+    // Verify the index was created and is empty
+    let index_path = data_dir.join("index").join("tantivy");
+    assert!(
+        index_path.exists(),
+        "Index directory should exist at: {}",
+        index_path.display()
+    );
+
+    // Begin and finish a write session to ensure the index is fully initialized
+    let mut manager = index_manager;
+    manager
+        .begin_write()
+        .expect("Failed to begin write on empty index");
+    manager
+        .finish()
+        .expect("Failed to finish write on empty index");
+
+    // Verify no documents are indexed
+    let reader = manager.index().reader().unwrap();
+    let searcher = reader.searcher();
+    assert_eq!(
+        searcher.num_docs(),
+        0,
+        "Empty index should have zero documents"
+    );
+
+    (temp_dir, manager)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -63,16 +63,12 @@ impl DoctorOutput {
     /// Add a check result
     pub fn add_check(&mut self, check: CheckResult) {
         // Update overall health status based on check severity
-        match check.severity.as_str() {
-            "critical" if !check.passed => {
-                if self.health_status != "critical" {
-                    self.health_status = "critical".to_string();
-                }
+        match (check.severity.as_str(), check.passed, self.health_status.as_str()) {
+            ("critical", false, "healthy" | "warning") => {
+                self.health_status = "critical".to_string();
             }
-            "warning" if !check.passed => {
-                if self.health_status == "healthy" {
-                    self.health_status = "warning".to_string();
-                }
+            ("warning", false, "healthy") => {
+                self.health_status = "warning".to_string();
             }
             _ => {}
         }
@@ -343,7 +339,7 @@ fn check_state_file_parses(data_dir: &Path) -> CheckResult {
                 .unwrap_or(false);
 
             let message = if has_quarantine {
-                format!("State file corrupted and quarantined (started from empty state)")
+                "State file corrupted and quarantined (started from empty state)".to_string()
             } else {
                 format!("State file corrupted: {}", e)
             };
@@ -428,11 +424,7 @@ fn check_index_consistent(data_dir: &Path) -> CheckResult {
 
     // Check if counts are roughly consistent (allow 10% tolerance for anti-patterns, code artifacts)
     let tolerance = (session_count as f64 * 0.1) as usize;
-    let diff = if session_count > index_doc_count {
-        session_count - index_doc_count
-    } else {
-        index_doc_count - session_count
-    };
+    let diff = session_count.abs_diff(index_doc_count);
 
     if diff > tolerance && session_count > 0 {
         CheckResult {
@@ -505,7 +497,7 @@ fn check_mcp_config(data_dir: &Path, daemon_config: &crate::config::DaemonConfig
     let socket_path = daemon_config
         .mcp_socket_path
         .as_ref()
-        .map(|p| PathBuf::from(p))
+        .map(PathBuf::from)
         .unwrap_or_else(|| data_dir.join("mcp.sock"));
 
     if socket_path.exists() {
@@ -561,7 +553,6 @@ fn format_duration(duration: Duration) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs;
     use tempfile::TempDir;
 
     #[test]
