@@ -274,6 +274,7 @@ pub fn create_envelope_plugin() -> Plugin {
 /// assert_eq!(envelope.get_routing("session_start"), "meta");
 /// assert_eq!(envelope.get_routing("session_end"), "meta");
 /// ```
+#[allow(dead_code)]
 pub fn create_meta_routing_test_plugin() -> Plugin {
     let mut type_routing = HashMap::new();
     type_routing.insert("message".to_string(), "event".to_string());
