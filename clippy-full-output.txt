@@ -1,0 +1,156 @@
+    Blocking waiting for file lock on build directory
+    Blocking waiting for file lock on artifact directory
+    Checking agentscribe v0.1.0 (/home/coding/AgentScribe)
+warning: function `assert_meta_routing_returns_empty` is never used
+   --> tests/test_helpers.rs:368:8
+    |
+368 | pub fn assert_meta_routing_returns_empty(
+    |        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `agentscribe` (test "empty_index_test") generated 1 warning
+warning: unused import: `agentscribe::index::IndexManager`
+ --> tests/empty_index_search_test.rs:8:5
+  |
+8 | use agentscribe::index::IndexManager;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `std::path::Path`
+  --> tests/empty_index_search_test.rs:11:5
+   |
+11 | use std::path::Path;
+   |     ^^^^^^^^^^^^^^^
+
+error[E0308]: mismatched types
+   --> tests/empty_index_search_test.rs:119:20
+    |
+119 |             query: query.to_string(),
+    |                    ^^^^^^^^^^^^^^^^^ expected `Option<String>`, found `String`
+    |
+    = note: expected enum `std::option::Option<std::string::String>`
+             found struct `std::string::String`
+help: try wrapping the expression in `Some`
+    |
+119 |             query: Some(query.to_string()),
+    |                    +++++                 +
+
+error[E0308]: mismatched types
+   --> tests/empty_index_search_test.rs:124:38
+    |
+124 |         let results = execute_search(&index_manager, &options).unwrap();
+    |                       -------------- ^^^^^^^^^^^^^^ expected `&Path`, found `&IndexManager`
+    |                       |
+    |                       arguments to this function are incorrect
+    |
+    = note: expected reference `&std::path::Path`
+               found reference `&agentscribe::index::IndexManager`
+note: function defined here
+   --> src/search.rs:291:8
+    |
+291 | pub fn execute_search(data_dir: &Path, opts: &SearchOptions) -> Result<SearchOutput> {
+    |        ^^^^^^^^^^^^^^
+
+error[E0599]: no method named `is_empty` found for struct `agentscribe::search::SearchOutput` in the current scope
+   --> tests/empty_index_search_test.rs:125:25
+    |
+125 |         assert!(results.is_empty());
+    |                         ^^^^^^^^ method not found in `agentscribe::search::SearchOutput`
+    |
+help: some of the expressions' fields have a method of the same name
+    |
+125 |         assert!(results.query.is_empty());
+    |                         ++++++
+125 |         assert!(results.results.is_empty());
+    |                         ++++++++
+
+error[E0308]: mismatched types
+   --> tests/empty_index_search_test.rs:136:16
+    |
+136 |         query: "anything".to_string(),
+    |                ^^^^^^^^^^^^^^^^^^^^^^ expected `Option<String>`, found `String`
+    |
+    = note: expected enum `std::option::Option<std::string::String>`
+             found struct `std::string::String`
+help: try wrapping the expression in `Some`
+    |
+136 |         query: Some("anything".to_string()),
+    |                +++++                      +
+
+error[E0308]: mismatched types
+   --> tests/empty_index_search_test.rs:141:34
+    |
+141 |     let results = execute_search(&index_manager, &options).unwrap();
+    |                   -------------- ^^^^^^^^^^^^^^ expected `&Path`, found `&IndexManager`
+    |                   |
+    |                   arguments to this function are incorrect
+    |
+    = note: expected reference `&std::path::Path`
+               found reference `&agentscribe::index::IndexManager`
+note: function defined here
+   --> src/search.rs:291:8
+    |
+291 | pub fn execute_search(data_dir: &Path, opts: &SearchOptions) -> Result<SearchOutput> {
+    |        ^^^^^^^^^^^^^^
+
+error[E0599]: no method named `is_empty` found for struct `agentscribe::search::SearchOutput` in the current scope
+   --> tests/empty_index_search_test.rs:143:17
+    |
+143 |         results.is_empty(),
+    |                 ^^^^^^^^ method not found in `agentscribe::search::SearchOutput`
+    |
+help: some of the expressions' fields have a method of the same name
+    |
+143 |         results.query.is_empty(),
+    |                 ++++++
+143 |         results.results.is_empty(),
+    |                 ++++++++
+
+error[E0308]: mismatched types
+   --> tests/empty_index_search_test.rs:155:16
+    |
+155 |         query: "comprehensive query".to_string(),
+    |                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected `Option<String>`, found `String`
+    |
+    = note: expected enum `std::option::Option<std::string::String>`
+             found struct `std::string::String`
+help: try wrapping the expression in `Some`
+    |
+155 |         query: Some("comprehensive query".to_string()),
+    |                +++++                                 +
+
+error[E0308]: mismatched types
+   --> tests/empty_index_search_test.rs:165:34
+    |
+165 |     let results = execute_search(&index_manager, &options).unwrap();
+    |                   -------------- ^^^^^^^^^^^^^^ expected `&Path`, found `&IndexManager`
+    |                   |
+    |                   arguments to this function are incorrect
+    |
+    = note: expected reference `&std::path::Path`
+               found reference `&agentscribe::index::IndexManager`
+note: function defined here
+   --> src/search.rs:291:8
+    |
+291 | pub fn execute_search(data_dir: &Path, opts: &SearchOptions) -> Result<SearchOutput> {
+    |        ^^^^^^^^^^^^^^
+
+error[E0599]: no method named `is_empty` found for struct `agentscribe::search::SearchOutput` in the current scope
+   --> tests/empty_index_search_test.rs:166:21
+    |
+166 |     assert!(results.is_empty());
+    |                     ^^^^^^^^ method not found in `agentscribe::search::SearchOutput`
+    |
+help: some of the expressions' fields have a method of the same name
+    |
+166 |     assert!(results.query.is_empty());
+    |                     ++++++
+166 |     assert!(results.results.is_empty());
+    |                     ++++++++
+
+Some errors have detailed explanations: E0308, E0599.
+For more information about an error, try `rustc --explain E0308`.
+warning: `agentscribe` (test "empty_index_search_test") generated 2 warnings
+error: could not compile `agentscribe` (test "empty_index_search_test") due to 9 previous errors; 2 warnings emitted
