@@ -359,18 +359,26 @@ Entries form a tree via `id`/`parentId`:
 ## Fixtures
 
 ### `multi-turn-with-tool.jsonl`
-- Complete multi-turn conversation
+Complete multi-turn conversation demonstrating:
 - User → Assistant (with tool call) → Tool Result → Assistant → User → Assistant (tool call) → Tool Result → Assistant
-- Demonstrates tool call/result pairing
-- Shows message ordering via `id`/`parentId`
+- Tool call/result pairing via `toolCallId` matching (tool_abc123 → tool_abc123, tool_def456 → tool_def456)
+- Message ordering via `id`/`parentId` chain: a1b2c3d4 → b2c3d4e5 → c3d4e5f6 → d4e5f6g7 → e5f6g7h8 → f6g7h8i9 → g7h8i9j0 → h8i9j0k1
+- Content blocks in assistant messages (text + toolCall arrays)
+- Complete message structure with api/provider/model/usage/stopReason for assistant messages
+- Proper timestamp formats (entry-level ISO-8601, message-level Unix milliseconds)
 
 ### `edge-case-empty.jsonl`
-- Session header only (no messages)
-- Tests handling of empty sessions
+Session header only (no message entries):
+- Tests handling of empty sessions where only the session type line exists
+- No messages or events to process
+- Validates parser doesn't crash on minimal valid input
 
 ### `edge-case-truncated.jsonl`
-- Session header + incomplete conversation
-- Tests handling of truncated/incomplete sessions
+Session header + incomplete conversation:
+- Tests handling of truncated/incomplete sessions (simulates mid-write crash or interrupted write)
+- Last line is incomplete JSON (ends mid-structure: `{"type":"message","id":"g7h8i9j0","parentId":"f6g7h8i9","timestamp":"2024-12-03T16:45:07.000Z","message"`)
+- Validates graceful error handling and recovery
+- Earlier valid lines should still be parsed correctly
 
 ## Implementation Notes
 
