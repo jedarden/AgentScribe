@@ -151,6 +151,8 @@ All entries (except session header) share this base structure:
 }
 ```
 
+`stopReason` values (verified against upstream `pi-ai` types): `"stop" | "length" | "toolUse" | "error" | "aborted"`. Pi normalizes provider-specific values — e.g. OpenAI's raw `tool_calls` is persisted as `"toolUse"`, so `tool_calls` never appears in session JSONL.
+
 #### Tool Result Message
 
 ```json
@@ -362,10 +364,11 @@ Entries form a tree via `id`/`parentId`:
 Complete multi-turn conversation demonstrating:
 - User → Assistant (with tool call) → Tool Result → Assistant → User → Assistant (tool call) → Tool Result → Assistant
 - Tool call/result pairing via `toolCallId` matching (tool_abc123 → tool_abc123, tool_def456 → tool_def456)
-- Message ordering via `id`/`parentId` chain: a1b2c3d4 → b2c3d4e5 → c3d4e5f6 → d4e5f6g7 → e5f6g7h8 → f6g7h8i9 → g7h8i9j0 → h8i9j0k1
+- Message ordering via `id`/`parentId` chain: 4f8a2b1c → 7d3e9a05 → 1c8f42bd → 92ab607e → 5ef0c318 → 38d94a2f → c07b5e69 → 6b1f80ad
+- Entry `id` values are 8-character hex strings (first entry has `parentId: null`)
 - Content blocks in assistant messages (text + toolCall arrays)
-- Complete message structure with api/provider/model/usage/stopReason for assistant messages
-- Proper timestamp formats (entry-level ISO-8601, message-level Unix milliseconds)
+- Complete message structure with api/provider/model/usage/stopReason for assistant messages (`stopReason: "toolUse"` on tool-call turns, `"stop"` on final replies)
+- Proper timestamp formats: entry-level ISO-8601 (e.g. `2024-12-03T14:00:01.000Z`) with a corresponding message-level Unix-millisecond timestamp (e.g. `1733234401000`) that decodes to the same instant
 
 ### `edge-case-empty.jsonl`
 Session header only (no message entries):
@@ -376,7 +379,7 @@ Session header only (no message entries):
 ### `edge-case-truncated.jsonl`
 Session header + incomplete conversation:
 - Tests handling of truncated/incomplete sessions (simulates mid-write crash or interrupted write)
-- Last line is incomplete JSON (ends mid-structure: `{"type":"message","id":"g7h8i9j0","parentId":"f6g7h8i9","timestamp":"2024-12-03T16:45:07.000Z","message"`)
+- Last line is incomplete JSON, ending mid-structure with **no trailing newline**: `{"type":"message","id":"b3617a08","parentId":"5d90fe12","timestamp":"2024-12-03T16:45:07.000Z","message"`
 - Validates graceful error handling and recovery
 - Earlier valid lines should still be parsed correctly
 
