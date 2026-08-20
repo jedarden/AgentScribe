@@ -7,7 +7,7 @@
 //!
 //! 1. After each scrape, scan for config files modified in the last 24h
 //! 2. For each modified file, find sessions that ended within 2h before modification
-//! 3. Store correlations in ~/.agentscribe/config-changes/<date>.json
+//! 3. Store correlations in ~/.agentscribe/config-changes/`<date>`.json
 //!
 //! # Data Format
 //!
