@@ -192,7 +192,10 @@ pub trait StateStore: Send + Sync {
     ///
     /// # Example
     ///
-    /// ```no_run
+    /// (Illustrative — `StateStore` is crate-internal, not reachable via the
+    /// public API, so this example is not compiled.)
+    ///
+    /// ```rust,ignore
     /// # use agentscribe::event::SourceFileState;
     /// # use agentscribe::scraper::state::StateStore;
     /// # fn example(store: impl StateStore) {

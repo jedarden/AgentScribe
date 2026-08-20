@@ -28,6 +28,8 @@
 //! ```no_run
 //! use agentscribe::{search, search::SearchOptions};
 //!
+//! # fn main() -> Result<(), Box<dyn std::error::Error>> {
+//! let data_dir = std::path::PathBuf::from("~/.agentscribe");
 //! let results = search::execute_search(
 //!     &data_dir,
 //!     &SearchOptions {
@@ -35,6 +37,8 @@
 //!         ..Default::default()
 //!     }
 //! )?;
+//! # Ok(())
+//! # }
 //! ```
 
 #![allow(clippy::too_many_arguments)]
