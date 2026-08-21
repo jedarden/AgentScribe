@@ -10,11 +10,7 @@ strands:
     - blocked
   explore:
     enabled: true
-    workspaces:
-    - /home/coding/ai-code-battle
-    - /home/coding/spaxel
-    - /home/coding/mta-my-way
-    - /home/coding/domain-check
+    workspaces: []
   weave:
     enabled: true
     max_beads_per_run: 3
@@ -40,31 +36,87 @@ verification:
 prompt:
   context_files:
   - docs/plan.md
-  instructions: "You are working on AgentScribe, a Rust CLI tool that archives, indexes,\
-    \ and extracts\nintelligence from conversation logs across multiple coding agents\
-    \ (Claude Code, Aider,\nOpenCode, Codex, Cursor, Windsurf).\n\nIMPORTANT: You\
-    \ must ONLY work within /home/coding/AgentScribe/. Do not read, write, or\nexplore\
-    \ files outside this directory. All source code, tests, and documentation live\
-    \ here.\n\nArchitecture:\n- Rust binary using Clap (CLI), Tantivy (full-text search),\
-    \ Tokio (async), Serde (JSON/TOML)\n- Plugin-based scraper framework with format\
-    \ parsers: JSONL, Markdown, JSON-tree\n- Enrichment pipeline: outcome detection,\
-    \ error fingerprinting, anti-patterns, solution extraction\n- Analytics: recurring\
-    \ problems, agent effectiveness, auto-generated rules, weekly digest\n\nRules:\n\
-    - Read docs/plan.md for the full architecture and phase breakdown before starting\
-    \ any bead\n- Run `cargo clippy --all-targets -- -D warnings` and `cargo test`\
-    \ before closing a bead\n- Run `cargo fmt` before closing a bead\n- No `unwrap()`\
-    \ or `expect()` in non-test code \u2014 use `?` with `anyhow`\n- All public functions\
-    \ return `Result<T>`\n- Follow existing code patterns in src/\n- Write tests alongside\
-    \ implementation\n"
+  instructions: 'You are working on AgentScribe, a Rust CLI tool that archives, indexes, and extracts
+
+    intelligence from conversation logs across multiple coding agents (Claude Code, Aider,
+
+    OpenCode, Codex, Cursor, Windsurf).
+
+
+    Architecture:
+
+    - Rust binary using Clap (CLI), Tantivy (full-text search), Tokio (async), Serde (JSON/TOML)
+
+    - Plugin-based scraper framework with format parsers: JSONL, Markdown, JSON-tree
+
+    - Enrichment pipeline: outcome detection, error fingerprinting, anti-patterns, solution extraction
+
+    - Analytics: recurring problems, agent effectiveness, auto-generated rules, weekly digest
+
+
+    Rules:
+
+    - Read docs/plan.md for the full architecture and phase breakdown before starting any bead
+
+    - Run `cargo clippy --all-targets -- -D warnings` and `cargo test` before closing a bead
+
+    - Run `cargo fmt` before closing a bead
+
+    - No `unwrap()` or `expect()` in non-test code — use `?` with `anyhow`
+
+    - All public functions return `Result<T>`
+
+    - Follow existing code patterns in src/
+
+    - Write tests alongside implementation
+
+    '
   templates:
-    pluck: "## Workflow\n\nYou are a coding agent. Complete the task below, then close\
-      \ the bead.\n\nSteps:\n1. Read the task description and context below\n2. Implement\
-      \ the required changes in {workspace_path}\n3. Commit your work: `git commit\
-      \ -am \"brief description of what was done\"`\n4. Push: `git push`\n5. Close\
-      \ the bead: `br close {bead_id} --body \"brief summary of what was implemented\"\
-      `\n\nIf you cannot complete the task \u2014 do NOT close the bead. It will be\
-      \ retried automatically.\n\n---\n\n## Task: {bead_title}\n\n{bead_body}\n\n\
-      ## Rules\n\n{workspace_instructions}\n\n## Context\n\n{context_file_contents}\n\
-      \nBead ID: {bead_id}\n"
+    pluck: '## Workflow
+
+
+      You are a coding agent. Complete the task below, then close the bead.
+
+
+      Steps:
+
+      1. Read the task description and context below
+
+      2. Implement the required changes in {workspace_path}
+
+      3. Commit your work: `git commit -am "brief description of what was done"`
+
+      4. Push: `git push`
+
+      5. Close the bead: `br close {bead_id} --body "brief summary of what was implemented"`
+
+
+      If you cannot complete the task — do NOT close the bead. It will be retried automatically.
+
+
+      ---
+
+
+      ## Task: {bead_title}
+
+
+      {bead_body}
+
+
+      ## Rules
+
+
+      {workspace_instructions}
+
+
+      ## Context
+
+
+      {context_file_contents}
+
+
+      Bead ID: {bead_id}
+
+      '
 bead_cli:
   backend: bead-rs
