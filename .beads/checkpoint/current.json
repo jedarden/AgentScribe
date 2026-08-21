@@ -1,12 +1,12 @@
 {
   "active_root": {
-    "path": "objects/gen-bb522e2bdabea26dfa994d406ec25147.jsonl",
-    "sha256": "bfb967ba061cf915fa1b7445715279b0f42eff6f4619b496cb6daabe5e762dec"
+    "path": "objects/gen-ccf938ace9c41b4bd52813f0562bd33a.jsonl",
+    "sha256": "c02948d7fbb78bd8225652795fbe7876ddba1d058f009c6d8b042b6216758d6f"
   },
   "added_paths": [
-    "objects/gen-bb522e2bdabea26dfa994d406ec25147.jsonl"
+    "objects/gen-ccf938ace9c41b4bd52813f0562bd33a.jsonl"
   ],
-  "created_at": "2026-08-21T03:34:07.459476956Z",
+  "created_at": "2026-08-21T03:43:00.376005951Z",
   "deleted_paths": [
     "current.json",
     "objects/gen-009990090815a8d66c4bf8ba0541e507.jsonl",
@@ -217,6 +217,7 @@
     "objects/gen-87d6a31eb9aee2616d9a3385cb6d172b.jsonl",
     "objects/gen-8837d978f825ec0557b648ad01be7bb6.jsonl",
     "objects/gen-88a1e01161b7561584ebefe4c2211d20.jsonl",
+    "objects/gen-89a126c0a7d5e1bc94e9931ee15837c3.jsonl",
     "objects/gen-89d2646f155bdab1c088389ddc8012e4.jsonl",
     "objects/gen-8cd648b37b404571fc303ebdcc02cd9a.jsonl",
     "objects/gen-8e007eef1be3ea3902efe9ae64c24471.jsonl",
@@ -275,6 +276,7 @@
     "objects/gen-ba70b78b4db85ef6ef518c35271f6b2a.jsonl",
     "objects/gen-bb0fefcba16f25d7cacdc85e19c61910.jsonl",
     "objects/gen-bb28d09ad9287fa010f2fe72f57b37dc.jsonl",
+    "objects/gen-bb522e2bdabea26dfa994d406ec25147.jsonl",
     "objects/gen-bb7d60270b24ef47966ac43292c1060d.jsonl",
     "objects/gen-bbf85bf857754e266c3b2ad6bae2d111.jsonl",
     "objects/gen-bc032200dc26452132f4468e0091de17.jsonl",
@@ -395,8 +397,8 @@
     "objects/gen-ffa5929344293a267749a12b1e88f5b4.jsonl",
     "objects/gen-ffcf0acca1ee2f8799d71c9b52760084.jsonl"
   ],
-  "event_count": 1475,
-  "generation_id": "gen-bb522e2bdabea26dfa994d406ec25147",
+  "event_count": 1481,
+  "generation_id": "gen-ccf938ace9c41b4bd52813f0562bd33a",
   "issue_count": 667,
   "mode": "monolithic",
   "receipt_count": 0,
@@ -405,7 +407,7 @@
     "previous.json"
   ],
   "schema_version": 1,
-  "snapshot_sequence": 1475,
+  "snapshot_sequence": 1481,
   "store_uuid": "f344605d-77a8-496e-eaf6-c3973a01376b",
-  "total_record_count": 2142
+  "total_record_count": 2148
 }
