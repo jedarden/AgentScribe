@@ -274,10 +274,11 @@ fn test_full_flow_subagent_session() {
         );
     }
 
-    // Find the parent session
+    // Find the parent session (exact match for plugin_name/parent_uuid)
+    let parent_session_id = format!("{}/{}", plugin_name, parent_uuid);
     let parent_session = sessions
         .iter()
-        .find(|s| s.contains(parent_uuid))
+        .find(|s| *s == &parent_session_id)
         .expect("Should find parent session");
 
     // Read the parent session events
@@ -502,11 +503,11 @@ fn test_search_by_parent_session_id() {
         println!("  - {}", session);
     }
 
-    // Count subagent sessions
+    // Count subagent sessions (only those in subagents/ directory)
     let parent_session_id = format!("claude-code/{}", parent_uuid);
     let subagent_sessions: Vec<_> = sessions
         .iter()
-        .filter(|s| s.contains(parent_uuid) && *s != &parent_session_id)
+        .filter(|s| s.contains("/subagents/") && s.contains(parent_uuid))
         .collect();
 
     println!("Subagent sessions found: {}", subagent_sessions.len());

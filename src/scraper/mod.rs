@@ -662,6 +662,9 @@ impl Scraper {
                     event.model = model.clone();
                 }
 
+                // Set source_agent based on parent_session_id detection
+                event.source_agent = source_agent.clone();
+
                 // Extract file paths
                 if event.file_paths.is_empty() {
                     event.file_paths = FilePathExtractor::extract_from_event(event, plugin);
