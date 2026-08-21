@@ -1186,3 +1186,12 @@
 {"bead":"agentscr-3cca3d94","duration_ms":640200,"event":"complete","exit_code":0,"outcome":"success","strand":"auto","ts":"2026-08-21T06:22:19.576219482+00:00","worker":"g47-agentscribe"}
 {"bead":"agentscr-6813cfa8","event":"claim","strand":"auto","ts":"2026-08-21T06:22:19.608925924+00:00","worker":"g47-agentscribe"}
 {"adapter":"claude-code-glm-4.7","bead":"agentscr-6813cfa8","event":"dispatch","model":"glm-4.7","strand":"auto","ts":"2026-08-21T06:22:19.613562392+00:00","worker":"g47-agentscribe"}
+{"bead":"agentscr-6813cfa8","duration_ms":715944,"event":"complete","exit_code":0,"outcome":"success","strand":"auto","ts":"2026-08-21T06:34:15.573302095+00:00","worker":"g47-agentscribe"}
+{"bead":"agentscr-6d8170c5","event":"claim","strand":"auto","ts":"2026-08-21T06:34:15.610845093+00:00","worker":"g47-agentscribe"}
+{"adapter":"claude-code-glm-4.7","bead":"agentscr-6d8170c5","event":"dispatch","model":"glm-4.7","strand":"auto","ts":"2026-08-21T06:34:15.613440577+00:00","worker":"g47-agentscribe"}
+{"bead":"agentscr-6d8170c5","duration_ms":457515,"event":"complete","exit_code":0,"outcome":"success","strand":"auto","ts":"2026-08-21T06:41:53.135323283+00:00","worker":"g47-agentscribe"}
+{"bead":"agentscr-e4a43f7b","event":"claim","strand":"pluck","ts":"2026-08-21T06:41:53.291524273+00:00","worker":"g47-agentscribe"}
+{"adapter":"claude-code-glm-4.7","bead":"agentscr-e4a43f7b","event":"dispatch","model":"glm-4.7","strand":"pluck","ts":"2026-08-21T06:41:53.308879739+00:00","worker":"g47-agentscribe"}
+{"bead":"agentscr-e4a43f7b","duration_ms":246730,"event":"complete","exit_code":0,"outcome":"success","strand":"pluck","ts":"2026-08-21T06:46:00.044600387+00:00","worker":"g47-agentscribe"}
+{"bead":"agentscr-6d527dff","event":"claim","strand":"auto","ts":"2026-08-21T06:46:00.077877041+00:00","worker":"g47-agentscribe"}
+{"adapter":"claude-code-glm-4.7","bead":"agentscr-6d527dff","event":"dispatch","model":"glm-4.7","strand":"auto","ts":"2026-08-21T06:46:00.080780826+00:00","worker":"g47-agentscribe"}
