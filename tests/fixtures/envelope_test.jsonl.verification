@@ -1,0 +1,40 @@
+# envelope_test.jsonl Verification Report
+
+**Date:** 2026-08-20
+**Task:** agentscr-a1884633 - Verify envelope_test.jsonl exists and count lines
+
+## Verification Results
+
+✅ **File exists:** tests/fixtures/envelope_test.jsonl
+✅ **File is readable:** No permission errors (rw-r--r-- permissions)
+✅ **Line count:** 8 lines
+
+## File Details
+
+- **Size:** 1271 bytes
+- **Last modified:** 2026-08-16 18:59:00
+- **Format:** JSONL (one JSON object per line)
+- **Content:** Test fixture containing envelope-style events with various types:
+  - session_start
+  - heartbeat
+  - ping
+  - message (user, assistant, tool_call)
+  - unknown_event
+
+## Sample Events
+
+The file contains 8 envelope events:
+1. session_start - Session initialization
+2. heartbeat - System status check
+3. ping - Sequence event
+4. message - User request for JWT auth refactor
+5. message - Assistant response
+6. message - Tool call (Read operation)
+7. message - Assistant response with solution
+8. unknown_event - Unexpected event type
+
+All events follow the envelope structure: `{"type": "...", "timestamp": "...", "payload": {...}}`
+
+## Conclusion
+
+The test fixture file exists, is readable, and contains valid envelope-formatted JSONL data suitable for testing envelope unwrapping functionality in the parser.
