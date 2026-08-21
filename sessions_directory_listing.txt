@@ -1,13 +1,32 @@
+=== Complete AgentScribe Sessions Directory Listing ===
+
+Generated: Thu Aug 20 09:04:13 PM EDT 2026
+
+=== Top-level ===
 total 732
 drwxr-xr-x 4 coding coding   4096 Aug 15 14:19 .
 drwxr-xr-x 6 coding coding   4096 Aug 15 14:22 ..
 drwxr-xr-x 2 coding coding   4096 Aug 15 04:30 aider
 drwxrwxr-x 2 coding coding 733184 Jun 24 09:14 claude-code
+
+=== File counts ===
+Aider sessions: 1
+Claude-code sessions: 9663
+Total sessions: 9665
+
+=== Disk usage ===
+385M	/home/coding/.agentscribe/sessions/
+12K	/home/coding/.agentscribe/sessions/aider/
+385M	/home/coding/.agentscribe/sessions/claude-code/
+
+=== All files (aider) ===
 total 16
 drwxr-xr-x 2 coding coding 4096 Aug 15 04:30 .
 drwxr-xr-x 4 coding coding 4096 Aug 15 14:19 ..
 -rw-r--r-- 1 coding coding 1844 Aug 15 04:30 .aider.chat.history-0.jsonl
 -rw-r--r-- 1 coding coding 1924 Aug 15 04:30 session-0.jsonl
+
+=== All files (claude-code) ===
 total 393524
 drwxrwxr-x 2 coding coding  733184 Jun 24 09:14 .
 drwxr-xr-x 4 coding coding    4096 Aug 15 14:19 ..
@@ -9674,8 +9693,3 @@ drwxr-xr-x 4 coding coding    4096 Aug 15 14:19 ..
 -rw-rw-r-- 1 coding coding    2664 Jun  6 08:00 fff49148-f60e-402e-b5d5-0354cb972a54.jsonl
 -rw-rw-r-- 1 coding coding   67315 Jun  6 08:00 fff93371-55b8-49f2-adf8-b2ca58ca3371.jsonl
 -rw-rw-r-- 1 coding coding   39191 Jun  6 08:00 fffdf721-3d8a-4578-a63e-ffa31cba8aa6.jsonl
-
-FILE COUNTS:
-Total files: 9665
-Aider files: 2
-Claude-Code files: 9663
