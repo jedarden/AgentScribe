@@ -25,36 +25,54 @@ Where `<temp_dir>` is a temporary directory created by `tempfile::tempdir()` tha
 For tests that require a persistent index across multiple test runs or manual testing, use the repo's dedicated test index location:
 
 ```
-/home/coding/AgentScribe/.agentscribe/index/tantivy/
+/home/coding/AgentScribe/tests/test_index/.agentscribe/
 ```
 
 **Purpose:** This location provides a persistent, empty Tantivy index that:
-- Survives across test runs (unlike temporary directories)
-- Lives under the repo for easy access and gitignore management
+- Survives across test runs (unlike temporary directories created by `tempfile`)
+- Lives under the repo's `tests/` directory for clear test ownership
 - Maintains separation from production data (`~/.agentscribe/`)
 - Follows the same directory structure as production for consistency
+- Is clearly identifiable as test infrastructure by its location
+
+**Standard directory structure:**
+```
+/home/coding/AgentScribe/tests/test_index/.agentscribe/
+├── index/
+│   └── tantivy/          # Tantivy search index (created by IndexManager)
+├── sessions/             # Normalized session files (empty initially)
+├── state/                # Scrape state tracking
+└── plugins/              # Plugin definitions for testing
+```
 
 **When to use:**
 - Manual testing and experimentation with search features
 - Integration tests that need a stable index location
 - Performance testing where index setup cost matters
 - Development and debugging of search functionality
+- Test fixture development where you want to inspect index state
 
 **Setup:**
 ```bash
-# Create the persistent test index directory structure
-mkdir -p /home/coding/AgentScribe/.agentscribe/index/tantivy
-mkdir -p /home/coding/AgentScribe/.agentscribe/state
-mkdir -p /home/coding/AgentScribe/.agentscribe/sessions
-mkdir -p /home/coding/AgentScribe/.agentscribe/plugins
+# The directory structure already exists in the repo:
+# /home/coding/AgentScribe/tests/test_index/.agentscribe/
+
+# Initialize the index (this creates the tantivy subdirectory):
+cd /home/coding/AgentScribe
+cargo test --test empty_index_test -- --nocapture
+
+# Or manually create the structure:
+mkdir -p tests/test_index/.agentscribe/{index,sessions,state,plugins}
 ```
 
-**Git management:** The `.agentscribe/` directory at the repo root should be added to `.gitignore` to prevent test data from being committed:
+**Git management:** The `tests/test_index/.agentscribe/` directory contains generated index data and should be added to `.gitignore` to prevent committing test index files:
 
 ```
 # In .gitignore
-.agentscribe/
+tests/test_index/.agentscribe/
 ```
+
+The directory structure itself is tracked by git, but the actual index files within it are not.
 
 ## Usage
 
