@@ -504,7 +504,7 @@ fn test_search_by_parent_session_id() {
     }
 
     // Count subagent sessions (only those in subagents/ directory)
-    let parent_session_id = format!("claude-code/{}", parent_uuid);
+    let _parent_session_id = format!("claude-code/{}", parent_uuid);
     let subagent_sessions: Vec<_> = sessions
         .iter()
         .filter(|s| s.contains("/subagents/") && s.contains(parent_uuid))
