@@ -1,7 +1,11 @@
-//! Parser implementations for different log formats
+//! Format parsers for agent logs and utility parsers
 //!
-//! This module provides format-specific parsers that normalize raw agent logs
-//! into the canonical event schema. Each parser handles one log format:
+//! This module provides two categories of parsers:
+//!
+//! ## Format Parsers (Agent Log Normalization)
+//!
+//! These parsers normalize raw agent logs into the canonical event schema.
+//! Each parser handles one log format:
 //!
 //! - **[`JsonlParser`]**: JSONL format (Claude Code, Codex, Goose)
 //! - **[`MarkdownParser`]**: Markdown format (Aider)
@@ -9,19 +13,28 @@
 //! - **[`JsonArrayParser`]**: JSON array format (Gemini CLI)
 //! - **[`SqliteParser`]**: SQLite format (Cursor, Windsurf)
 //!
-//! # When to Use
-//!
-//! These parsers are used internally by the scraper plugin system. Each plugin
+//! Format parsers are used internally by the scraper plugin system. Each plugin
 //! specifies its format in the `[source] format` field, and the corresponding
 //! parser is instantiated to normalize events.
 //!
-//! # Parser Behavior
-//!
-//! All parsers:
+//! All format parsers:
 //! - Read source files in streaming fashion
 //! - Extract timestamps, roles, content, and metadata
 //! - Normalize to the canonical [`Event`] schema
 //! - Handle errors gracefully (skip bad lines, log warnings)
+//!
+//! ## Utility Parsers
+//!
+//! - **[`ImportParser`]**: Extracts Rust import statements from source files
+//!   (use, extern crate, mod statements). Used for code analysis and rule generation.
+//!
+//! # Common Functionality
+//!
+//! All parsers in this module share:
+//! - Field extraction utilities with dot notation support
+//! - Timestamp parsing from ISO 8601, Unix epoch, and custom formats
+//! - Envelope-aware extraction for JSONL wrapper formats
+//! - Error handling with [`AgentScribeError`]
 
 mod aider_input;
 mod import_parser;
