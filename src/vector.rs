@@ -1,27 +1,15 @@
 //! Vector index for semantic search using turbovec.
 //!
-//! **⚠️ EXPERIMENTAL - CURRENTLY NON-FUNCTIONAL STUB IMPLEMENTATION**
-//!
 //! This module provides a quantized vector index built on turbovec's TurboQuantIndex.
-//! However, the turbovec dependency is currently disabled due to BLAS library linking issues
-//! (specifically, cblas_sgemm linking failures). The implementation below is a stub that:
-//! - Commented out turbovec::TurboQuantIndex usage (line 21)
-//! - Returns placeholder bool values instead of real indexes
-//! - Performs no actual embedding storage or similarity search
-//! - Inserts dummy index 0 values into ID maps
+//! It maintains two separate indexes:
+//! - Session-level index: one embedding per session (summary + solution)
+//! - Chunk-level index: embeddings for overlapping chunks of conversation content
 //!
-//! As a result, `agentscribe embed build` appears to succeed and `agentscribe search --semantic`
-//! and `--hybrid` run without errors, but silently return no real semantic results.
+//! The index uses 4-bit quantization by default, providing a good balance between
+//! accuracy and memory footprint. At ~500K sessions with 768-dim embeddings (nomic-embed-text),
+//! the session index consumes ~192MB RAM, while the chunk index (at 3M chunks) consumes ~1.15GB.
 //!
-//! **Restoring functionality requires:**
-//! 1. Resolving BLAS/cblas_sgemm linking issues for turbovec
-//! 2. Uncommenting turbovec::TurboQuantIndex imports and fields in Cargo.toml and src/vector.rs
-//! 3. Restoring real TurboQuantIndex creation in create_index()
-//! 4. Implementing actual embedding storage in upsert_session/upsert_chunk
-//! 5. Implementing real similarity search in search_sessions/search_chunks
-//!
-//! Until then, this module is a stub that maintains the API surface but provides no
-//! actual vector search capability.
+//! Feature-gated behind the `[vector] enabled = true` configuration option.
 //!
 //! ---
 //!
@@ -43,8 +31,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-// Temporarily disabled for testing - requires BLAS libraries
-// use turbovec::TurboQuantIndex;
+use turbovec::TurboQuantIndex;
 
 /// Filename for the session-level vector index
 const SESSIONS_INDEX_FILE: &str = "sessions.tvim";
@@ -166,6 +153,7 @@ impl IdMap {
     }
 
     /// Get the index for a given ID
+    #[allow(dead_code)]
     fn get(&self, id: &str) -> Option<usize> {
         self.id_to_index.get(id).copied()
     }
@@ -213,11 +201,11 @@ impl IdMap {
 /// All embeddings are quantized using TurboQuant at the configured bit width.
 pub struct VectorIndex {
     /// Session-level index (one embedding per session)
-    // sessions_index: Option<TurboQuantIndex>, // Temporarily disabled
+    sessions_index: Option<TurboQuantIndex>,
     /// Session ID to index mapping
     sessions_id_map: IdMap,
     /// Chunk-level index (multiple embeddings per session)
-    // chunks_index: Option<TurboQuantIndex>, // Temporarily disabled
+    chunks_index: Option<TurboQuantIndex>,
     /// Chunk ID to index mapping
     chunks_id_map: IdMap,
     /// Directory containing the index files
@@ -235,9 +223,9 @@ impl VectorIndex {
     /// existing indexes from disk or create new ones.
     pub fn new(data_dir: PathBuf, config: VectorConfig, embedding_dim: usize) -> Self {
         VectorIndex {
-            // sessions_index: None, // Temporarily disabled
+            sessions_index: None,
             sessions_id_map: IdMap::default(),
-            // chunks_index: None, // Temporarily disabled
+            chunks_index: None,
             chunks_id_map: IdMap::default(),
             data_dir,
             config,
@@ -273,37 +261,46 @@ impl VectorIndex {
         let _chunks_path = index_dir.join(CHUNKS_INDEX_FILE); // Temporarily unused
         let chunks_map_path = index_dir.join("chunks_").join(ID_MAP_FILE);
 
-        // Load or create session index (STUB - turbovec disabled)
-        let (_sessions_index, sessions_id_map) = if sessions_path.exists() {
-            // STUB: Vector index temporarily disabled for testing
+        // Load or create session index
+        let (sessions_index, sessions_id_map) = if sessions_path.exists() {
+            // Load existing index
             let id_map = if sessions_map_path.exists() {
                 IdMap::load(&sessions_map_path)?
             } else {
                 IdMap::default()
             };
-            (false, id_map) // Using bool as stub
+            let index = Self::load_index_from_disk(&sessions_path, embedding_dim)?;
+            (Some(index), id_map)
         } else {
-            // STUB: Vector index temporarily disabled for testing
-            (false, IdMap::default())
+            // Create new index
+            let id_map = IdMap::default();
+            let index = Self::create_index(embedding_dim, config.bit_width)?;
+            (Some(index), id_map)
         };
 
-        // Load or create chunk index (STUB - turbovec disabled)
-        let (_chunks_index, chunks_id_map) = if config.index_chunks {
-            // STUB: Vector index temporarily disabled for testing
-            let id_map = if chunks_map_path.exists() {
-                IdMap::load(&chunks_map_path)?
+        // Load or create chunk index
+        let (chunks_index, chunks_id_map) = if config.index_chunks {
+            if _chunks_path.exists() {
+                let id_map = if chunks_map_path.exists() {
+                    IdMap::load(&chunks_map_path)?
+                } else {
+                    IdMap::default()
+                };
+                let index = Self::load_index_from_disk(&_chunks_path, embedding_dim)?;
+                (Some(index), id_map)
             } else {
-                IdMap::default()
-            };
-            (false, id_map) // Using bool as stub
+                let id_map = IdMap::default();
+                let index = Self::create_index(embedding_dim, config.bit_width)?;
+                (Some(index), id_map)
+            }
         } else {
-            (false, IdMap::default())
+            (None, IdMap::default())
         };
 
         Ok(VectorIndex {
-            // sessions_index: sessions_index, // STUB
+            sessions_index,
             sessions_id_map,
-            // chunks_index: chunks_index, // STUB
+            chunks_index,
             chunks_id_map,
             data_dir,
             config,
@@ -311,10 +308,8 @@ impl VectorIndex {
         })
     }
 
-    /// Create a new TurboQuantIndex with the given dimension and bit width (STUB)
-    #[allow(dead_code)]
-    fn create_index(dim: usize, bit_width: u8) -> Result<bool> {
-        // STUB: returning bool instead
+    /// Create a new TurboQuantIndex with the given dimension and bit width
+    fn create_index(dim: usize, bit_width: u8) -> Result<TurboQuantIndex> {
         // Validate bit width (turbovec supports 2, 3, or 4 bits)
         if bit_width != 2 && bit_width != 3 && bit_width != 4 {
             return Err(AgentScribeError::VectorIndex(format!(
@@ -331,11 +326,24 @@ impl VectorIndex {
             )));
         }
 
-        // STUB: Return true instead of TurboQuantIndex
-        Ok(true)
+        // Create the TurboQuantIndex with the specified parameters
+        TurboQuantIndex::new(dim, bit_width as usize).map_err(|e| {
+            AgentScribeError::VectorIndex(format!("Failed to create TurboQuantIndex: {}", e))
+        })
     }
 
-    /// Save indexes to disk (STUB - turbovec disabled)
+    /// Load an index from disk
+    fn load_index_from_disk(path: &Path, _dim: usize) -> Result<TurboQuantIndex> {
+        TurboQuantIndex::load(path).map_err(|e| {
+            AgentScribeError::VectorIndex(format!(
+                "Failed to load TurboQuantIndex from {}: {}",
+                path.display(),
+                e
+            ))
+        })
+    }
+
+    /// Save indexes to disk
     ///
     /// Persists both the session and chunk indexes to their respective files.
     /// This should be called after bulk updates (e.g., after embedding multiple sessions).
@@ -351,15 +359,13 @@ impl VectorIndex {
             ))
         })?;
 
-        // Save session index and ID map (STUB - create dummy .tvim file)
-        let sessions_path = index_dir.join(SESSIONS_INDEX_FILE);
-        // Create a dummy .tvim file so sessions_index_exists() returns true
-        fs::write(&sessions_path, b"STUB: turbovec disabled").map_err(|e| {
-            AgentScribeError::VectorIndex(format!(
-                "Failed to create dummy session index file: {}",
-                e
-            ))
-        })?;
+        // Save session index and ID map
+        if let Some(ref index) = self.sessions_index {
+            let sessions_path = index_dir.join(SESSIONS_INDEX_FILE);
+            index.write(&sessions_path).map_err(|e| {
+                AgentScribeError::VectorIndex(format!("Failed to save session index: {}", e))
+            })?;
+        }
 
         let sessions_map_path = index_dir.join("sessions_").join(ID_MAP_FILE);
         fs::create_dir_all(index_dir.join("sessions_")).map_err(|e| {
@@ -367,15 +373,14 @@ impl VectorIndex {
         })?;
         self.sessions_id_map.save(&sessions_map_path)?;
 
-        // Save chunk index and ID map (STUB - create dummy .tvim file if chunks enabled)
+        // Save chunk index and ID map if chunks enabled
         if self.config.index_chunks {
-            let chunks_path = index_dir.join(CHUNKS_INDEX_FILE);
-            fs::write(&chunks_path, b"STUB: turbovec disabled").map_err(|e| {
-                AgentScribeError::VectorIndex(format!(
-                    "Failed to create dummy chunk index file: {}",
-                    e
-                ))
-            })?;
+            if let Some(ref index) = self.chunks_index {
+                let chunks_path = index_dir.join(CHUNKS_INDEX_FILE);
+                index.write(&chunks_path).map_err(|e| {
+                    AgentScribeError::VectorIndex(format!("Failed to save chunk index: {}", e))
+                })?;
+            }
 
             let chunks_map_path = index_dir.join("chunks_").join(ID_MAP_FILE);
             fs::create_dir_all(index_dir.join("chunks_")).map_err(|e| {
@@ -390,7 +395,7 @@ impl VectorIndex {
         Ok(())
     }
 
-    /// Upsert a session-level embedding (STUB - turbovec disabled)
+    /// Upsert a session-level embedding
     ///
     /// Inserts or updates the embedding for a session.
     ///
@@ -406,19 +411,21 @@ impl VectorIndex {
             )));
         }
 
-        // STUB: Use a counter as dummy index instead of actual turbovec index
-        let index = self.sessions_id_map.len();
+        if let Some(ref mut index) = self.sessions_index {
+            // Track this session in the ID map if not already present
+            if !self.sessions_id_map.id_to_index.contains_key(id) {
+                let idx = self.sessions_id_map.len();
+                self.sessions_id_map.insert(id.to_string(), idx);
+            }
 
-        // Check if already exists - if so, skip update (stub limitation)
-        if self.sessions_id_map.get(id).is_none() {
-            // Add new embedding
-            self.sessions_id_map.insert(id.to_string(), index);
+            // Add or update the embedding
+            index.add(&embedding);
         }
 
         Ok(())
     }
 
-    /// Upsert a chunk-level embedding (STUB - turbovec disabled)
+    /// Upsert a chunk-level embedding
     ///
     /// Inserts or updates the embedding for a conversation chunk.
     ///
@@ -438,13 +445,15 @@ impl VectorIndex {
             )));
         }
 
-        // STUB: Use a counter as dummy index instead of actual turbovec index
-        let index = self.chunks_id_map.len();
+        if let Some(ref mut index) = self.chunks_index {
+            // Track this chunk in the ID map if not already present
+            if !self.chunks_id_map.id_to_index.contains_key(id) {
+                let idx = self.chunks_id_map.len();
+                self.chunks_id_map.insert(id.to_string(), idx);
+            }
 
-        // Check if already exists - if so, skip update (stub limitation)
-        if self.chunks_id_map.get(id).is_none() {
-            // Add new embedding
-            self.chunks_id_map.insert(id.to_string(), index);
+            // Add or update the embedding
+            index.add(&embedding);
         }
 
         Ok(())
@@ -469,20 +478,31 @@ impl VectorIndex {
             )));
         }
 
-        // STUB: Return all sessions with dummy high similarity score
-        // In real implementation, this would compute cosine similarity
-        let mut results: Vec<(String, f32)> = self
-            .sessions_id_map
-            .id_to_index
-            .keys()
-            .map(|id| (id.clone(), 0.95))
-            .collect();
+        if let Some(ref index) = self.sessions_index {
+            // Search the index - SearchResults doesn't implement map_err as it's not a Result
+            let results = index.search(query_vec, k);
 
-        // Sort by score descending and limit to k results
-        results.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
-        results.truncate(k);
+            // Convert indices back to IDs using the scores and indices fields
+            let converted: Vec<(String, f32)> = results
+                .indices
+                .iter()
+                .zip(results.scores.iter())
+                .filter_map(|(idx, score)| {
+                    if *idx < 0 {
+                        return None;
+                    }
+                    self.sessions_id_map
+                        .index_to_id
+                        .get(&(*idx as usize))
+                        .cloned()
+                        .map(|id| (id, *score))
+                })
+                .collect();
 
-        Ok(results)
+            Ok(converted)
+        } else {
+            Ok(Vec::new())
+        }
     }
 
     /// Search the chunk-level index
@@ -508,20 +528,31 @@ impl VectorIndex {
             )));
         }
 
-        // STUB: Return all chunks with dummy high similarity score
-        // In real implementation, this would compute cosine similarity
-        let mut results: Vec<(String, f32)> = self
-            .chunks_id_map
-            .id_to_index
-            .keys()
-            .map(|id| (id.clone(), 0.95))
-            .collect();
+        if let Some(ref index) = self.chunks_index {
+            // Search the index - SearchResults doesn't implement map_err as it's not a Result
+            let results = index.search(query_vec, k);
 
-        // Sort by score descending and limit to k results
-        results.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
-        results.truncate(k);
+            // Convert indices back to IDs using the scores and indices fields
+            let converted: Vec<(String, f32)> = results
+                .indices
+                .iter()
+                .zip(results.scores.iter())
+                .filter_map(|(idx, score)| {
+                    if *idx < 0 {
+                        return None;
+                    }
+                    self.chunks_id_map
+                        .index_to_id
+                        .get(&(*idx as usize))
+                        .cloned()
+                        .map(|id| (id, *score))
+                })
+                .collect();
 
-        Ok(results)
+            Ok(converted)
+        } else {
+            Ok(Vec::new())
+        }
     }
 
     /// Get the number of sessions in the index
@@ -579,18 +610,9 @@ impl VectorIndex {
     /// Check if the vector index is actually functional (not stub mode)
     ///
     /// This is a runtime check to determine if real turbovec functionality is available.
-    /// Returns false if we're in stub mode (turbovec dependency commented out).
+    /// Returns true if the sessions_index is Some (turbovec is enabled and working).
     pub fn is_functional(&self) -> bool {
-        // In stub mode, we create dummy .tvim files but don't have real indexing
-        // Check if the index file contains the stub marker
-        if let Ok(content) = std::fs::read(self.sessions_index_path()) {
-            if content.starts_with(b"STUB: turbovec disabled") {
-                return false;
-            }
-        }
-        // If we can't read the file or it doesn't have stub marker, assume functional
-        // (this will be wrong if someone creates a real file, but stub mode is the default)
-        true
+        self.sessions_index.is_some()
     }
 
     /// Delete the session index from disk
