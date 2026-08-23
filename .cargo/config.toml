@@ -1,2 +1,0 @@
-[build]
-rustflags = ["-L", "/nix/store/fwjsx7fqy3v4h8s3hxv74acrn5haspr-openblas-0.3.29/lib", "-L", "/nix/store/ph7j87k0fp0ydci1nnkx9safl0lzhjg1-blas-3/lib", "-l", "cblas"]
