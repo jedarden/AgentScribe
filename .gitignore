@@ -1,1 +1,4 @@
 /target
+
+# Test index - generated Tantivy index data for testing
+tests/test_index/.agentscribe/
