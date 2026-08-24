@@ -1,0 +1,56 @@
+    Updating crates.io index
+     Locking 17 packages to latest compatible versions
+      Adding approx v0.5.1
+      Adding bytemuck v1.25.2
+      Adding matrixmultiply v0.3.11
+      Adding nalgebra v0.32.6
+      Adding nalgebra-macros v0.2.2
+      Adding num-complex v0.4.6
+      Adding num-integer v0.1.47
+      Adding num-rational v0.4.2
+      Adding ordered-float v4.6.0
+      Adding paste v1.0.15
+      Adding rawpointer v0.2.1
+      Adding safe_arch v0.7.4
+      Adding simba v0.8.1
+      Adding statrs v0.17.1
+      Adding turbovec v1.0.0
+      Adding typenum v1.20.1
+      Adding wide v0.7.33
+   Compiling num-traits v0.2.19
+   Compiling rand_chacha v0.3.1
+   Compiling rand v0.8.7
+   Compiling bytemuck v1.25.2
+   Compiling paste v1.0.15
+   Compiling rand_distr v0.4.3
+   Compiling safe_arch v0.7.4
+   Compiling matrixmultiply v0.3.11
+   Compiling wide v0.7.33
+   Compiling approx v0.5.1
+   Compiling num-complex v0.4.6
+   Compiling num-integer v0.1.47
+   Compiling rawpointer v0.2.1
+   Compiling num-rational v0.4.2
+   Compiling simba v0.8.1
+   Compiling nalgebra-macros v0.2.2
+   Compiling tantivy-stacker v0.3.0
+   Compiling tantivy-columnar v0.3.0
+   Compiling nalgebra v0.32.6
+   Compiling ordered-float v4.6.0
+   Compiling tantivy v0.22.1
+   Compiling statrs v0.17.1
+   Compiling turbovec v1.0.0
+   Compiling chrono v0.4.45
+   Compiling agentscribe v0.1.0 (/home/coding/AgentScribe)
+warning: unused import: `turbovec::TurboQuantIndex`
+  --> src/vector.rs:40:5
+   |
+40 | use turbovec::TurboQuantIndex;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: `agentscribe` (lib) generated 1 warning (run `cargo fix --lib -p agentscribe` to apply 1 suggestion)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 20.75s
+warning: the following packages contain code that will be rejected by a future version of Rust: proc-macro-error2 v2.0.1
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
